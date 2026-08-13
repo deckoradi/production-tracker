@@ -1,0 +1,1 @@
+CreateObject("WScript.Shell").Run "C:\Users\Korisnik\production-tracker\start-hidden.bat", 0, False
