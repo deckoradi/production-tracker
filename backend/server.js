@@ -59,35 +59,21 @@ if (!fs.existsSync(PROGRESS_FILE)) {
     fs.writeFileSync(PROGRESS_FILE, JSON.stringify([]));
 }
 
-// ============ AUTOMATSKO KREIRANJE ADMIN KORISNIKA ============
-const ensureAdmin = () => {
+// ============ HELPER FUNKCIJE ============
+const readData = (file) => {
     try {
-        const users = readData(USERS_FILE);
-        const adminExists = users.find(u => u.username === 'admin');
-        
-        if (!adminExists) {
-            console.log('👤 Admin korisnik ne postoji, kreiram...');
-            const newUser = {
-                id: users.length + 1,
-                username: 'admin',
-                password: bcrypt.hashSync('admin123', 10),
-                role: 'admin',
-                company: 'Administrator'
-            };
-            users.push(newUser);
-            writeData(USERS_FILE, users);
-            console.log('✅ Admin korisnik kreiran!');
-            console.log('   👤 Username: admin');
-            console.log('   🔑 Lozinka: admin123');
-        } else {
-            console.log('✅ Admin korisnik već postoji');
-        }
+        return JSON.parse(fs.readFileSync(file, 'utf8'));
     } catch (error) {
-        console.log('❌ Greška pri kreiranju admina:', error.message);
+        return [];
     }
 };
 
-// ============ CACHE ZA BRŽE UČITAVANJE ============
+const writeData = (file, data) => {
+    fs.writeFileSync(file, JSON.stringify(data, null, 2));
+    invalidateCache();
+};
+
+// ============ CACHE ============
 let ordersCache = null;
 let progressCache = null;
 let lastCacheUpdate = 0;
@@ -110,21 +96,74 @@ const invalidateCache = () => {
     lastCacheUpdate = 0;
 };
 
-// Helper functions
-const readData = (file) => {
+// ============ AUTOMATSKO KREIRANJE ADMIN KORISNIKA ============
+const ensureAdmin = () => {
     try {
-        return JSON.parse(fs.readFileSync(file, 'utf8'));
+        // Prvo pročitaj korisnike
+        let users = readData(USERS_FILE);
+        
+        // Ako je fajl prazan ili nema admina, kreiraj
+        const adminExists = users.find(u => u.username === 'admin');
+        
+        if (!adminExists) {
+            console.log('👤 Admin korisnik ne postoji, kreiram...');
+            
+            // Ako je users prazan niz, napravi novi
+            if (users.length === 0) {
+                users = [];
+            }
+            
+            const newUser = {
+                id: users.length + 1,
+                username: 'admin',
+                password: bcrypt.hashSync('admin123', 10),
+                role: 'admin',
+                company: 'Administrator'
+            };
+            
+            users.push(newUser);
+            
+            // Sačuvaj u fajl
+            fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+            
+            console.log('✅ Admin korisnik kreiran!');
+            console.log('   👤 Username: admin');
+            console.log('   🔑 Lozinka: admin123');
+        } else {
+            console.log('✅ Admin korisnik već postoji');
+        }
+        
+        // Proveri da li postoje orders i progress fajlovi
+        if (!fs.existsSync(ORDERS_FILE)) {
+            fs.writeFileSync(ORDERS_FILE, JSON.stringify([]));
+            console.log('✅ orders.json kreiran');
+        }
+        if (!fs.existsSync(PROGRESS_FILE)) {
+            fs.writeFileSync(PROGRESS_FILE, JSON.stringify([]));
+            console.log('✅ progress.json kreiran');
+        }
+        
     } catch (error) {
-        return [];
+        console.log('❌ Greška pri kreiranju admina:', error.message);
+        // Pokušaj ponovo sa direktnim upisom
+        try {
+            console.log('🔄 Pokušavam ponovo sa direktnim upisom...');
+            fs.writeFileSync(USERS_FILE, JSON.stringify([{
+                id: 1,
+                username: 'admin',
+                password: bcrypt.hashSync('admin123', 10),
+                role: 'admin',
+                company: 'Administrator'
+            }], null, 2));
+            console.log('✅ Admin korisnik kreiran (direktan upis)!');
+        } catch (err) {
+            console.log('❌ Greška pri direktnom upisu:', err.message);
+        }
     }
 };
 
-const writeData = (file, data) => {
-    fs.writeFileSync(file, JSON.stringify(data, null, 2));
-    invalidateCache();
-};
-
 // ============ KREIRAJ ADMINA ============
+console.log('🔧 Inicijalizacija...');
 ensureAdmin();
 
 // ============ MULTER SETUP ============
