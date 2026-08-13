@@ -4,8 +4,7 @@
   "description": "Production Tracking System",
   "main": "backend/server.js",
   "scripts": {
-    "start": "node backend/server.js",
-    "build": "npm install"
+    "start": "node backend/server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
