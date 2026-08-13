@@ -100,7 +100,6 @@ const ensureAdmin = () => {
     try {
         console.log('🔧 Proveravam admin korisnika...');
         
-        // DIREKTAN UPIS - zaobilazi sve
         const adminData = [{
             id: 1,
             username: 'admin',
@@ -109,27 +108,20 @@ const ensureAdmin = () => {
             company: 'Administrator'
         }];
         
-        // Proveri da li fajl postoji
         if (fs.existsSync(USERS_FILE)) {
             try {
                 const content = fs.readFileSync(USERS_FILE, 'utf8');
-                console.log('📄 Sadržaj users.json:', content);
-                
                 const users = JSON.parse(content);
                 const adminExists = users.find(u => u.username === 'admin');
-                
                 if (adminExists) {
                     console.log('✅ Admin korisnik već postoji');
-                    console.log('   👤 Username: admin');
-                    console.log('   🔑 Lozinka: admin123');
                     return;
                 }
             } catch (e) {
-                console.log('⚠️ users.json nije validan JSON, kreiram novi');
+                console.log('⚠️ users.json nije validan, kreiram novi');
             }
         }
         
-        // Kreiraj novi fajl sa adminom
         console.log('👤 Kreiram admin korisnika...');
         fs.writeFileSync(USERS_FILE, JSON.stringify(adminData, null, 2));
         console.log('✅ Admin korisnik kreiran!');
@@ -196,24 +188,12 @@ try {
         console.log('📧 Email transporter: ✅ Kreiran');
     } else {
         console.log('📧 Email transporter: ❌ Nije kreiran');
+        console.log('   💡 EMAIL_USER:', process.env.EMAIL_USER || 'nije postavljen');
+        console.log('   💡 EMAIL_PASS:', process.env.EMAIL_PASS ? 'postavljen' : 'nije postavljen');
     }
 } catch (error) {
     console.log('📧 Email transporter: ❌ Greška:', error.message);
 }
-
-// ============ TEST RUTA - PROVERA ADMINA ============
-app.get('/api/check-admin', (req, res) => {
-    try {
-        const users = readData(USERS_FILE);
-        res.json({
-            exists: users.some(u => u.username === 'admin'),
-            users: users.map(u => ({ username: u.username, role: u.role })),
-            count: users.length
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
 
 // ============ ROUTES ============
 
@@ -462,11 +442,19 @@ app.post('/api/update-phase', authenticate, (req, res) => {
     }
 });
 
-// SEND REPORT
+// ============ SEND REPORT - SA BOLJIM LOGOVIMA ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
+        console.log('📧 ZAPOCINJEM SLANJE IZVESTAJA...');
+        console.log('👤 Korisnik:', req.user.username);
+        console.log('🏢 Firma:', req.user.company);
+        
+        // Proveri transporter
         if (!transporter) {
-            return res.status(400).json({ error: 'Email not configured' });
+            console.log('❌ Email transporter nije kreiran!');
+            console.log('   💡 EMAIL_USER:', process.env.EMAIL_USER || 'nije postavljen');
+            console.log('   💡 EMAIL_PASS:', process.env.EMAIL_PASS ? 'postavljen' : 'nije postavljen');
+            return res.status(400).json({ error: 'Email not configured. Add EMAIL_USER and EMAIL_PASS to .env file' });
         }
 
         const { email, date } = req.body;
@@ -475,10 +463,14 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         const progress = readData(PROGRESS_FILE);
 
         const userOrders = orders.filter(o => o.company === req.user.company);
+        console.log(`📦 Korisnik ima ${userOrders.length} naloga`);
+        
         if (userOrders.length === 0) {
+            console.log('❌ Nema naloga za firmu');
             return res.status(400).json({ error: 'Nema naloga za vašu firmu.' });
         }
 
+        // Filtriraj aktivne naloge
         const activeOrders = [];
         let totalCompleted = 0, totalProblem = 0, totalPending = 0;
 
@@ -498,16 +490,31 @@ app.post('/api/send-report', authenticate, async (req, res) => {
             }
         });
 
+        console.log(`📊 Aktivnih naloga: ${activeOrders.length}`);
+        console.log(`   ✅ Završene: ${totalCompleted}`);
+        console.log(`   ⚠️ Problem: ${totalProblem}`);
+        console.log(`   ⬜ Na čekanju: ${totalPending}`);
+
+        // Ako nema aktivnosti
         if (activeOrders.length === 0) {
-            await transporter.sendMail({
-                from: process.env.EMAIL_USER,
-                to: email || process.env.ADMIN_EMAIL,
-                subject: `📊 Dnevni izveštaj - ${req.user.company} - ${today}`,
-                text: `Poštovani,\n\nDana ${today} nema novih aktivnosti.\n\nS poštovanjem,\nProduction Tracker`
-            });
-            return res.json({ message: '✅ Nema aktivnosti, izveštaj poslat.' });
+            console.log('📧 Saljem email - nema aktivnosti...');
+            try {
+                await transporter.sendMail({
+                    from: process.env.EMAIL_USER,
+                    to: email || process.env.ADMIN_EMAIL,
+                    subject: `📊 Dnevni izveštaj - ${req.user.company} - ${today}`,
+                    text: `Poštovani,\n\nDana ${today} nema novih aktivnosti za firmu ${req.user.company}.\n\nSve faze su na čekanju.\n\nS poštovanjem,\nProduction Tracker`
+                });
+                console.log('✅ Email poslat (nema aktivnosti)');
+                return res.json({ message: '✅ Nema aktivnosti, izveštaj poslat.' });
+            } catch (err) {
+                console.error('❌ Greska pri slanju email-a:', err.message);
+                return res.status(500).json({ error: 'Greska pri slanju email-a: ' + err.message });
+            }
         }
 
+        // Kreiraj Excel
+        console.log('📊 Kreiram Excel fajl...');
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet('Dnevni izveštaj');
 
@@ -597,19 +604,43 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         statsRow.font = { bold: true };
 
         const buffer = await workbook.xlsx.writeBuffer();
+        console.log('✅ Excel kreiran, velicina:', buffer.length, 'bajtova');
 
-        await transporter.sendMail({
-            from: process.env.EMAIL_USER,
-            to: email || process.env.ADMIN_EMAIL,
-            subject: `📊 Dnevni izveštaj - ${req.user.company} - ${today}`,
-            text: `Poštovani,\n\nU prilogu je dnevni izveštaj (${activeOrders.length} aktivnih naloga).\n\nS poštovanjem,\nProduction Tracker`,
-            attachments: [{
-                filename: `Izvestaj_${req.user.company}_${today.replace(/\./g, '-')}.xlsx`,
-                content: buffer
-            }]
-        });
+        // POŠALJI EMAIL
+        console.log('📧 Saljem email...');
+        console.log('   ➡️ Sa:', process.env.EMAIL_USER);
+        console.log('   ➡️ Na:', email || process.env.ADMIN_EMAIL);
+        
+        try {
+            const mailOptions = {
+                from: process.env.EMAIL_USER,
+                to: email || process.env.ADMIN_EMAIL,
+                subject: `📊 Dnevni izveštaj - ${req.user.company} - ${today}`,
+                text: `Poštovani,\n\nU prilogu je dnevni izveštaj za firmu ${req.user.company} (${activeOrders.length} aktivnih naloga).\n\nS poštovanjem,\nProduction Tracker`,
+                attachments: [{
+                    filename: `Izvestaj_${req.user.company}_${today.replace(/\./g, '-')}.xlsx`,
+                    content: buffer
+                }]
+            };
 
-        res.json({ message: '✅ Izveštaj poslat!', activeCount: activeOrders.length });
+            const info = await transporter.sendMail(mailOptions);
+            console.log('✅ Email POSLAT!');
+            console.log('   📧 Message ID:', info.messageId);
+            console.log('   📧 Response:', info.response);
+            
+            res.json({ 
+                message: '✅ Izveštaj poslat!', 
+                activeCount: activeOrders.length,
+                messageId: info.messageId
+            });
+        } catch (emailError) {
+            console.error('❌ Greska pri slanju email-a:');
+            console.error('   📧 Poruka:', emailError.message);
+            console.error('   📧 Stack:', emailError.stack);
+            res.status(500).json({ 
+                error: 'Greska pri slanju email-a: ' + emailError.message 
+            });
+        }
     } catch (error) {
         console.error('❌ Send report error:', error);
         res.status(500).json({ error: error.message });
@@ -632,4 +663,5 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`📊 Cache TTL: ${CACHE_TTL/1000}s`);
     console.log(`📄 Data folder: ${dataDir}`);
     console.log(`🌐 Frontend folder: ${path.join(__dirname, '../frontend')}`);
+    console.log(`📧 Email status: ${transporter ? '✅ Spreman' : '❌ Nije konfigurisan'}`);
 });
