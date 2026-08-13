@@ -19,22 +19,31 @@ console.log('📧 EMAIL_PASS:', process.env.EMAIL_PASS ? '✅ Postavljen' : '❌
 console.log('📧 ADMIN_EMAIL:', process.env.ADMIN_EMAIL ? '✅ Postavljen' : '❌ NIJE postavljen');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 
-// Middleware - CORS podešavanje
+// ============ SERVE FRONTEND ============
+// Ovo omogućava da se frontend fajlovi prikazuju na glavnoj stranici
+app.use(express.static(path.join(__dirname, '../frontend')));
+
+// ============ MIDDLEWARE ============
 app.use(cors({
-    origin: 'http://localhost:3000',
+    origin: ['http://localhost:3000', 'https://production-tracker-wcy8.onrender.com'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
 
+// ============ ROOT ROUTE ============
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, '../frontend/index.html'));
+});
+
 // Ensure directories exist
 const dataDir = path.join(__dirname, 'data');
 const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir);
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
 // Data files
 const USERS_FILE = path.join(dataDir, 'users.json');
@@ -452,19 +461,16 @@ app.post('/api/send-report', authenticate, async (req, res) => {
       const orderProgress = progress.find(p => p.orderId === order.id);
       const phases = orderProgress ? orderProgress.phases : order.phases;
       
-      // Proveri da li ima završenih ili problem faza (to su današnje aktivnosti)
       const hasCompleted = phases.some(p => p.status === 'completed');
       const hasProblem = phases.some(p => p.status === 'problem');
       const hasComment = phases.some(p => p.comment && p.comment.trim() !== '');
       
-      // Ako ima bilo kakve aktivnosti, dodaj u izveštaj
       if (hasCompleted || hasProblem || hasComment) {
         activeOrders.push({
           order: order,
           phases: phases
         });
         
-        // Broji statuse samo za aktivne naloge
         phases.forEach(p => {
           if (p.status === 'completed') totalCompleted++;
           else if (p.status === 'problem') totalProblem++;
@@ -475,7 +481,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
 
     // Ako nema aktivnosti
     if (activeOrders.length === 0) {
-      // Pošalji email sa obaveštenjem da nema aktivnosti
       const mailOptions = {
         from: process.env.EMAIL_USER,
         to: email || process.env.ADMIN_EMAIL || 'grupkovic@gmail.com',
@@ -490,22 +495,21 @@ app.post('/api/send-report', authenticate, async (req, res) => {
       });
     }
 
-    // ======== KREIRANJE EXCEL FAJLA (SAMO AKTIVNI NALOZI) ========
+    // ======== KREIRANJE EXCEL FAJLA ========
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Dnevni izveštaj');
 
-    // Postavi širinu kolona
-    worksheet.getColumn(1).width = 15;  // Nalog
-    worksheet.getColumn(2).width = 25;  // Artikal
-    worksheet.getColumn(3).width = 12;  // Šifra
-    worksheet.getColumn(4).width = 12;  // Količina
-    worksheet.getColumn(5).width = 15;  // Datum isporuke
-    worksheet.getColumn(6).width = 12;  // Faza 100
-    worksheet.getColumn(7).width = 12;  // Faza 200
-    worksheet.getColumn(8).width = 12;  // Faza 300
-    worksheet.getColumn(9).width = 12;  // Faza 400
-    worksheet.getColumn(10).width = 12; // Faza 500
-    worksheet.getColumn(11).width = 30; // Komentar
+    worksheet.getColumn(1).width = 15;
+    worksheet.getColumn(2).width = 25;
+    worksheet.getColumn(3).width = 12;
+    worksheet.getColumn(4).width = 12;
+    worksheet.getColumn(5).width = 15;
+    worksheet.getColumn(6).width = 12;
+    worksheet.getColumn(7).width = 12;
+    worksheet.getColumn(8).width = 12;
+    worksheet.getColumn(9).width = 12;
+    worksheet.getColumn(10).width = 12;
+    worksheet.getColumn(11).width = 30;
 
     // NASLOV
     worksheet.mergeCells('A1:K1');
@@ -536,7 +540,7 @@ app.post('/api/send-report', authenticate, async (req, res) => {
     headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
     headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
 
-    // PODACI - SAMO AKTIVNI NALOZI
+    // PODACI
     activeOrders.forEach(({ order, phases }) => {
       const phaseMap = {};
       let comments = [];
@@ -568,7 +572,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         comments.join('; ')
       ]);
 
-      // Boje za statuse
       const statusCells = [6, 7, 8, 9, 10];
       statusCells.forEach(colIndex => {
         const cell = row.getCell(colIndex);
@@ -596,10 +599,8 @@ app.post('/api/send-report', authenticate, async (req, res) => {
     ]);
     statsRow.font = { bold: true };
 
-    // SAČUVAJ EXCEL U MEMORIJI
     const buffer = await workbook.xlsx.writeBuffer();
 
-    // POŠALJI EMAIL SA EXCEL PRILOGOM
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: email || process.env.ADMIN_EMAIL || 'grupkovic@gmail.com',
@@ -639,8 +640,10 @@ app.get('/api/companies', authenticate, (req, res) => {
   res.json(companies);
 });
 
-app.listen(PORT, () => {
+// ============ POKRENI SERVER ============
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📊 Cache TTL: ${CACHE_TTL/1000}s`);
   console.log(`📄 Data folder: ${dataDir}`);
+  console.log(`🌐 Frontend folder: ${path.join(__dirname, '../frontend')}`);
 });
