@@ -1,0 +1,46 @@
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('loginForm');
+    if (!form) {
+        console.error('Login form not found!');
+        return;
+    }
+
+    form.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        const username = document.getElementById('username').value;
+        const password = document.getElementById('password').value;
+        const errorDiv = document.getElementById('loginError');
+        
+        errorDiv.textContent = '';
+        errorDiv.style.color = 'red';
+        
+        console.log('Pokušavam prijavu za:', username);
+        console.log('Šaljem na: http://localhost:5001/api/login');
+        
+        try {
+            const response = await fetch('http://localhost:5001/api/login', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ username, password })
+            });
+            
+            console.log('Odgovor status:', response.status);
+            const data = await response.json();
+            console.log('Odgovor podaci:', data);
+            
+            if (response.ok) {
+                localStorage.setItem('token', data.token);
+                localStorage.setItem('user', JSON.stringify(data.user));
+                window.location.href = 'dashboard.html';
+            } else {
+                errorDiv.textContent = data.error || 'Pogrešno korisničko ime ili lozinka';
+            }
+        } catch (error) {
+            console.error('Fetch greška:', error);
+            errorDiv.textContent = 'Greška pri povezivanju sa serverom. Proverite da li server radi na portu 5001.';
+        }
+    });
+});

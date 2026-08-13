@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Production Tracker - Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="dashboard">
+        <nav class="navbar">
+            <div class="nav-left">
+                <h1>🏭 Production Tracker</h1>
+                <span id="companyDisplay" class="company-badge"></span>
+            </div>
+            <div class="nav-right">
+                <button id="logoutBtn" class="btn-secondary">Odjava</button>
+            </div>
+        </nav>
+
+        <div class="dashboard-content">
+            <!-- Admin Panel -->
+            <div id="adminPanel" class="panel hidden">
+                <div class="panel-header">
+                    <h2>Admin Panel</h2>
+                </div>
+                <div class="panel-body">
+                    <div class="admin-section">
+                        <h3>Upload Excel fajla</h3>
+                        <form id="uploadForm" class="upload-form">
+                            <input type="file" id="fileInput" accept=".xlsx,.xls" required>
+                            <button type="submit" class="btn-primary">Upload</button>
+                        </form>
+                        <div id="uploadStatus"></div>
+                    </div>
+                    <div class="admin-section">
+                        <h3>Kreiraj novog korisnika</h3>
+                        <form id="createUserForm" class="user-form">
+                            <input type="text" id="newUsername" placeholder="Korisničko ime" required>
+                            <input type="text" id="newCompany" placeholder="Naziv firme" required>
+                            <button type="submit" class="btn-primary">Kreiraj</button>
+                        </form>
+                        <div id="userStatus"></div>
+                    </div>
+                    <div class="admin-section">
+                        <h3>Lista korisnika</h3>
+                        <div id="usersList"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Search Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h2>Pretraga</h2>
+                </div>
+                <div class="panel-body">
+                    <div class="search-bar">
+                        <input type="text" id="searchInput" placeholder="Pretraži po firmi, šifri, nazivu ili nalogu...">
+                        <button id="searchBtn" class="btn-primary">🔍 Pretraži</button>
+                        <button id="clearSearchBtn" class="btn-secondary">✖ Poništi</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Orders Table -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h2>Nalozi</h2>
+                    <button id="sendReportBtn" class="btn-success">📧 Pošalji izveštaj</button>
+                </div>
+                <div class="panel-body">
+                    <div id="ordersContainer">
+                        <div class="loading">Učitavanje...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Phase Modal -->
+    <div id="phaseModal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close-modal">&times;</span>
+            <h2>Faze za nalog: <span id="modalOrderNumber"></span></h2>
+            <div id="modalOrderInfo" class="order-info"></div>
+            <div id="phasesContainer" class="phases-grid"></div>
+        </div>
+    </div>
+
+    <script src="dashboard.js"></script>
+</body>
+</html>
