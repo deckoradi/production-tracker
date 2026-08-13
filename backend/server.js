@@ -13,7 +13,6 @@ const ExcelJS = require('exceljs');
 const dotenv = require('dotenv');
 dotenv.config({ path: path.join(__dirname, '.env') });
 
-// Provera da li su email podaci učitani
 console.log('📧 EMAIL_USER:', process.env.EMAIL_USER ? '✅ Postavljen' : '❌ NIJE postavljen');
 console.log('📧 EMAIL_PASS:', process.env.EMAIL_PASS ? '✅ Postavljen' : '❌ NIJE postavljen');
 console.log('📧 ADMIN_EMAIL:', process.env.ADMIN_EMAIL ? '✅ Postavljen' : '❌ NIJE postavljen');
@@ -96,69 +95,49 @@ const invalidateCache = () => {
     lastCacheUpdate = 0;
 };
 
-// ============ AUTOMATSKO KREIRANJE ADMIN KORISNIKA ============
+// ============ DIREKTNO KREIRANJE ADMIN KORISNIKA ============
 const ensureAdmin = () => {
     try {
-        // Prvo pročitaj korisnike
-        let users = readData(USERS_FILE);
+        console.log('🔧 Proveravam admin korisnika...');
         
-        // Ako je fajl prazan ili nema admina, kreiraj
-        const adminExists = users.find(u => u.username === 'admin');
+        // DIREKTAN UPIS - zaobilazi sve
+        const adminData = [{
+            id: 1,
+            username: 'admin',
+            password: bcrypt.hashSync('admin123', 10),
+            role: 'admin',
+            company: 'Administrator'
+        }];
         
-        if (!adminExists) {
-            console.log('👤 Admin korisnik ne postoji, kreiram...');
-            
-            // Ako je users prazan niz, napravi novi
-            if (users.length === 0) {
-                users = [];
+        // Proveri da li fajl postoji
+        if (fs.existsSync(USERS_FILE)) {
+            try {
+                const content = fs.readFileSync(USERS_FILE, 'utf8');
+                console.log('📄 Sadržaj users.json:', content);
+                
+                const users = JSON.parse(content);
+                const adminExists = users.find(u => u.username === 'admin');
+                
+                if (adminExists) {
+                    console.log('✅ Admin korisnik već postoji');
+                    console.log('   👤 Username: admin');
+                    console.log('   🔑 Lozinka: admin123');
+                    return;
+                }
+            } catch (e) {
+                console.log('⚠️ users.json nije validan JSON, kreiram novi');
             }
-            
-            const newUser = {
-                id: users.length + 1,
-                username: 'admin',
-                password: bcrypt.hashSync('admin123', 10),
-                role: 'admin',
-                company: 'Administrator'
-            };
-            
-            users.push(newUser);
-            
-            // Sačuvaj u fajl
-            fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-            
-            console.log('✅ Admin korisnik kreiran!');
-            console.log('   👤 Username: admin');
-            console.log('   🔑 Lozinka: admin123');
-        } else {
-            console.log('✅ Admin korisnik već postoji');
         }
         
-        // Proveri da li postoje orders i progress fajlovi
-        if (!fs.existsSync(ORDERS_FILE)) {
-            fs.writeFileSync(ORDERS_FILE, JSON.stringify([]));
-            console.log('✅ orders.json kreiran');
-        }
-        if (!fs.existsSync(PROGRESS_FILE)) {
-            fs.writeFileSync(PROGRESS_FILE, JSON.stringify([]));
-            console.log('✅ progress.json kreiran');
-        }
+        // Kreiraj novi fajl sa adminom
+        console.log('👤 Kreiram admin korisnika...');
+        fs.writeFileSync(USERS_FILE, JSON.stringify(adminData, null, 2));
+        console.log('✅ Admin korisnik kreiran!');
+        console.log('   👤 Username: admin');
+        console.log('   🔑 Lozinka: admin123');
         
     } catch (error) {
         console.log('❌ Greška pri kreiranju admina:', error.message);
-        // Pokušaj ponovo sa direktnim upisom
-        try {
-            console.log('🔄 Pokušavam ponovo sa direktnim upisom...');
-            fs.writeFileSync(USERS_FILE, JSON.stringify([{
-                id: 1,
-                username: 'admin',
-                password: bcrypt.hashSync('admin123', 10),
-                role: 'admin',
-                company: 'Administrator'
-            }], null, 2));
-            console.log('✅ Admin korisnik kreiran (direktan upis)!');
-        } catch (err) {
-            console.log('❌ Greška pri direktnom upisu:', err.message);
-        }
     }
 };
 
@@ -222,6 +201,20 @@ try {
     console.log('📧 Email transporter: ❌ Greška:', error.message);
 }
 
+// ============ TEST RUTA - PROVERA ADMINA ============
+app.get('/api/check-admin', (req, res) => {
+    try {
+        const users = readData(USERS_FILE);
+        res.json({
+            exists: users.some(u => u.username === 'admin'),
+            users: users.map(u => ({ username: u.username, role: u.role })),
+            count: users.length
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // ============ ROUTES ============
 
 // LOGIN
@@ -229,16 +222,24 @@ app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
         const users = readData(USERS_FILE);
+        
+        console.log('🔐 Pokušaj logina:', username);
+        console.log('📄 Korisnici u bazi:', users.map(u => u.username));
+        
         const user = users.find(u => u.username === username);
 
         if (!user) {
+            console.log('❌ Korisnik nije pronađen:', username);
             return res.status(401).json({ error: 'Invalid credentials' });
         }
 
         const validPassword = await bcrypt.compare(password, user.password);
         if (!validPassword) {
+            console.log('❌ Pogrešna lozinka za:', username);
             return res.status(401).json({ error: 'Invalid credentials' });
         }
+
+        console.log('✅ Login uspešan:', username);
 
         const token = jwt.sign(
             { id: user.id, username: user.username, role: user.role, company: user.company },
@@ -256,6 +257,7 @@ app.post('/api/login', async (req, res) => {
             }
         });
     } catch (error) {
+        console.error('❌ Login error:', error);
         res.status(500).json({ error: error.message });
     }
 });
