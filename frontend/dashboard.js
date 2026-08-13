@@ -98,7 +98,7 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
     
     try {
         const startTime = Date.now();
-        const response = await fetch('http://localhost:5001/api/upload', {
+        const response = await fetch('/api/upload', {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${token}`
@@ -134,7 +134,7 @@ document.getElementById('createUserForm').addEventListener('submit', async (e) =
     const statusDiv = document.getElementById('userStatus');
     
     try {
-        const response = await fetch('http://localhost:5001/api/users', {
+        const response = await fetch('/api/users', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -167,7 +167,7 @@ sendReportBtn.addEventListener('click', async () => {
     if (!confirm('Da li želite da pošaljete dnevni izveštaj?')) return;
     
     try {
-        const response = await fetch('http://localhost:5001/api/send-report', {
+        const response = await fetch('/api/send-report', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -196,8 +196,8 @@ sendReportBtn.addEventListener('click', async () => {
 async function loadOrders(search = '', page = 1) {
     try {
         const url = search ? 
-            `http://localhost:5001/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}` :
-            `http://localhost:5001/api/orders?page=${page}&limit=${LIMIT}`;
+            `/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}` :
+            `/api/orders?page=${page}&limit=${LIMIT}`;
         
         console.log('📡 Učitavam naloge...');
         ordersContainer.innerHTML = '<div style="text-align:center;padding:40px;color:#a0aec0;">⏳ Učitavanje...</div>';
@@ -270,7 +270,6 @@ function renderOrders(ordersList, meta) {
     for (let i = 0; i < ordersList.length; i++) {
         const order = ordersList[i];
         
-        // Pokušaj da pronađeš podatke iz različitih mogućih ključeva
         const company = order.company || order.firma || order.Firma || order.ime_firme || '';
         const code = order.code || order.sifra || order.Sifra || order.cod_artikal || '';
         const name = order.name || order.naziv || order.Naziv || order.naziv_artikla || '';
@@ -278,7 +277,6 @@ function renderOrders(ordersList, meta) {
         const quantity = order.quantity || order.pari || order.kolicina || 0;
         const deliveryDate = order.deliveryDate || order.datum_isporuke || order.Datum || '';
         
-        // Izračunaj status
         const phases = order.progress || order.phases || [];
         const totalPhases = phases.length;
         const completedPhases = phases.filter(p => p.status === 'completed').length || 0;
@@ -316,7 +314,6 @@ function renderOrders(ordersList, meta) {
         </div>
     `;
     
-    // Paginacija
     if (meta && meta.totalPages > 1) {
         html += `
             <div style="display:flex;justify-content:center;align-items:center;gap:15px;padding:15px;border-top:1px solid #e2e8f0;flex-wrap:wrap;">
@@ -357,7 +354,6 @@ function goToPage(page) {
     if (page < 1 || page > totalPages) return;
     const search = document.getElementById('searchInput').value || '';
     loadOrders(search, page);
-    // Skroluj na vrh tabele
     document.querySelector('.panel:last-child')?.scrollIntoView({ behavior: 'smooth' });
 }
 
@@ -431,7 +427,7 @@ function renderPhases(order) {
 
 async function updatePhase(orderId, phase, status) {
     try {
-        const response = await fetch('http://localhost:5001/api/update-phase', {
+        const response = await fetch('/api/update-phase', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -460,7 +456,7 @@ async function updatePhase(orderId, phase, status) {
 
 async function updatePhaseComment(orderId, phase, comment) {
     try {
-        const response = await fetch('http://localhost:5001/api/update-phase', {
+        const response = await fetch('/api/update-phase', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -479,7 +475,7 @@ async function updatePhaseComment(orderId, phase, comment) {
 
 async function loadUsers() {
     try {
-        const response = await fetch('http://localhost:5001/api/users', {
+        const response = await fetch('/api/users', {
             headers: {
                 'Authorization': `Bearer ${token}`
             }
