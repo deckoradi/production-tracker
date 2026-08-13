@@ -1,0 +1,21 @@
+{
+  "name": "production-tracker",
+  "version": "1.0.0",
+  "description": "Production Tracking System",
+  "main": "backend/server.js",
+  "scripts": {
+    "start": "node backend/server.js",
+    "build": "npm install"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "multer": "^1.4.5-lts.1",
+    "xlsx": "^0.18.5",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "dotenv": "^16.3.1",
+    "nodemailer": "^6.9.7",
+    "exceljs": "^4.4.0"
+  }
+}
