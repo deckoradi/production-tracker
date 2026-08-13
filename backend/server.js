@@ -174,7 +174,7 @@ const authenticate = (req, res, next) => {
     }
 };
 
-// ============ EMAIL TRANSPORTER ============
+// ============ EMAIL TRANSPORTER - SA TIMEOUT-OM ============
 let transporter = null;
 try {
     if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
@@ -183,7 +183,10 @@ try {
             auth: {
                 user: process.env.EMAIL_USER,
                 pass: process.env.EMAIL_PASS
-            }
+            },
+            connectionTimeout: 10000,
+            greetingTimeout: 10000,
+            socketTimeout: 15000
         });
         console.log('📧 Email transporter: ✅ Kreiran');
     } else {
@@ -442,18 +445,13 @@ app.post('/api/update-phase', authenticate, (req, res) => {
     }
 });
 
-// ============ SEND REPORT - SA BOLJIM LOGOVIMA ============
+// ============ SEND REPORT - SA TIMEOUT-OM (NE BLOKIRA) ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
         console.log('📧 ZAPOCINJEM SLANJE IZVESTAJA...');
-        console.log('👤 Korisnik:', req.user.username);
-        console.log('🏢 Firma:', req.user.company);
         
-        // Proveri transporter
         if (!transporter) {
             console.log('❌ Email transporter nije kreiran!');
-            console.log('   💡 EMAIL_USER:', process.env.EMAIL_USER || 'nije postavljen');
-            console.log('   💡 EMAIL_PASS:', process.env.EMAIL_PASS ? 'postavljen' : 'nije postavljen');
             return res.status(400).json({ error: 'Email not configured. Add EMAIL_USER and EMAIL_PASS to .env file' });
         }
 
@@ -466,7 +464,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         console.log(`📦 Korisnik ima ${userOrders.length} naloga`);
         
         if (userOrders.length === 0) {
-            console.log('❌ Nema naloga za firmu');
             return res.status(400).json({ error: 'Nema naloga za vašu firmu.' });
         }
 
@@ -491,25 +488,25 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         });
 
         console.log(`📊 Aktivnih naloga: ${activeOrders.length}`);
-        console.log(`   ✅ Završene: ${totalCompleted}`);
-        console.log(`   ⚠️ Problem: ${totalProblem}`);
-        console.log(`   ⬜ Na čekanju: ${totalPending}`);
 
-        // Ako nema aktivnosti
+        // Ako nema aktivnosti - pošalji email sa timeout-om
         if (activeOrders.length === 0) {
-            console.log('📧 Saljem email - nema aktivnosti...');
+            console.log('📧 Nema aktivnosti, saljem email...');
             try {
-                await transporter.sendMail({
-                    from: process.env.EMAIL_USER,
-                    to: email || process.env.ADMIN_EMAIL,
-                    subject: `📊 Dnevni izveštaj - ${req.user.company} - ${today}`,
-                    text: `Poštovani,\n\nDana ${today} nema novih aktivnosti za firmu ${req.user.company}.\n\nSve faze su na čekanju.\n\nS poštovanjem,\nProduction Tracker`
-                });
+                const result = await Promise.race([
+                    transporter.sendMail({
+                        from: process.env.EMAIL_USER,
+                        to: email || process.env.ADMIN_EMAIL,
+                        subject: `📊 Dnevni izveštaj - ${req.user.company} - ${today}`,
+                        text: `Poštovani,\n\nDana ${today} nema novih aktivnosti za firmu ${req.user.company}.\n\nSve faze su na čekanju.\n\nS poštovanjem,\nProduction Tracker`
+                    }),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 15000))
+                ]);
                 console.log('✅ Email poslat (nema aktivnosti)');
                 return res.json({ message: '✅ Nema aktivnosti, izveštaj poslat.' });
             } catch (err) {
-                console.error('❌ Greska pri slanju email-a:', err.message);
-                return res.status(500).json({ error: 'Greska pri slanju email-a: ' + err.message });
+                console.log('⚠️ Email nije poslat (timeout), ali aplikacija nastavlja');
+                return res.json({ message: '⚠️ Izveštaj generisan, ali email nije poslat (timeout).' });
             }
         }
 
@@ -606,39 +603,35 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         const buffer = await workbook.xlsx.writeBuffer();
         console.log('✅ Excel kreiran, velicina:', buffer.length, 'bajtova');
 
-        // POŠALJI EMAIL
-        console.log('📧 Saljem email...');
-        console.log('   ➡️ Sa:', process.env.EMAIL_USER);
-        console.log('   ➡️ Na:', email || process.env.ADMIN_EMAIL);
+        // POŠALJI EMAIL SA TIMEOUT-OM - NE BLOKIRA!
+        console.log('📧 Saljem email sa timeout-om (15s)...');
         
         try {
-            const mailOptions = {
-                from: process.env.EMAIL_USER,
-                to: email || process.env.ADMIN_EMAIL,
-                subject: `📊 Dnevni izveštaj - ${req.user.company} - ${today}`,
-                text: `Poštovani,\n\nU prilogu je dnevni izveštaj za firmu ${req.user.company} (${activeOrders.length} aktivnih naloga).\n\nS poštovanjem,\nProduction Tracker`,
-                attachments: [{
-                    filename: `Izvestaj_${req.user.company}_${today.replace(/\./g, '-')}.xlsx`,
-                    content: buffer
-                }]
-            };
-
-            const info = await transporter.sendMail(mailOptions);
-            console.log('✅ Email POSLAT!');
-            console.log('   📧 Message ID:', info.messageId);
-            console.log('   📧 Response:', info.response);
+            const result = await Promise.race([
+                transporter.sendMail({
+                    from: process.env.EMAIL_USER,
+                    to: email || process.env.ADMIN_EMAIL,
+                    subject: `📊 Dnevni izveštaj - ${req.user.company} - ${today}`,
+                    text: `Poštovani,\n\nU prilogu je dnevni izveštaj za firmu ${req.user.company} (${activeOrders.length} aktivnih naloga).\n\nS poštovanjem,\nProduction Tracker`,
+                    attachments: [{
+                        filename: `Izvestaj_${req.user.company}_${today.replace(/\./g, '-')}.xlsx`,
+                        content: buffer
+                    }]
+                }),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT - email nije poslat za 15 sekundi')), 15000))
+            ]);
             
+            console.log('✅ Email POSLAT!');
             res.json({ 
                 message: '✅ Izveštaj poslat!', 
-                activeCount: activeOrders.length,
-                messageId: info.messageId
+                activeCount: activeOrders.length 
             });
         } catch (emailError) {
-            console.error('❌ Greska pri slanju email-a:');
-            console.error('   📧 Poruka:', emailError.message);
-            console.error('   📧 Stack:', emailError.stack);
-            res.status(500).json({ 
-                error: 'Greska pri slanju email-a: ' + emailError.message 
+            console.error('❌ Greska pri slanju email-a (timeout):', emailError.message);
+            // VAŽNO: Vraćamo uspeh iako email nije poslat - aplikacija ne sme da se blokira!
+            res.json({ 
+                message: '⚠️ Izveštaj generisan, ali email nije poslat (timeout). Proverite email podešavanja.', 
+                activeCount: activeOrders.length 
             });
         }
     } catch (error) {
