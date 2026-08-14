@@ -152,9 +152,7 @@ try {
         });
         console.log('📧 Email transporter: ✅');
     } else {
-        console.log('📧 Email transporter: ❌ Nije konfigurisan');
-        console.log('   💡 EMAIL_USER:', process.env.EMAIL_USER || 'nije postavljen');
-        console.log('   💡 EMAIL_PASS:', process.env.EMAIL_PASS ? 'postavljen' : 'nije postavljen');
+        console.log('📧 Email transporter: ❌');
     }
 } catch (e) { console.log('📧 Email: ❌', e.message); }
 
@@ -294,37 +292,59 @@ app.post('/api/upload', authenticate, upload.single('file'), (req, res) => {
     }
 });
 
-// GET ORDERS
+// ============ GET ORDERS - SA PRAVILOM ZA PRETRAGU ============
 app.get('/api/orders', authenticate, (req, res) => {
     try {
         const { orders, progress } = getCachedData();
         const { search, page = 1, limit = 100 } = req.query;
-        let filtered = orders;
-        if (req.user.role !== 'admin') {
-            filtered = orders.filter(o => o.company === req.user.company);
+
+        let filteredOrders = orders;
+
+        // ADMIN: vidi sve
+        if (req.user.role === 'admin') {
+            // nema filtera
+        } else {
+            // OBIČAN KORISNIK
+            if (search) {
+                // Ako ima pretragu → vidi sve naloge koji odgovaraju (sve firme)
+                const s = search.toLowerCase();
+                filteredOrders = filteredOrders.filter(o =>
+                    (o.orderNumber || '').toLowerCase().includes(s) ||
+                    (o.name || '').toLowerCase().includes(s) ||
+                    (o.code || '').toLowerCase().includes(s)
+                );
+            } else {
+                // Ako NEMA pretragu → vidi samo svoje naloge
+                filteredOrders = filteredOrders.filter(o => o.company === req.user.company);
+            }
         }
+
+        // Ako ima pretragu (i admin i korisnik) - dodatno filtriraj
         if (search) {
             const s = search.toLowerCase();
-            filtered = filtered.filter(o =>
+            filteredOrders = filteredOrders.filter(o =>
                 (o.company || '').toLowerCase().includes(s) ||
                 (o.code || '').toLowerCase().includes(s) ||
                 (o.name || '').toLowerCase().includes(s) ||
                 (o.orderNumber || '').toLowerCase().includes(s)
             );
         }
+
+        // Paginacija
         const p = parseInt(page), l = parseInt(limit);
         const start = (p - 1) * l;
-        const paginated = filtered.slice(start, start + l);
+        const paginated = filteredOrders.slice(start, start + l);
         const result = paginated.map(o => {
             const pr = progress.find(p => p.orderId === o.id);
             return { ...o, progress: pr ? pr.phases : o.phases };
         });
+
         res.json({
             data: result,
-            total: filtered.length,
+            total: filteredOrders.length,
             page: p,
             limit: l,
-            totalPages: Math.ceil(filtered.length / l)
+            totalPages: Math.ceil(filteredOrders.length / l)
         });
     } catch (e) {
         console.error('❌ Orders error:', e);

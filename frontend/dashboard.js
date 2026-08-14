@@ -247,7 +247,6 @@ function renderOrders(ordersList, meta) {
         return;
     }
     
-    // Proveri da li je korisnik admin
     const isAdmin = currentUser && currentUser.role === 'admin';
     
     let html = `
@@ -256,7 +255,6 @@ function renderOrders(ordersList, meta) {
                 <tr>
     `;
     
-    // Admin vidi sve kolone
     if (isAdmin) {
         html += `
                     <th>Firma</th>
@@ -268,7 +266,6 @@ function renderOrders(ordersList, meta) {
                     <th style="text-align:center;">Status</th>
         `;
     } else {
-        // Običan korisnik vidi samo: Nalog, Naziv, Količina, Status
         html += `
                     <th>Nalog</th>
                     <th>Naziv</th>
@@ -286,7 +283,6 @@ function renderOrders(ordersList, meta) {
     for (let i = 0; i < ordersList.length; i++) {
         const order = ordersList[i];
         
-        // Izračunaj status
         const phases = order.progress || order.phases || [];
         const totalPhases = phases.length;
         const completedPhases = phases.filter(p => p.status === 'completed').length || 0;
@@ -308,7 +304,6 @@ function renderOrders(ordersList, meta) {
         html += `<tr style="border-bottom:1px solid #e2e8f0;${i % 2 === 0 ? 'background:#fafafa;' : ''}">`;
         
         if (isAdmin) {
-            // Admin - sve kolone
             html += `
                         <td style="padding:10px;font-size:13px;">${escapeHtml(order.company || '')}</td>
                         <td style="padding:10px;font-size:12px;">${escapeHtml(order.code || '')}</td>
@@ -319,7 +314,6 @@ function renderOrders(ordersList, meta) {
                         <td style="padding:10px;text-align:center;"><span class="status-badge ${statusClass}">${statusText}</span></td>
             `;
         } else {
-            // Običan korisnik - samo 4 kolone (povećani font za telefon)
             html += `
                         <td style="padding:12px 8px;color:#667eea;font-weight:600;cursor:pointer;font-size:16px;" onclick="openOrder(${order.id})">${escapeHtml(order.orderNumber || '')}</td>
                         <td style="padding:12px 8px;font-size:15px;">${escapeHtml(order.name || '')}</td>
@@ -336,7 +330,6 @@ function renderOrders(ordersList, meta) {
         </table>
     `;
     
-    // Paginacija
     if (meta && meta.totalPages > 1) {
         html += `
             <div style="display:flex;justify-content:center;align-items:center;gap:12px;padding:14px;border-top:1px solid #e2e8f0;flex-wrap:wrap;">
@@ -362,7 +355,6 @@ function goToPage(page) {
     if (page < 1 || page > totalPages) return;
     const search = document.getElementById('searchInput').value || '';
     loadOrders(search, page);
-    // Skroluj na vrh tabele
     document.querySelector('.panel:last-child')?.scrollIntoView({ behavior: 'smooth' });
 }
 
@@ -373,6 +365,7 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// ============ OPEN ORDER - SA SAKRIVANJEM FIRME ZA TUĐE NALOGE ============
 function openOrder(orderId) {
     const order = orders.find(o => o.id === orderId);
     if (!order) {
@@ -383,8 +376,21 @@ function openOrder(orderId) {
     selectedOrderId = orderId;
     modalOrderNumber.textContent = order.orderNumber || order.nalog || 'N/A';
     
+    // Proveri da li je admin ILI je nalog korisnikov
+    const isAdmin = currentUser && currentUser.role === 'admin';
+    const isOwnOrder = order.company === currentUser.company;
+    
+    let companyHtml = '';
+    if (isAdmin || isOwnOrder) {
+        // Admin i vlasnik naloga vide firmu
+        companyHtml = `<p><strong>Firma:</strong> ${escapeHtml(order.company || order.firma || '')}</p>`;
+    } else {
+        // Tuđi nalog - sakrivamo firmu
+        companyHtml = `<p style="display:none;"><strong>Firma:</strong> ${escapeHtml(order.company || order.firma || '')}</p>`;
+    }
+    
     modalOrderInfo.innerHTML = `
-        <p><strong>Firma:</strong> ${escapeHtml(order.company || order.firma || '')}</p>
+        ${companyHtml}
         <p><strong>Artikal:</strong> ${escapeHtml(order.name || order.naziv || '')}</p>
         <p><strong>Šifra:</strong> ${escapeHtml(order.code || order.sifra || '')}</p>
         <p><strong>Količina:</strong> ${order.quantity || order.pari || 0}</p>
