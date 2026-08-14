@@ -5,25 +5,28 @@
 }
 
 body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    background: #f0f2f5;
-    color: #333;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f5f7fa;
+    color: #1a202c;
+    font-size: 16px;
+    line-height: 1.6;
 }
 
-/* Login styles */
+/* ============ LOGIN ============ */
 .login-container {
     display: flex;
     justify-content: center;
     align-items: center;
     min-height: 100vh;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: 20px;
 }
 
 .login-box {
     background: white;
-    padding: 40px;
-    border-radius: 10px;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    padding: 40px 30px;
+    border-radius: 16px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
     width: 100%;
     max-width: 400px;
 }
@@ -31,13 +34,16 @@ body {
 .login-box h1 {
     text-align: center;
     color: #667eea;
-    margin-bottom: 10px;
+    font-size: 28px;
+    margin-bottom: 5px;
 }
 
 .login-box h2 {
     text-align: center;
+    color: #718096;
+    font-size: 18px;
+    font-weight: 400;
     margin-bottom: 30px;
-    color: #555;
 }
 
 .form-group {
@@ -46,54 +52,118 @@ body {
 
 .form-group label {
     display: block;
-    margin-bottom: 5px;
     font-weight: 600;
-    color: #555;
+    color: #4a5568;
+    margin-bottom: 5px;
+    font-size: 14px;
 }
 
 .form-group input {
     width: 100%;
-    padding: 10px;
-    border: 1px solid #ddd;
-    border-radius: 5px;
+    padding: 14px 16px;
+    border: 2px solid #e2e8f0;
+    border-radius: 10px;
     font-size: 16px;
     transition: border-color 0.3s;
+    -webkit-appearance: none;
 }
 
 .form-group input:focus {
     outline: none;
     border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
 }
 
 .btn-primary {
     width: 100%;
-    padding: 12px;
+    padding: 14px;
     background: #667eea;
     color: white;
     border: none;
-    border-radius: 5px;
-    font-size: 16px;
+    border-radius: 10px;
+    font-size: 18px;
     font-weight: 600;
     cursor: pointer;
     transition: background 0.3s;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .btn-primary:hover {
     background: #5a67d8;
 }
 
-.btn-secondary {
-    padding: 8px 16px;
-    background: #e2e8f0;
-    color: #4a5568;
-    border: none;
-    border-radius: 5px;
-    cursor: pointer;
-    transition: background 0.3s;
+.btn-primary:active {
+    transform: scale(0.98);
 }
 
-.btn-secondary:hover {
-    background: #cbd5e0;
+.error-message {
+    color: #e53e3e;
+    margin-top: 12px;
+    text-align: center;
+    font-weight: 500;
+}
+
+/* ============ DASHBOARD ============ */
+.dashboard {
+    min-height: 100vh;
+    padding-bottom: 80px;
+}
+
+.navbar {
+    background: white;
+    padding: 12px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.nav-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.nav-left h1 {
+    font-size: 18px;
+    color: #667eea;
+    white-space: nowrap;
+}
+
+.company-badge {
+    background: #667eea;
+    color: white;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.nav-right {
+    display: flex;
+    gap: 8px;
+}
+
+.btn-secondary {
+    padding: 8px 16px;
+    background: #edf2f7;
+    color: #4a5568;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    font-weight: 500;
+}
+
+.btn-secondary:active {
+    transform: scale(0.96);
 }
 
 .btn-success {
@@ -101,109 +171,73 @@ body {
     background: #48bb78;
     color: white;
     border: none;
-    border-radius: 5px;
-    cursor: pointer;
-    transition: background 0.3s;
-}
-
-.btn-success:hover {
-    background: #38a169;
-}
-
-.error-message {
-    color: #e53e3e;
-    margin-top: 10px;
-    text-align: center;
-}
-
-/* Dashboard styles */
-.dashboard {
-    min-height: 100vh;
-}
-
-.navbar {
-    background: white;
-    padding: 15px 30px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-    position: sticky;
-    top: 0;
-    z-index: 100;
-}
-
-.nav-left {
-    display: flex;
-    align-items: center;
-    gap: 20px;
-}
-
-.nav-left h1 {
-    font-size: 24px;
-    color: #667eea;
-}
-
-.company-badge {
-    background: #667eea;
-    color: white;
-    padding: 5px 15px;
-    border-radius: 20px;
+    border-radius: 8px;
     font-size: 14px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    font-weight: 500;
+}
+
+.btn-success:active {
+    transform: scale(0.96);
 }
 
 .dashboard-content {
-    padding: 20px;
-    max-width: 1400px;
+    padding: 12px 16px;
+    max-width: 800px;
     margin: 0 auto;
 }
 
 .panel {
     background: white;
-    border-radius: 10px;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-    margin-bottom: 20px;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    margin-bottom: 16px;
     overflow: hidden;
 }
 
 .panel-header {
-    padding: 20px;
+    padding: 14px 16px;
     background: #f7fafc;
     border-bottom: 1px solid #e2e8f0;
     display: flex;
     justify-content: space-between;
     align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
 }
 
 .panel-header h2 {
-    font-size: 18px;
+    font-size: 16px;
     color: #2d3748;
+    font-weight: 600;
 }
 
 .panel-body {
-    padding: 20px;
+    padding: 12px 16px;
 }
 
 .hidden {
     display: none !important;
 }
 
-/* Admin styles */
+/* ============ ADMIN ============ */
 .admin-section {
-    margin-bottom: 30px;
-    padding: 20px;
+    margin-bottom: 16px;
+    padding: 12px;
     background: #f7fafc;
     border-radius: 8px;
 }
 
 .admin-section h3 {
-    margin-bottom: 15px;
+    font-size: 14px;
     color: #2d3748;
+    margin-bottom: 10px;
 }
 
 .upload-form, .user-form {
     display: flex;
-    gap: 10px;
+    gap: 8px;
     flex-wrap: wrap;
 }
 
@@ -211,78 +245,103 @@ body {
     flex: 1;
     padding: 10px;
     border: 2px dashed #cbd5e0;
-    border-radius: 5px;
-    min-width: 200px;
+    border-radius: 8px;
+    font-size: 14px;
+    min-width: 150px;
+    background: white;
 }
 
 .upload-form button, .user-form button {
-    width: auto;
-    padding: 10px 20px;
+    padding: 10px 16px;
+    font-size: 14px;
 }
 
 .user-form input {
     flex: 1;
-    padding: 10px;
-    border: 1px solid #ddd;
-    border-radius: 5px;
-    min-width: 150px;
+    padding: 10px 12px;
+    border: 2px solid #e2e8f0;
+    border-radius: 8px;
+    font-size: 14px;
+    min-width: 120px;
+    background: white;
+}
+
+.user-form input:focus {
+    outline: none;
+    border-color: #667eea;
 }
 
 #usersList {
-    margin-top: 10px;
+    margin-top: 8px;
 }
 
 .user-item {
     display: flex;
     justify-content: space-between;
-    padding: 10px;
+    padding: 8px 0;
     border-bottom: 1px solid #e2e8f0;
+    font-size: 14px;
 }
 
-/* Search styles */
+/* ============ SEARCH ============ */
 .search-bar {
     display: flex;
-    gap: 10px;
+    gap: 8px;
     flex-wrap: wrap;
 }
 
 .search-bar input {
     flex: 1;
-    padding: 10px;
-    border: 1px solid #ddd;
-    border-radius: 5px;
+    padding: 12px 14px;
+    border: 2px solid #e2e8f0;
+    border-radius: 10px;
     font-size: 16px;
-    min-width: 200px;
+    min-width: 150px;
+    background: white;
+    -webkit-appearance: none;
+}
+
+.search-bar input:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
 }
 
 .search-bar button {
-    width: auto;
-    padding: 10px 20px;
+    padding: 12px 16px;
+    font-size: 14px;
+    white-space: nowrap;
 }
 
-/* Orders table */
+/* ============ ORDERS TABLE (MOBILNI) ============ */
 #ordersContainer {
     overflow-x: auto;
+    margin: 0 -4px;
 }
 
 table {
     width: 100%;
     border-collapse: collapse;
-    margin-top: 10px;
+    font-size: 14px;
+    min-width: 320px;
 }
 
 th {
     background: #f7fafc;
-    padding: 12px;
+    padding: 10px 8px;
     text-align: left;
     font-weight: 600;
     color: #4a5568;
     border-bottom: 2px solid #e2e8f0;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
 td {
-    padding: 12px;
+    padding: 10px 8px;
     border-bottom: 1px solid #e2e8f0;
+    vertical-align: middle;
 }
 
 tr:hover {
@@ -295,16 +354,17 @@ tr:hover {
     font-weight: 600;
 }
 
-.clickable:hover {
-    text-decoration: underline;
+.clickable:active {
+    opacity: 0.7;
 }
 
 .status-badge {
     display: inline-block;
-    padding: 3px 10px;
+    padding: 2px 10px;
     border-radius: 20px;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
+    white-space: nowrap;
 }
 
 .status-pending {
@@ -322,7 +382,27 @@ tr:hover {
     color: #9b2c2c;
 }
 
-/* Modal styles */
+/* ============ MOBILNA TABELA ============ */
+@media (max-width: 600px) {
+    table {
+        font-size: 13px;
+        min-width: unset;
+    }
+    
+    th, td {
+        padding: 8px 6px;
+    }
+    
+    th {
+        font-size: 10px;
+    }
+    
+    .hide-mobile {
+        display: none;
+    }
+}
+
+/* ============ MODAL ============ */
 .modal {
     position: fixed;
     top: 0;
@@ -334,94 +414,103 @@ tr:hover {
     justify-content: center;
     align-items: center;
     z-index: 1000;
+    padding: 16px;
 }
 
 .modal-content {
     background: white;
-    padding: 30px;
-    border-radius: 10px;
-    max-width: 700px;
-    width: 90%;
-    max-height: 80vh;
+    padding: 24px 20px;
+    border-radius: 16px;
+    max-width: 600px;
+    width: 100%;
+    max-height: 90vh;
     overflow-y: auto;
     position: relative;
 }
 
 .close-modal {
     position: absolute;
-    top: 15px;
-    right: 20px;
-    font-size: 30px;
+    top: 12px;
+    right: 16px;
+    font-size: 28px;
     cursor: pointer;
     color: #a0aec0;
-    transition: color 0.3s;
+    font-weight: 300;
 }
 
-.close-modal:hover {
+.close-modal:active {
     color: #4a5568;
 }
 
 .order-info {
     background: #f7fafc;
-    padding: 15px;
+    padding: 12px 16px;
     border-radius: 8px;
-    margin: 15px 0;
+    margin: 12px 0;
+    font-size: 14px;
+}
+
+.order-info p {
+    margin: 4px 0;
 }
 
 .phases-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    gap: 15px;
-    margin-top: 20px;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+@media (max-width: 480px) {
+    .phases-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 .phase-card {
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    padding: 15px;
+    border: 2px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 12px;
     text-align: center;
-    transition: all 0.3s;
+    background: white;
 }
 
 .phase-card h4 {
-    margin-bottom: 10px;
+    font-size: 14px;
     color: #2d3748;
+    margin-bottom: 6px;
 }
 
 .phase-card .phase-status {
-    margin: 10px 0;
+    font-size: 20px;
+    margin: 4px 0;
 }
 
-.phase-card .phase-comment {
-    margin-top: 10px;
-}
-
-.phase-card .phase-comment textarea {
-    width: 100%;
-    padding: 5px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    resize: vertical;
-    min-height: 50px;
-    font-size: 14px;
+.phase-card .phase-status div {
+    font-size: 12px;
+    color: #4a5568;
 }
 
 .phase-buttons {
     display: flex;
-    gap: 5px;
-    flex-wrap: wrap;
+    gap: 4px;
     justify-content: center;
-    margin-top: 10px;
+    flex-wrap: wrap;
+    margin: 8px 0;
 }
 
 .phase-buttons button {
-    padding: 5px 12px;
+    padding: 6px 10px;
     border: none;
-    border-radius: 4px;
+    border-radius: 6px;
     cursor: pointer;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
-    transition: all 0.3s;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.phase-buttons button:active {
+    transform: scale(0.95);
 }
 
 .btn-phase-complete {
@@ -429,17 +518,9 @@ tr:hover {
     color: white;
 }
 
-.btn-phase-complete:hover {
-    background: #38a169;
-}
-
 .btn-phase-problem {
     background: #fc8181;
     color: white;
-}
-
-.btn-phase-problem:hover {
-    background: #f56565;
 }
 
 .btn-phase-pending {
@@ -447,14 +528,24 @@ tr:hover {
     color: #4a5568;
 }
 
-.btn-phase-pending:hover {
-    background: #cbd5e0;
+.phase-comment textarea {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    min-height: 40px;
+    font-size: 13px;
+    resize: vertical;
+    font-family: inherit;
+    background: #f7fafc;
 }
 
-.loading {
-    text-align: center;
-    padding: 40px;
-    color: #a0aec0;
+/* ============ STATUS PORUKE ============ */
+#uploadStatus, #userStatus {
+    margin-top: 8px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 14px;
 }
 
 .success {
@@ -467,33 +558,106 @@ tr:hover {
     color: #9b2c2c;
 }
 
-#uploadStatus, #userStatus {
-    margin-top: 10px;
-    padding: 10px;
-    border-radius: 5px;
+.loading {
+    text-align: center;
+    padding: 30px;
+    color: #a0aec0;
 }
 
-@media (max-width: 768px) {
-    .navbar {
-        flex-direction: column;
-        gap: 10px;
+/* ============ PAGINACIJA ============ */
+.pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+    padding: 12px;
+    border-top: 1px solid #e2e8f0;
+    flex-wrap: wrap;
+}
+
+.pagination button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    background: #667eea;
+    color: white;
+}
+
+.pagination button:disabled {
+    background: #e2e8f0;
+    color: #a0aec0;
+    cursor: not-allowed;
+}
+
+.pagination span {
+    color: #4a5568;
+    font-weight: 500;
+    font-size: 14px;
+}
+
+/* ============ POBOLJŠANJA ZA TELEFONE ============ */
+@media (max-width: 480px) {
+    .login-box {
+        padding: 30px 20px;
+    }
+    
+    .login-box h1 {
+        font-size: 24px;
+    }
+    
+    .dashboard-content {
+        padding: 8px 10px;
+    }
+    
+    .panel-header {
+        padding: 10px 12px;
+    }
+    
+    .panel-body {
+        padding: 8px 10px;
+    }
+    
+    .search-bar input {
+        font-size: 16px;
+        padding: 14px;
+    }
+    
+    .btn-primary {
+        font-size: 16px;
+        padding: 16px;
+    }
+    
+    table {
+        font-size: 12px;
+    }
+    
+    th, td {
+        padding: 6px 4px;
+    }
+    
+    .modal-content {
+        padding: 16px 14px;
+    }
+    
+    .phase-card {
         padding: 10px;
     }
-    
-    .nav-left {
-        flex-direction: column;
-        gap: 10px;
-    }
-    
-    .search-bar {
-        flex-direction: column;
-    }
-    
-    .upload-form, .user-form {
-        flex-direction: column;
-    }
-    
-    .phases-grid {
-        grid-template-columns: 1fr;
-    }
+}
+
+/* ============ SCROLL ============ */
+::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f7fafc;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #cbd5e0;
+    border-radius: 4px;
 }
