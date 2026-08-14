@@ -174,7 +174,7 @@ const authenticate = (req, res, next) => {
     }
 };
 
-// ============ EMAIL TRANSPORTER - SA TIMEOUT-OM ============
+// ============ EMAIL TRANSPORTER ============
 let transporter = null;
 try {
     if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
@@ -191,8 +191,6 @@ try {
         console.log('📧 Email transporter: ✅ Kreiran');
     } else {
         console.log('📧 Email transporter: ❌ Nije kreiran');
-        console.log('   💡 EMAIL_USER:', process.env.EMAIL_USER || 'nije postavljen');
-        console.log('   💡 EMAIL_PASS:', process.env.EMAIL_PASS ? 'postavljen' : 'nije postavljen');
     }
 } catch (error) {
     console.log('📧 Email transporter: ❌ Greška:', error.message);
@@ -207,7 +205,6 @@ app.post('/api/login', async (req, res) => {
         const users = readData(USERS_FILE);
         
         console.log('🔐 Pokušaj logina:', username);
-        console.log('📄 Korisnici u bazi:', users.map(u => u.username));
         
         const user = users.find(u => u.username === username);
 
@@ -283,20 +280,38 @@ app.post('/api/users', authenticate, async (req, res) => {
     }
 });
 
-// UPLOAD EXCEL
+// ============ UPLOAD EXCEL - OPTIMIZOVANO ZA VELIKE FAJLOVE ============
 app.post('/api/upload', authenticate, upload.single('file'), (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
     }
     try {
         const filePath = req.file.path;
-        const workbook = XLSX.readFile(filePath, { cellDates: true, cellNF: false, cellText: false });
+        console.log('📂 Fajl primljen:', req.file.originalname);
+        console.log('📏 Veličina fajla:', req.file.size, 'bajtova');
+        
+        const workbook = XLSX.readFile(filePath, { 
+            cellDates: true,
+            cellNF: false,
+            cellText: false,
+            dense: false,
+            codepage: 65001
+        });
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
-        const data = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
-
-        console.log('📊 Pronađene kolone:', Object.keys(data[0] || {}));
+        
+        const data = XLSX.utils.sheet_to_json(sheet, { 
+            defval: '',
+            raw: false
+        });
+        
         console.log('📊 Ukupno redova:', data.length);
+
+        // BATCH PROCESIRANJE - 500 po batch-u
+        const BATCH_SIZE = 500;
+        let processedCount = 0;
+        let allOrders = [];
+        let allProgress = [];
 
         const findValue = (row, keys) => {
             for (let key of keys) {
@@ -307,11 +322,19 @@ app.post('/api/upload', authenticate, upload.single('file'), (req, res) => {
             return '';
         };
 
-        const allOrders = [];
-        const allProgress = [];
+        const saveBatch = (orders, progress) => {
+            const existingOrders = readData(ORDERS_FILE);
+            const existingProgress = readData(PROGRESS_FILE);
+            const combinedOrders = [...existingOrders, ...orders];
+            const combinedProgress = [...existingProgress, ...progress];
+            fs.writeFileSync(ORDERS_FILE, JSON.stringify(combinedOrders, null, 2));
+            fs.writeFileSync(PROGRESS_FILE, JSON.stringify(combinedProgress, null, 2));
+            invalidateCache();
+        };
 
         for (let i = 0; i < data.length; i++) {
             const row = data[i];
+            
             const order = {
                 id: Date.now() + i,
                 company: findValue(row, ['ime firme', 'IME FIRME', 'Firma', 'firma', 'Ime firme', 'Company', 'company', 'Naziv firme']),
@@ -328,28 +351,36 @@ app.post('/api/upload', authenticate, upload.single('file'), (req, res) => {
                     { phase: '500', status: 'pending', comment: '' }
                 ]
             };
+            
             if (order.company || order.code || order.orderNumber) {
                 allOrders.push(order);
                 allProgress.push({
                     orderId: order.id,
                     phases: order.phases.map(p => ({ ...p }))
                 });
+                processedCount++;
+            }
+            
+            // Sačuvaj batch i oslobodi memoriju
+            if (allOrders.length >= BATCH_SIZE) {
+                saveBatch(allOrders, allProgress);
+                allOrders = [];
+                allProgress = [];
+                console.log(`📦 Batch sačuvan: ${processedCount} redova`);
             }
         }
-
-        console.log('📦 Učitano naloga:', allOrders.length);
-
-        const existingOrders = readData(ORDERS_FILE);
-        const existingProgress = readData(PROGRESS_FILE);
-        const combinedOrders = [...existingOrders, ...allOrders];
-        const combinedProgress = [...existingProgress, ...allProgress];
-        fs.writeFileSync(ORDERS_FILE, JSON.stringify(combinedOrders, null, 2));
-        fs.writeFileSync(PROGRESS_FILE, JSON.stringify(combinedProgress, null, 2));
-        invalidateCache();
+        
+        // Sačuvaj ostatak
+        if (allOrders.length > 0) {
+            saveBatch(allOrders, allProgress);
+            console.log(`📦 Završni batch sačuvan: ${processedCount} redova`);
+        }
+        
+        console.log(`📦 UKUPNO UČITANO: ${processedCount} naloga`);
 
         res.json({
-            message: `✅ Uspešno učitano ${allOrders.length} naloga`,
-            count: allOrders.length,
+            message: `✅ Uspešno učitano ${processedCount} naloga od ${data.length} redova`,
+            count: processedCount,
             totalRows: data.length
         });
     } catch (error) {
@@ -445,14 +476,14 @@ app.post('/api/update-phase', authenticate, (req, res) => {
     }
 });
 
-// ============ SEND REPORT - SA TIMEOUT-OM (NE BLOKIRA) ============
+// SEND REPORT
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
         console.log('📧 ZAPOCINJEM SLANJE IZVESTAJA...');
         
         if (!transporter) {
             console.log('❌ Email transporter nije kreiran!');
-            return res.status(400).json({ error: 'Email not configured. Add EMAIL_USER and EMAIL_PASS to .env file' });
+            return res.status(400).json({ error: 'Email not configured' });
         }
 
         const { email, date } = req.body;
@@ -489,23 +520,22 @@ app.post('/api/send-report', authenticate, async (req, res) => {
 
         console.log(`📊 Aktivnih naloga: ${activeOrders.length}`);
 
-        // Ako nema aktivnosti - pošalji email sa timeout-om
+        // Ako nema aktivnosti
         if (activeOrders.length === 0) {
-            console.log('📧 Nema aktivnosti, saljem email...');
             try {
-                const result = await Promise.race([
+                await Promise.race([
                     transporter.sendMail({
                         from: process.env.EMAIL_USER,
                         to: email || process.env.ADMIN_EMAIL,
                         subject: `📊 Dnevni izveštaj - ${req.user.company} - ${today}`,
-                        text: `Poštovani,\n\nDana ${today} nema novih aktivnosti za firmu ${req.user.company}.\n\nSve faze su na čekanju.\n\nS poštovanjem,\nProduction Tracker`
+                        text: `Poštovani,\n\nDana ${today} nema novih aktivnosti.\n\nS poštovanjem,\nProduction Tracker`
                     }),
                     new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 15000))
                 ]);
                 console.log('✅ Email poslat (nema aktivnosti)');
                 return res.json({ message: '✅ Nema aktivnosti, izveštaj poslat.' });
             } catch (err) {
-                console.log('⚠️ Email nije poslat (timeout), ali aplikacija nastavlja');
+                console.log('⚠️ Email timeout, ali aplikacija nastavlja');
                 return res.json({ message: '⚠️ Izveštaj generisan, ali email nije poslat (timeout).' });
             }
         }
@@ -603,32 +633,26 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         const buffer = await workbook.xlsx.writeBuffer();
         console.log('✅ Excel kreiran, velicina:', buffer.length, 'bajtova');
 
-        // POŠALJI EMAIL SA TIMEOUT-OM - NE BLOKIRA!
-        console.log('📧 Saljem email sa timeout-om (15s)...');
-        
+        // Pošalji email sa timeout-om
+        console.log('📧 Saljem email...');
         try {
-            const result = await Promise.race([
+            await Promise.race([
                 transporter.sendMail({
                     from: process.env.EMAIL_USER,
                     to: email || process.env.ADMIN_EMAIL,
                     subject: `📊 Dnevni izveštaj - ${req.user.company} - ${today}`,
-                    text: `Poštovani,\n\nU prilogu je dnevni izveštaj za firmu ${req.user.company} (${activeOrders.length} aktivnih naloga).\n\nS poštovanjem,\nProduction Tracker`,
+                    text: `Poštovani,\n\nU prilogu je dnevni izveštaj (${activeOrders.length} aktivnih naloga).\n\nS poštovanjem,\nProduction Tracker`,
                     attachments: [{
                         filename: `Izvestaj_${req.user.company}_${today.replace(/\./g, '-')}.xlsx`,
                         content: buffer
                     }]
                 }),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT - email nije poslat za 15 sekundi')), 15000))
+                new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 15000))
             ]);
-            
             console.log('✅ Email POSLAT!');
-            res.json({ 
-                message: '✅ Izveštaj poslat!', 
-                activeCount: activeOrders.length 
-            });
+            res.json({ message: '✅ Izveštaj poslat!', activeCount: activeOrders.length });
         } catch (emailError) {
-            console.error('❌ Greska pri slanju email-a (timeout):', emailError.message);
-            // VAŽNO: Vraćamo uspeh iako email nije poslat - aplikacija ne sme da se blokira!
+            console.log('⚠️ Email timeout, ali aplikacija nastavlja');
             res.json({ 
                 message: '⚠️ Izveštaj generisan, ali email nije poslat (timeout). Proverite email podešavanja.', 
                 activeCount: activeOrders.length 
