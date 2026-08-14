@@ -146,11 +146,15 @@ try {
                 user: process.env.EMAIL_USER,
                 pass: process.env.EMAIL_PASS
             },
-            connectionTimeout: 5000,
-            greetingTimeout: 5000,
-            socketTimeout: 10000
+            connectionTimeout: 10000,
+            greetingTimeout: 10000,
+            socketTimeout: 15000
         });
         console.log('📧 Email transporter: ✅');
+    } else {
+        console.log('📧 Email transporter: ❌ Nije konfigurisan');
+        console.log('   💡 EMAIL_USER:', process.env.EMAIL_USER || 'nije postavljen');
+        console.log('   💡 EMAIL_PASS:', process.env.EMAIL_PASS ? 'postavljen' : 'nije postavljen');
     }
 } catch (e) { console.log('📧 Email: ❌', e.message); }
 
@@ -357,6 +361,49 @@ app.post('/api/update-phase', authenticate, (req, res) => {
     }
 });
 
+// ============ TEST EMAIL RUTA ============
+app.get('/api/test-email', authenticate, async (req, res) => {
+    try {
+        console.log('📧 TEST EMAIL - ZAPOCINJEM...');
+        
+        if (!transporter) {
+            console.log('❌ Transporter nije kreiran');
+            return res.status(400).json({ 
+                error: 'Email not configured',
+                details: 'EMAIL_USER ili EMAIL_PASS nedostaju'
+            });
+        }
+
+        console.log('📧 Saljem test email na:', process.env.ADMIN_EMAIL || 'grupkovic@gmail.com');
+        console.log('📧 Sa:', process.env.EMAIL_USER);
+
+        const result = await transporter.sendMail({
+            from: process.env.EMAIL_USER,
+            to: process.env.ADMIN_EMAIL || 'grupkovic@gmail.com',
+            subject: '🧪 Test email sa Render-a',
+            text: `Ovo je test email.\n\nAko ste dobili ovo, email radi!\n\nVreme: ${new Date().toLocaleString()}`
+        });
+
+        console.log('✅ TEST EMAIL POSLAT!');
+        console.log('   📧 Message ID:', result.messageId);
+        console.log('   📧 Response:', result.response);
+
+        res.json({ 
+            success: true, 
+            messageId: result.messageId,
+            response: result.response
+        });
+    } catch (error) {
+        console.error('❌ TEST EMAIL FAILED:');
+        console.error('   📧 Poruka:', error.message);
+        console.error('   📧 Stack:', error.stack);
+        res.status(500).json({ 
+            error: error.message,
+            stack: error.stack
+        });
+    }
+});
+
 // ============ SEND REPORT ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
@@ -409,7 +456,7 @@ app.post('/api/send-report', authenticate, async (req, res) => {
                         subject: `📊 Dnevni izveštaj - ${req.user.company} - ${today}`,
                         text: `Poštovani,\n\nDana ${today} nema novih aktivnosti.\n\nS poštovanjem,\nProduction Tracker`
                     }),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 10000))
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000))
                 ]);
                 console.log('✅ Email poslat (nema aktivnosti)');
                 return res.json({ message: '✅ Izveštaj poslat (nema aktivnosti)' });
@@ -548,4 +595,6 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📊 Cache: ${CACHE_TTL/1000}s`);
     console.log(`📧 Email: ${transporter ? '✅' : '❌'}`);
+    console.log(`📄 Data folder: ${dataDir}`);
+    console.log(`🌐 Frontend folder: ${path.join(__dirname, '../frontend')}`);
 });
