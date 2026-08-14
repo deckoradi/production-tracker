@@ -13,9 +13,9 @@ const ExcelJS = require('exceljs');
 const dotenv = require('dotenv');
 dotenv.config({ path: path.join(__dirname, '.env') });
 
-console.log('📧 EMAIL_USER:', process.env.EMAIL_USER ? '✅ Postavljen' : '❌ NIJE postavljen');
-console.log('📧 EMAIL_PASS:', process.env.EMAIL_PASS ? '✅ Postavljen' : '❌ NIJE postavljen');
-console.log('📧 ADMIN_EMAIL:', process.env.ADMIN_EMAIL ? '✅ Postavljen' : '❌ NIJE postavljen');
+console.log('📧 EMAIL_USER:', process.env.EMAIL_USER ? '✅' : '❌');
+console.log('📧 EMAIL_PASS:', process.env.EMAIL_PASS ? '✅' : '❌');
+console.log('📧 ADMIN_EMAIL:', process.env.ADMIN_EMAIL ? '✅' : '❌');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -30,7 +30,8 @@ app.use(cors({
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ============ ROOT ROUTE ============
 app.get('/', (req, res) => {
@@ -48,35 +49,25 @@ const ORDERS_FILE = path.join(dataDir, 'orders.json');
 const PROGRESS_FILE = path.join(dataDir, 'progress.json');
 
 // ============ INICIJALIZACIJA FAJLOVA ============
-if (!fs.existsSync(USERS_FILE)) {
-    fs.writeFileSync(USERS_FILE, JSON.stringify([]));
-}
-if (!fs.existsSync(ORDERS_FILE)) {
-    fs.writeFileSync(ORDERS_FILE, JSON.stringify([]));
-}
-if (!fs.existsSync(PROGRESS_FILE)) {
-    fs.writeFileSync(PROGRESS_FILE, JSON.stringify([]));
-}
+if (!fs.existsSync(USERS_FILE)) fs.writeFileSync(USERS_FILE, JSON.stringify([]));
+if (!fs.existsSync(ORDERS_FILE)) fs.writeFileSync(ORDERS_FILE, JSON.stringify([]));
+if (!fs.existsSync(PROGRESS_FILE)) fs.writeFileSync(PROGRESS_FILE, JSON.stringify([]));
 
 // ============ HELPER FUNKCIJE ============
 const readData = (file) => {
-    try {
-        return JSON.parse(fs.readFileSync(file, 'utf8'));
-    } catch (error) {
-        return [];
-    }
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } 
+    catch (e) { return []; }
 };
 
 const writeData = (file, data) => {
     fs.writeFileSync(file, JSON.stringify(data, null, 2));
-    invalidateCache();
 };
 
-// ============ CACHE ============
+// ============ BRZI CACHE ============
 let ordersCache = null;
 let progressCache = null;
 let lastCacheUpdate = 0;
-const CACHE_TTL = 5000;
+const CACHE_TTL = 3000;
 
 const getCachedData = () => {
     const now = Date.now();
@@ -95,82 +86,53 @@ const invalidateCache = () => {
     lastCacheUpdate = 0;
 };
 
-// ============ DIREKTNO KREIRANJE ADMIN KORISNIKA ============
+// ============ KREIRANJE ADMIN KORISNIKA ============
 const ensureAdmin = () => {
     try {
-        console.log('🔧 Proveravam admin korisnika...');
-        
-        const adminData = [{
-            id: 1,
-            username: 'admin',
-            password: bcrypt.hashSync('admin123', 10),
-            role: 'admin',
-            company: 'Administrator'
-        }];
-        
-        if (fs.existsSync(USERS_FILE)) {
-            try {
-                const content = fs.readFileSync(USERS_FILE, 'utf8');
-                const users = JSON.parse(content);
-                const adminExists = users.find(u => u.username === 'admin');
-                if (adminExists) {
-                    console.log('✅ Admin korisnik već postoji');
-                    return;
-                }
-            } catch (e) {
-                console.log('⚠️ users.json nije validan, kreiram novi');
-            }
+        const users = readData(USERS_FILE);
+        if (!users.find(u => u.username === 'admin')) {
+            console.log('👤 Kreiram admin korisnika...');
+            users.push({
+                id: users.length + 1,
+                username: 'admin',
+                password: bcrypt.hashSync('admin123', 10),
+                role: 'admin',
+                company: 'Administrator'
+            });
+            writeData(USERS_FILE, users);
+            console.log('✅ Admin kreiran: admin / admin123');
         }
-        
-        console.log('👤 Kreiram admin korisnika...');
-        fs.writeFileSync(USERS_FILE, JSON.stringify(adminData, null, 2));
-        console.log('✅ Admin korisnik kreiran!');
-        console.log('   👤 Username: admin');
-        console.log('   🔑 Lozinka: admin123');
-        
-    } catch (error) {
-        console.log('❌ Greška pri kreiranju admina:', error.message);
-    }
+    } catch (e) { console.log('❌ Greška pri kreiranju admina:', e.message); }
 };
-
-// ============ KREIRAJ ADMINA ============
-console.log('🔧 Inicijalizacija...');
 ensureAdmin();
 
-// ============ MULTER SETUP ============
+// ============ MULTER ============
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, uploadsDir);
-    },
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + '-' + file.originalname);
-    }
+    destination: (req, file, cb) => cb(null, uploadsDir),
+    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
 });
 
 const upload = multer({
     storage: storage,
-    limits: { fileSize: 50 * 1024 * 1024 },
+    limits: { fileSize: 100 * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
         const ext = path.extname(file.originalname);
         if (ext !== '.xlsx' && ext !== '.xls') {
-            return cb(new Error('Only Excel files are allowed'));
+            return cb(new Error('Only Excel files'));
         }
         cb(null, true);
     }
 });
 
-// ============ AUTHENTICATION MIDDLEWARE ============
+// ============ AUTH ============
 const authenticate = (req, res, next) => {
     const token = req.headers.authorization?.split(' ')[1];
-    if (!token) {
-        return res.status(401).json({ error: 'No token provided' });
-    }
+    if (!token) return res.status(401).json({ error: 'No token' });
     try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default_secret_key');
-        req.user = decoded;
+        req.user = jwt.verify(token, process.env.JWT_SECRET || 'secret');
         next();
-    } catch (error) {
-        return res.status(401).json({ error: 'Invalid token' });
+    } catch (e) {
+        res.status(401).json({ error: 'Invalid token' });
     }
 };
 
@@ -184,17 +146,13 @@ try {
                 user: process.env.EMAIL_USER,
                 pass: process.env.EMAIL_PASS
             },
-            connectionTimeout: 10000,
-            greetingTimeout: 10000,
-            socketTimeout: 15000
+            connectionTimeout: 5000,
+            greetingTimeout: 5000,
+            socketTimeout: 10000
         });
-        console.log('📧 Email transporter: ✅ Kreiran');
-    } else {
-        console.log('📧 Email transporter: ❌ Nije kreiran');
+        console.log('📧 Email transporter: ✅');
     }
-} catch (error) {
-    console.log('📧 Email transporter: ❌ Greška:', error.message);
-}
+} catch (e) { console.log('📧 Email: ❌', e.message); }
 
 // ============ ROUTES ============
 
@@ -203,59 +161,32 @@ app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
         const users = readData(USERS_FILE);
-        
-        console.log('🔐 Pokušaj logina:', username);
-        
         const user = users.find(u => u.username === username);
-
-        if (!user) {
-            console.log('❌ Korisnik nije pronađen:', username);
+        if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+        if (!await bcrypt.compare(password, user.password)) {
             return res.status(401).json({ error: 'Invalid credentials' });
         }
-
-        const validPassword = await bcrypt.compare(password, user.password);
-        if (!validPassword) {
-            console.log('❌ Pogrešna lozinka za:', username);
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
-
-        console.log('✅ Login uspešan:', username);
-
         const token = jwt.sign(
             { id: user.id, username: user.username, role: user.role, company: user.company },
-            process.env.JWT_SECRET || 'default_secret_key',
+            process.env.JWT_SECRET || 'secret',
             { expiresIn: '24h' }
         );
-
-        res.json({
-            token,
-            user: {
-                id: user.id,
-                username: user.username,
-                role: user.role,
-                company: user.company
-            }
-        });
-    } catch (error) {
-        console.error('❌ Login error:', error);
-        res.status(500).json({ error: error.message });
+        res.json({ token, user: { id: user.id, username: user.username, role: user.role, company: user.company } });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 
 // GET USERS
 app.get('/api/users', authenticate, (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
-    }
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
     const users = readData(USERS_FILE);
     res.json(users.map(u => ({ ...u, password: undefined })));
 });
 
 // CREATE USER
 app.post('/api/users', authenticate, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
-    }
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
     try {
         const { username, company } = req.body;
         const users = readData(USERS_FILE);
@@ -271,45 +202,29 @@ app.post('/api/users', authenticate, async (req, res) => {
         };
         users.push(newUser);
         writeData(USERS_FILE, users);
-        res.status(201).json({
-            message: 'User created successfully',
-            user: { ...newUser, password: undefined }
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(201).json({ message: 'User created', user: { ...newUser, password: undefined } });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 
-// ============ UPLOAD EXCEL - OPTIMIZOVANO ZA VELIKE FAJLOVE ============
+// ============ UPLOAD - OPTIMIZOVANO ============
 app.post('/api/upload', authenticate, upload.single('file'), (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
     }
     try {
         const filePath = req.file.path;
-        console.log('📂 Fajl primljen:', req.file.originalname);
-        console.log('📏 Veličina fajla:', req.file.size, 'bajtova');
+        console.log('📂 Fajl:', req.file.originalname, req.file.size, 'bajtova');
         
-        const workbook = XLSX.readFile(filePath, { 
-            cellDates: true,
-            cellNF: false,
-            cellText: false,
-            dense: false,
-            codepage: 65001
-        });
-        const sheetName = workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
+        const workbook = XLSX.readFile(filePath, { cellDates: true, cellNF: false, cellText: false });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
         
-        const data = XLSX.utils.sheet_to_json(sheet, { 
-            defval: '',
-            raw: false
-        });
-        
-        console.log('📊 Ukupno redova:', data.length);
+        console.log('📊 Redova:', data.length);
 
-        // BATCH PROCESIRANJE - 500 po batch-u
-        const BATCH_SIZE = 500;
-        let processedCount = 0;
+        const BATCH_SIZE = 200;
+        let processed = 0;
         let allOrders = [];
         let allProgress = [];
 
@@ -327,14 +242,13 @@ app.post('/api/upload', authenticate, upload.single('file'), (req, res) => {
             const existingProgress = readData(PROGRESS_FILE);
             const combinedOrders = [...existingOrders, ...orders];
             const combinedProgress = [...existingProgress, ...progress];
-            fs.writeFileSync(ORDERS_FILE, JSON.stringify(combinedOrders, null, 2));
-            fs.writeFileSync(PROGRESS_FILE, JSON.stringify(combinedProgress, null, 2));
+            writeData(ORDERS_FILE, combinedOrders);
+            writeData(PROGRESS_FILE, combinedProgress);
             invalidateCache();
         };
 
         for (let i = 0; i < data.length; i++) {
             const row = data[i];
-            
             const order = {
                 id: Date.now() + i,
                 company: findValue(row, ['ime firme', 'IME FIRME', 'Firma', 'firma', 'Ime firme', 'Company', 'company', 'Naziv firme']),
@@ -351,41 +265,28 @@ app.post('/api/upload', authenticate, upload.single('file'), (req, res) => {
                     { phase: '500', status: 'pending', comment: '' }
                 ]
             };
-            
             if (order.company || order.code || order.orderNumber) {
                 allOrders.push(order);
-                allProgress.push({
-                    orderId: order.id,
-                    phases: order.phases.map(p => ({ ...p }))
-                });
-                processedCount++;
+                allProgress.push({ orderId: order.id, phases: order.phases.map(p => ({ ...p })) });
+                processed++;
             }
-            
-            // Sačuvaj batch i oslobodi memoriju
             if (allOrders.length >= BATCH_SIZE) {
                 saveBatch(allOrders, allProgress);
                 allOrders = [];
                 allProgress = [];
-                console.log(`📦 Batch sačuvan: ${processedCount} redova`);
+                console.log(`📦 Batch: ${processed}`);
             }
         }
-        
-        // Sačuvaj ostatak
         if (allOrders.length > 0) {
             saveBatch(allOrders, allProgress);
-            console.log(`📦 Završni batch sačuvan: ${processedCount} redova`);
+            console.log(`📦 Završni batch: ${processed}`);
         }
         
-        console.log(`📦 UKUPNO UČITANO: ${processedCount} naloga`);
-
-        res.json({
-            message: `✅ Uspešno učitano ${processedCount} naloga od ${data.length} redova`,
-            count: processedCount,
-            totalRows: data.length
-        });
-    } catch (error) {
-        console.error('❌ Upload error:', error);
-        res.status(500).json({ error: error.message });
+        console.log(`📦 UKUPNO: ${processed} naloga`);
+        res.json({ message: `✅ Učitano ${processed} naloga`, count: processed, totalRows: data.length });
+    } catch (e) {
+        console.error('❌ Upload error:', e);
+        res.status(500).json({ error: e.message });
     }
 });
 
@@ -394,52 +295,36 @@ app.get('/api/orders', authenticate, (req, res) => {
     try {
         const { orders, progress } = getCachedData();
         const { search, page = 1, limit = 100 } = req.query;
-
-        let filteredOrders = orders;
+        let filtered = orders;
         if (req.user.role !== 'admin') {
-            filteredOrders = orders.filter(o => o.company === req.user.company);
+            filtered = orders.filter(o => o.company === req.user.company);
         }
-
         if (search) {
-            const searchLower = search.toLowerCase();
-            filteredOrders = filteredOrders.filter(o =>
-                (o.company || '').toLowerCase().includes(searchLower) ||
-                (o.code || '').toLowerCase().includes(searchLower) ||
-                (o.name || '').toLowerCase().includes(searchLower) ||
-                (o.orderNumber || '').toLowerCase().includes(searchLower)
+            const s = search.toLowerCase();
+            filtered = filtered.filter(o =>
+                (o.company || '').toLowerCase().includes(s) ||
+                (o.code || '').toLowerCase().includes(s) ||
+                (o.name || '').toLowerCase().includes(s) ||
+                (o.orderNumber || '').toLowerCase().includes(s)
             );
         }
-
-        const pageNum = parseInt(page);
-        const limitNum = parseInt(limit);
-        const startIndex = (pageNum - 1) * limitNum;
-        const endIndex = startIndex + limitNum;
-        const paginatedOrders = filteredOrders.slice(startIndex, endIndex);
-
-        const result = paginatedOrders.map(order => {
-            const orderProgress = progress.find(p => p.orderId === order.id);
-            return {
-                ...order,
-                progress: orderProgress ? orderProgress.phases : order.phases || [
-                    { phase: '100', status: 'pending', comment: '' },
-                    { phase: '200', status: 'pending', comment: '' },
-                    { phase: '300', status: 'pending', comment: '' },
-                    { phase: '400', status: 'pending', comment: '' },
-                    { phase: '500', status: 'pending', comment: '' }
-                ]
-            };
+        const p = parseInt(page), l = parseInt(limit);
+        const start = (p - 1) * l;
+        const paginated = filtered.slice(start, start + l);
+        const result = paginated.map(o => {
+            const pr = progress.find(p => p.orderId === o.id);
+            return { ...o, progress: pr ? pr.phases : o.phases };
         });
-
         res.json({
             data: result,
-            total: filteredOrders.length,
-            page: pageNum,
-            limit: limitNum,
-            totalPages: Math.ceil(filteredOrders.length / limitNum)
+            total: filtered.length,
+            page: p,
+            limit: l,
+            totalPages: Math.ceil(filtered.length / l)
         });
-    } catch (error) {
-        console.error('❌ Orders error:', error);
-        res.status(500).json({ error: error.message });
+    } catch (e) {
+        console.error('❌ Orders error:', e);
+        res.status(500).json({ error: e.message });
     }
 });
 
@@ -448,41 +333,37 @@ app.post('/api/update-phase', authenticate, (req, res) => {
     try {
         const { orderId, phase, status, comment } = req.body;
         const progress = readData(PROGRESS_FILE);
-        let orderProgress = progress.find(p => p.orderId === orderId);
-        if (!orderProgress) {
-            orderProgress = {
-                orderId,
-                phases: [
-                    { phase: '100', status: 'pending', comment: '' },
-                    { phase: '200', status: 'pending', comment: '' },
-                    { phase: '300', status: 'pending', comment: '' },
-                    { phase: '400', status: 'pending', comment: '' },
-                    { phase: '500', status: 'pending', comment: '' }
-                ]
-            };
-            progress.push(orderProgress);
+        let op = progress.find(p => p.orderId === orderId);
+        if (!op) {
+            op = { orderId, phases: [
+                { phase: '100', status: 'pending', comment: '' },
+                { phase: '200', status: 'pending', comment: '' },
+                { phase: '300', status: 'pending', comment: '' },
+                { phase: '400', status: 'pending', comment: '' },
+                { phase: '500', status: 'pending', comment: '' }
+            ]};
+            progress.push(op);
         }
-        const phaseData = orderProgress.phases.find(p => p.phase === phase);
-        if (phaseData) {
-            phaseData.status = status;
-            if (comment !== undefined) {
-                phaseData.comment = comment;
-            }
+        const pd = op.phases.find(p => p.phase === phase);
+        if (pd) {
+            pd.status = status;
+            if (comment !== undefined) pd.comment = comment;
         }
         writeData(PROGRESS_FILE, progress);
-        res.json({ message: 'Phase updated successfully' });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+        invalidateCache();
+        res.json({ message: 'Phase updated' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 
-// SEND REPORT
+// ============ SEND REPORT ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
-        console.log('📧 ZAPOCINJEM SLANJE IZVESTAJA...');
+        console.log('📧 Slanje izveštaja...');
         
         if (!transporter) {
-            console.log('❌ Email transporter nije kreiran!');
+            console.log('❌ Email nije konfigurisan');
             return res.status(400).json({ error: 'Email not configured' });
         }
 
@@ -492,19 +373,18 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         const progress = readData(PROGRESS_FILE);
 
         const userOrders = orders.filter(o => o.company === req.user.company);
-        console.log(`📦 Korisnik ima ${userOrders.length} naloga`);
-        
+        console.log(`📦 ${userOrders.length} naloga`);
+
         if (userOrders.length === 0) {
-            return res.status(400).json({ error: 'Nema naloga za vašu firmu.' });
+            return res.status(400).json({ error: 'Nema naloga' });
         }
 
-        // Filtriraj aktivne naloge
         const activeOrders = [];
         let totalCompleted = 0, totalProblem = 0, totalPending = 0;
 
         userOrders.forEach(order => {
-            const orderProgress = progress.find(p => p.orderId === order.id);
-            const phases = orderProgress ? orderProgress.phases : order.phases;
+            const op = progress.find(p => p.orderId === order.id);
+            const phases = op ? op.phases : order.phases;
             const hasCompleted = phases.some(p => p.status === 'completed');
             const hasProblem = phases.some(p => p.status === 'problem');
             const hasComment = phases.some(p => p.comment && p.comment.trim() !== '');
@@ -518,9 +398,8 @@ app.post('/api/send-report', authenticate, async (req, res) => {
             }
         });
 
-        console.log(`📊 Aktivnih naloga: ${activeOrders.length}`);
+        console.log(`📊 Aktivnih: ${activeOrders.length}`);
 
-        // Ako nema aktivnosti
         if (activeOrders.length === 0) {
             try {
                 await Promise.race([
@@ -530,87 +409,81 @@ app.post('/api/send-report', authenticate, async (req, res) => {
                         subject: `📊 Dnevni izveštaj - ${req.user.company} - ${today}`,
                         text: `Poštovani,\n\nDana ${today} nema novih aktivnosti.\n\nS poštovanjem,\nProduction Tracker`
                     }),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 15000))
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 10000))
                 ]);
                 console.log('✅ Email poslat (nema aktivnosti)');
-                return res.json({ message: '✅ Nema aktivnosti, izveštaj poslat.' });
+                return res.json({ message: '✅ Izveštaj poslat (nema aktivnosti)' });
             } catch (err) {
-                console.log('⚠️ Email timeout, ali aplikacija nastavlja');
-                return res.json({ message: '⚠️ Izveštaj generisan, ali email nije poslat (timeout).' });
+                console.log('⚠️ Email timeout');
+                return res.json({ message: '⚠️ Izveštaj generisan, email nije poslat (timeout)' });
             }
         }
 
-        // Kreiraj Excel
-        console.log('📊 Kreiram Excel fajl...');
         const workbook = new ExcelJS.Workbook();
-        const worksheet = workbook.addWorksheet('Dnevni izveštaj');
+        const ws = workbook.addWorksheet('Dnevni izveštaj');
 
-        worksheet.getColumn(1).width = 15;
-        worksheet.getColumn(2).width = 25;
-        worksheet.getColumn(3).width = 12;
-        worksheet.getColumn(4).width = 12;
-        worksheet.getColumn(5).width = 15;
-        worksheet.getColumn(6).width = 12;
-        worksheet.getColumn(7).width = 12;
-        worksheet.getColumn(8).width = 12;
-        worksheet.getColumn(9).width = 12;
-        worksheet.getColumn(10).width = 12;
-        worksheet.getColumn(11).width = 30;
+        ws.getColumn(1).width = 15;
+        ws.getColumn(2).width = 25;
+        ws.getColumn(3).width = 12;
+        ws.getColumn(4).width = 12;
+        ws.getColumn(5).width = 15;
+        ws.getColumn(6).width = 12;
+        ws.getColumn(7).width = 12;
+        ws.getColumn(8).width = 12;
+        ws.getColumn(9).width = 12;
+        ws.getColumn(10).width = 12;
+        ws.getColumn(11).width = 30;
 
-        worksheet.mergeCells('A1:K1');
-        const titleCell = worksheet.getCell('A1');
-        titleCell.value = `DNEVNI IZVEŠTAJ - ${req.user.company}`;
-        titleCell.font = { size: 16, bold: true };
-        titleCell.alignment = { horizontal: 'center' };
+        ws.mergeCells('A1:K1');
+        const title = ws.getCell('A1');
+        title.value = `DNEVNI IZVEŠTAJ - ${req.user.company}`;
+        title.font = { size: 16, bold: true };
+        title.alignment = { horizontal: 'center' };
 
-        worksheet.mergeCells('A2:K2');
-        const dateCell = worksheet.getCell('A2');
-        dateCell.value = `Datum: ${today}`;
-        dateCell.font = { size: 12, bold: true };
-        dateCell.alignment = { horizontal: 'center' };
+        ws.mergeCells('A2:K2');
+        const d = ws.getCell('A2');
+        d.value = `Datum: ${today}`;
+        d.font = { size: 12, bold: true };
+        d.alignment = { horizontal: 'center' };
 
         const headers = ['Nalog', 'Artikal', 'Šifra', 'Količina', 'Datum isporuke',
             'Faza 100', 'Faza 200', 'Faza 300', 'Faza 400', 'Faza 500', 'Komentar'];
-        const headerRow = worksheet.addRow(headers);
-        headerRow.font = { bold: true };
-        headerRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
-        headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-        headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+        const hr = ws.addRow(headers);
+        hr.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+        hr.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
+        hr.alignment = { horizontal: 'center', vertical: 'middle' };
 
         activeOrders.forEach(({ order, phases }) => {
-            const phaseMap = {};
-            let comments = [];
+            const map = {};
+            const comments = [];
             phases.forEach(p => {
-                phaseMap[p.phase] = p.status;
+                map[p.phase] = p.status;
                 if (p.comment && p.comment.trim() !== '') {
                     comments.push(`Faza ${p.phase}: ${p.comment}`);
                 }
             });
-            const getStatusText = (phaseNum) => {
-                const status = phaseMap[phaseNum] || 'pending';
-                if (status === 'completed') return 'ZAVRŠENO';
-                if (status === 'problem') return 'PROBLEM';
+            const getStatus = (p) => {
+                const s = map[p] || 'pending';
+                if (s === 'completed') return 'ZAVRŠENO';
+                if (s === 'problem') return 'PROBLEM';
                 return 'NA ČEKANJU';
             };
-            const row = worksheet.addRow([
+            const row = ws.addRow([
                 order.orderNumber || '',
                 order.name || '',
                 order.code || '',
                 order.quantity || 0,
                 order.deliveryDate || '',
-                getStatusText('100'),
-                getStatusText('200'),
-                getStatusText('300'),
-                getStatusText('400'),
-                getStatusText('500'),
+                getStatus('100'), getStatus('200'), getStatus('300'),
+                getStatus('400'), getStatus('500'),
                 comments.join('; ')
             ]);
-            [6, 7, 8, 9, 10].forEach(colIndex => {
-                const cell = row.getCell(colIndex);
-                const value = cell.value;
-                if (value === 'ZAVRŠENO') {
+            [6, 7, 8, 9, 10].forEach(col => {
+                const cell = row.getCell(col);
+                const val = cell.value;
+                if (val === 'ZAVRŠENO') {
                     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF92D050' } };
-                } else if (value === 'PROBLEM') {
+                } else if (val === 'PROBLEM') {
                     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } };
                     cell.font = { color: { argb: 'FFFFFFFF' } };
                 } else {
@@ -619,22 +492,21 @@ app.post('/api/send-report', authenticate, async (req, res) => {
             });
         });
 
-        worksheet.addRow([]);
-        const statsRow = worksheet.addRow([
+        ws.addRow([]);
+        const stats = ws.addRow([
             '📊 STATISTIKA:', '', '', '', '',
             `✅ Završene: ${totalCompleted}`,
             `⚠️ Problem: ${totalProblem}`,
             `⬜ Na čekanju: ${totalPending}`,
-            `📦 Aktivnih naloga: ${activeOrders.length}`,
+            `📦 Aktivnih: ${activeOrders.length}`,
             ''
         ]);
-        statsRow.font = { bold: true };
+        stats.font = { bold: true };
 
         const buffer = await workbook.xlsx.writeBuffer();
-        console.log('✅ Excel kreiran, velicina:', buffer.length, 'bajtova');
+        console.log('📊 Excel kreiran, veličina:', buffer.length);
 
-        // Pošalji email sa timeout-om
-        console.log('📧 Saljem email...');
+        console.log('📧 Slanje email-a...');
         try {
             await Promise.race([
                 transporter.sendMail({
@@ -647,20 +519,17 @@ app.post('/api/send-report', authenticate, async (req, res) => {
                         content: buffer
                     }]
                 }),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 15000))
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000))
             ]);
             console.log('✅ Email POSLAT!');
             res.json({ message: '✅ Izveštaj poslat!', activeCount: activeOrders.length });
-        } catch (emailError) {
-            console.log('⚠️ Email timeout, ali aplikacija nastavlja');
-            res.json({ 
-                message: '⚠️ Izveštaj generisan, ali email nije poslat (timeout). Proverite email podešavanja.', 
-                activeCount: activeOrders.length 
-            });
+        } catch (err) {
+            console.log('⚠️ Email timeout');
+            res.json({ message: '⚠️ Izveštaj generisan, email nije poslat (timeout)', activeCount: activeOrders.length });
         }
-    } catch (error) {
-        console.error('❌ Send report error:', error);
-        res.status(500).json({ error: error.message });
+    } catch (e) {
+        console.error('❌ Send report error:', e);
+        res.status(500).json({ error: e.message });
     }
 });
 
@@ -677,8 +546,6 @@ app.get('/api/companies', authenticate, (req, res) => {
 // ============ POKRENI SERVER ============
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📊 Cache TTL: ${CACHE_TTL/1000}s`);
-    console.log(`📄 Data folder: ${dataDir}`);
-    console.log(`🌐 Frontend folder: ${path.join(__dirname, '../frontend')}`);
-    console.log(`📧 Email status: ${transporter ? '✅ Spreman' : '❌ Nije konfigurisan'}`);
+    console.log(`📊 Cache: ${CACHE_TTL/1000}s`);
+    console.log(`📧 Email: ${transporter ? '✅' : '❌'}`);
 });
