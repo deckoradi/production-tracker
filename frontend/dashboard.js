@@ -21,6 +21,7 @@ const modalOrderNumber = document.getElementById('modalOrderNumber');
 const modalOrderInfo = document.getElementById('modalOrderInfo');
 const phasesContainer = document.getElementById('phasesContainer');
 const closeModal = document.querySelector('.close-modal');
+const orderCount = document.getElementById('orderCount');
 
 // Check authentication
 const token = localStorage.getItem('token');
@@ -90,7 +91,7 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
         return;
     }
     
-    statusDiv.textContent = '⏳ Učitavanje fajla... Molim sačekajte';
+    statusDiv.textContent = '⏳ Učitavanje...';
     statusDiv.className = '';
     
     const formData = new FormData();
@@ -110,11 +111,11 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         
         if (response.ok) {
-            statusDiv.textContent = `✅ Uspešno učitano ${data.count} naloga za ${elapsed} sekundi`;
+            statusDiv.textContent = `✅ Učitano ${data.count} naloga za ${elapsed}s`;
             statusDiv.className = 'success';
             fileInput.value = '';
             currentPage = 1;
-            setTimeout(() => loadOrders('', 1), 300);
+            setTimeout(() => loadOrders('', 1), 500);
         } else {
             statusDiv.textContent = `❌ Greška: ${data.error}`;
             statusDiv.className = 'error';
@@ -164,7 +165,7 @@ document.getElementById('createUserForm').addEventListener('submit', async (e) =
 
 // Send report
 sendReportBtn.addEventListener('click', async () => {
-    if (!confirm('Da li želite da pošaljete dnevni izveštaj?')) return;
+    if (!confirm('📧 Pošalji dnevni izveštaj?')) return;
     
     try {
         const response = await fetch('/api/send-report', {
@@ -181,12 +182,12 @@ sendReportBtn.addEventListener('click', async () => {
         const data = await response.json();
         
         if (response.ok) {
-            alert('✅ Izveštaj je uspešno poslat!');
+            alert('✅ Izveštaj poslat!');
         } else {
             alert(`❌ Greška: ${data.error}`);
         }
     } catch (error) {
-        alert('❌ Greška pri slanju izveštaja');
+        alert('❌ Greška pri slanju');
         console.error('Send report error:', error);
     }
 });
@@ -199,8 +200,7 @@ async function loadOrders(search = '', page = 1) {
             `/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}` :
             `/api/orders?page=${page}&limit=${LIMIT}`;
         
-        console.log('📡 Učitavam naloge...');
-        ordersContainer.innerHTML = '<div style="text-align:center;padding:40px;color:#a0aec0;">⏳ Učitavanje...</div>';
+        ordersContainer.innerHTML = '<div class="loading">⏳ Učitavanje...</div>';
         
         const response = await fetch(url, {
             headers: {
@@ -224,7 +224,9 @@ async function loadOrders(search = '', page = 1) {
         currentPage = result.page || 1;
         totalPages = result.totalPages || 1;
         
-        console.log(`📦 Učitano ${orders.length} naloga od ${totalOrders} ukupno (strana ${currentPage}/${totalPages})`);
+        if (orderCount) {
+            orderCount.textContent = `${totalOrders} naloga`;
+        }
         
         renderOrders(orders, {
             total: totalOrders,
@@ -235,33 +237,47 @@ async function loadOrders(search = '', page = 1) {
         
     } catch (error) {
         console.error('❌ Load orders error:', error);
-        ordersContainer.innerHTML = '<div class="error">Greška pri učitavanju podataka</div>';
+        ordersContainer.innerHTML = '<div class="error">❌ Greška pri učitavanju</div>';
     }
 }
 
 function renderOrders(ordersList, meta) {
     if (!ordersList || ordersList.length === 0) {
-        ordersContainer.innerHTML = `
-            <p style="text-align:center;padding:40px;color:#a0aec0;">
-                📭 Nema naloga za prikaz<br>
-                <span style="font-size:12px;">Ukupno u bazi: ${totalOrders || 0} naloga</span>
-            </p>
-        `;
+        ordersContainer.innerHTML = '<p style="text-align:center;padding:40px;color:#a0aec0;">📭 Nema naloga za prikaz</p>';
         return;
     }
     
+    // Proveri da li je korisnik admin
+    const isAdmin = currentUser && currentUser.role === 'admin';
+    
     let html = `
-        <div style="overflow-x:auto;padding:10px;">
-        <table style="width:100%;border-collapse:collapse;font-size:14px;">
+        <table>
             <thead>
-                <tr style="background:#f7fafc;border-bottom:2px solid #e2e8f0;">
-                    <th style="padding:12px;text-align:left;">Firma</th>
-                    <th style="padding:12px;text-align:left;">Šifra</th>
-                    <th style="padding:12px;text-align:left;">Naziv</th>
-                    <th style="padding:12px;text-align:left;">Nalog</th>
-                    <th style="padding:12px;text-align:center;">Količina</th>
-                    <th style="padding:12px;text-align:left;">Datum isporuke</th>
-                    <th style="padding:12px;text-align:center;">Status</th>
+                <tr>
+    `;
+    
+    // Admin vidi sve kolone
+    if (isAdmin) {
+        html += `
+                    <th>Firma</th>
+                    <th>Šifra</th>
+                    <th>Naziv</th>
+                    <th>Nalog</th>
+                    <th style="text-align:center;">Količina</th>
+                    <th>Datum</th>
+                    <th style="text-align:center;">Status</th>
+        `;
+    } else {
+        // Običan korisnik vidi samo: Nalog, Naziv, Količina, Status
+        html += `
+                    <th>Nalog</th>
+                    <th>Naziv</th>
+                    <th style="text-align:center;">Količina</th>
+                    <th style="text-align:center;">Status</th>
+        `;
+    }
+    
+    html += `
                 </tr>
             </thead>
             <tbody>
@@ -270,13 +286,7 @@ function renderOrders(ordersList, meta) {
     for (let i = 0; i < ordersList.length; i++) {
         const order = ordersList[i];
         
-        const company = order.company || order.firma || order.Firma || order.ime_firme || '';
-        const code = order.code || order.sifra || order.Sifra || order.cod_artikal || '';
-        const name = order.name || order.naziv || order.Naziv || order.naziv_artikla || '';
-        const orderNumber = order.orderNumber || order.nalog || order.Nalog || order.broj_nalog || '';
-        const quantity = order.quantity || order.pari || order.kolicina || 0;
-        const deliveryDate = order.deliveryDate || order.datum_isporuke || order.Datum || '';
-        
+        // Izračunaj status
         const phases = order.progress || order.phases || [];
         const totalPhases = phases.length;
         const completedPhases = phases.filter(p => p.status === 'completed').length || 0;
@@ -289,60 +299,58 @@ function renderOrders(ordersList, meta) {
             statusText = '✅ Završeno';
             statusClass = 'status-completed';
         } else if (problemPhases > 0) {
-            statusText = `⚠️ Problem (${problemPhases})`;
+            statusText = `⚠️ Problem`;
             statusClass = 'status-problem';
         } else if (completedPhases > 0) {
             statusText = `${completedPhases}/${totalPhases}`;
         }
         
-        html += `
-            <tr style="border-bottom:1px solid #e2e8f0;${i % 2 === 0 ? 'background:#fafafa;' : ''}">
-                <td style="padding:10px;">${escapeHtml(company)}</td>
-                <td style="padding:10px;font-size:12px;">${escapeHtml(code)}</td>
-                <td style="padding:10px;">${escapeHtml(name)}</td>
-                <td style="padding:10px;color:#667eea;font-weight:600;cursor:pointer;" onclick="openOrder(${order.id})">${escapeHtml(orderNumber)}</td>
-                <td style="padding:10px;text-align:center;">${quantity}</td>
-                <td style="padding:10px;font-size:12px;">${deliveryDate || '-'}</td>
-                <td style="padding:10px;text-align:center;"><span class="status-badge ${statusClass}">${statusText}</span></td>
-            </tr>
-        `;
+        html += `<tr style="border-bottom:1px solid #e2e8f0;${i % 2 === 0 ? 'background:#fafafa;' : ''}">`;
+        
+        if (isAdmin) {
+            // Admin - sve kolone
+            html += `
+                        <td style="padding:10px;font-size:13px;">${escapeHtml(order.company || '')}</td>
+                        <td style="padding:10px;font-size:12px;">${escapeHtml(order.code || '')}</td>
+                        <td style="padding:10px;">${escapeHtml(order.name || '')}</td>
+                        <td style="padding:10px;color:#667eea;font-weight:600;cursor:pointer;" onclick="openOrder(${order.id})">${escapeHtml(order.orderNumber || '')}</td>
+                        <td style="padding:10px;text-align:center;font-weight:600;">${order.quantity || 0}</td>
+                        <td style="padding:10px;font-size:12px;">${order.deliveryDate || '-'}</td>
+                        <td style="padding:10px;text-align:center;"><span class="status-badge ${statusClass}">${statusText}</span></td>
+            `;
+        } else {
+            // Običan korisnik - samo 4 kolone (povećani font za telefon)
+            html += `
+                        <td style="padding:12px 8px;color:#667eea;font-weight:600;cursor:pointer;font-size:16px;" onclick="openOrder(${order.id})">${escapeHtml(order.orderNumber || '')}</td>
+                        <td style="padding:12px 8px;font-size:15px;">${escapeHtml(order.name || '')}</td>
+                        <td style="padding:12px 8px;text-align:center;font-size:17px;font-weight:700;">${order.quantity || 0}</td>
+                        <td style="padding:12px 8px;text-align:center;"><span class="status-badge ${statusClass}" style="font-size:13px;padding:4px 12px;">${statusText}</span></td>
+            `;
+        }
+        
+        html += `</tr>`;
     }
     
     html += `
             </tbody>
         </table>
-        </div>
     `;
     
+    // Paginacija
     if (meta && meta.totalPages > 1) {
         html += `
-            <div style="display:flex;justify-content:center;align-items:center;gap:15px;padding:15px;border-top:1px solid #e2e8f0;flex-wrap:wrap;">
+            <div style="display:flex;justify-content:center;align-items:center;gap:12px;padding:14px;border-top:1px solid #e2e8f0;flex-wrap:wrap;">
                 <button onclick="goToPage(${meta.page - 1})" 
-                        style="padding:8px 20px;background:${meta.page <= 1 ? '#e2e8f0' : '#667eea'};color:${meta.page <= 1 ? '#a0aec0' : 'white'};border:none;border-radius:5px;cursor:${meta.page <= 1 ? 'not-allowed' : 'pointer'};font-weight:600;" 
+                        style="padding:8px 20px;background:${meta.page <= 1 ? '#e2e8f0' : '#667eea'};color:${meta.page <= 1 ? '#a0aec0' : 'white'};border:none;border-radius:8px;font-weight:600;cursor:${meta.page <= 1 ? 'not-allowed' : 'pointer'};font-size:14px;" 
                         ${meta.page <= 1 ? 'disabled' : ''}>
-                    ◀ Prethodna
+                    ◀
                 </button>
-                <span style="color:#4a5568;font-weight:500;">
-                    Strana ${meta.page} od ${meta.totalPages} 
-                    (${totalOrders} naloga ukupno)
-                </span>
+                <span style="color:#4a5568;font-weight:500;font-size:14px;">${meta.page} / ${meta.totalPages}</span>
                 <button onclick="goToPage(${meta.page + 1})" 
-                        style="padding:8px 20px;background:${meta.page >= meta.totalPages ? '#e2e8f0' : '#667eea'};color:${meta.page >= meta.totalPages ? '#a0aec0' : 'white'};border:none;border-radius:5px;cursor:${meta.page >= meta.totalPages ? 'not-allowed' : 'pointer'};font-weight:600;" 
+                        style="padding:8px 20px;background:${meta.page >= meta.totalPages ? '#e2e8f0' : '#667eea'};color:${meta.page >= meta.totalPages ? '#a0aec0' : 'white'};border:none;border-radius:8px;font-weight:600;cursor:${meta.page >= meta.totalPages ? 'not-allowed' : 'pointer'};font-size:14px;" 
                         ${meta.page >= meta.totalPages ? 'disabled' : ''}>
-                    Sledeća ▶
+                    ▶
                 </button>
-            </div>
-        `;
-    } else if (totalOrders > LIMIT) {
-        html += `
-            <div style="text-align:center;padding:15px;color:#718096;font-size:14px;border-top:1px solid #e2e8f0;">
-                Ukupno: ${totalOrders} naloga. ${totalOrders > LIMIT ? `Prikazano prvih ${LIMIT}.` : ''}
-            </div>
-        `;
-    } else {
-        html += `
-            <div style="text-align:center;padding:15px;color:#718096;font-size:14px;border-top:1px solid #e2e8f0;">
-                Ukupno: ${totalOrders || ordersList.length} naloga
             </div>
         `;
     }
@@ -354,6 +362,7 @@ function goToPage(page) {
     if (page < 1 || page > totalPages) return;
     const search = document.getElementById('searchInput').value || '';
     loadOrders(search, page);
+    // Skroluj na vrh tabele
     document.querySelector('.panel:last-child')?.scrollIntoView({ behavior: 'smooth' });
 }
 
@@ -376,7 +385,8 @@ function openOrder(orderId) {
     
     modalOrderInfo.innerHTML = `
         <p><strong>Firma:</strong> ${escapeHtml(order.company || order.firma || '')}</p>
-        <p><strong>Artikal:</strong> ${escapeHtml(order.name || order.naziv || '')} (${escapeHtml(order.code || order.sifra || '')})</p>
+        <p><strong>Artikal:</strong> ${escapeHtml(order.name || order.naziv || '')}</p>
+        <p><strong>Šifra:</strong> ${escapeHtml(order.code || order.sifra || '')}</p>
         <p><strong>Količina:</strong> ${order.quantity || order.pari || 0}</p>
         <p><strong>Datum isporuke:</strong> ${order.deliveryDate || order.datum_isporuke || '-'}</p>
     `;
@@ -389,38 +399,36 @@ function renderPhases(order) {
     const phases = order.progress || order.phases || [];
     
     if (phases.length === 0) {
-        phasesContainer.innerHTML = '<p style="text-align:center;padding:20px;color:#a0aec0;">Nema faza za ovaj nalog</p>';
+        phasesContainer.innerHTML = '<p style="text-align:center;padding:20px;color:#a0aec0;">Nema faza</p>';
         return;
     }
     
-    let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:15px;">';
+    let html = '';
     phases.forEach(phase => {
         const statusEmoji = phase.status === 'completed' ? '✅' : 
                            phase.status === 'problem' ? '⚠️' : '⬜';
         
         html += `
-            <div style="border:2px solid ${phase.status === 'completed' ? '#48bb78' : phase.status === 'problem' ? '#fc8181' : '#e2e8f0'};border-radius:8px;padding:15px;background:white;text-align:center;">
-                <h4 style="margin:0 0 10px 0;color:#2d3748;">Faza ${phase.phase}</h4>
-                <div style="font-size:24px;margin:10px 0;">
-                    ${statusEmoji}
-                    <div style="font-size:14px;color:#4a5568;margin-top:5px;">${phase.status}</div>
+            <div class="phase-card">
+                <h4>Faza ${phase.phase}</h4>
+                <div class="phase-status">
+                    <span style="font-size:28px;">${statusEmoji}</span>
+                    <div>${phase.status}</div>
                 </div>
-                <div style="display:flex;gap:5px;justify-content:center;margin:10px 0;flex-wrap:wrap;">
-                    <button onclick="updatePhase(${order.id}, '${phase.phase}', 'completed')" style="padding:5px 12px;background:#48bb78;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;">✅ Završi</button>
-                    <button onclick="updatePhase(${order.id}, '${phase.phase}', 'problem')" style="padding:5px 12px;background:#fc8181;color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;">⚠️ Problem</button>
-                    <button onclick="updatePhase(${order.id}, '${phase.phase}', 'pending')" style="padding:5px 12px;background:#e2e8f0;color:#4a5568;border:none;border-radius:4px;cursor:pointer;font-size:12px;">⬜ Reset</button>
+                <div class="phase-buttons">
+                    <button onclick="updatePhase(${order.id}, '${phase.phase}', 'completed')">✅ Završi</button>
+                    <button onclick="updatePhase(${order.id}, '${phase.phase}', 'problem')">⚠️ Problem</button>
+                    <button onclick="updatePhase(${order.id}, '${phase.phase}', 'pending')">⬜ Reset</button>
                 </div>
-                <div style="margin-top:10px;">
+                <div class="phase-comment">
                     <textarea 
                         placeholder="Komentar..." 
                         onchange="updatePhaseComment(${order.id}, '${phase.phase}', this.value)"
-                        style="width:100%;padding:5px;border:1px solid #ddd;border-radius:4px;min-height:40px;font-size:12px;"
                     >${phase.comment || ''}</textarea>
                 </div>
             </div>
         `;
     });
-    html += '</div>';
     
     phasesContainer.innerHTML = html;
 }
@@ -449,14 +457,14 @@ async function updatePhase(orderId, phase, status) {
             alert(`❌ Greška: ${data.error}`);
         }
     } catch (error) {
-        alert('❌ Greška pri ažuriranju faze');
+        alert('❌ Greška pri ažuriranju');
         console.error('Update phase error:', error);
     }
 }
 
 async function updatePhaseComment(orderId, phase, comment) {
     try {
-        const response = await fetch('/api/update-phase', {
+        await fetch('/api/update-phase', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -464,10 +472,6 @@ async function updatePhaseComment(orderId, phase, comment) {
             },
             body: JSON.stringify({ orderId, phase, status: 'pending', comment })
         });
-        
-        if (!response.ok) {
-            console.error('Failed to update comment');
-        }
     } catch (error) {
         console.error('Update comment error:', error);
     }
@@ -489,7 +493,7 @@ async function loadUsers() {
         let html = '';
         users.forEach(user => {
             html += `
-                <div style="display:flex;justify-content:space-between;padding:10px;border-bottom:1px solid #e2e8f0;">
+                <div class="user-item">
                     <span>${escapeHtml(user.username)}</span>
                     <span style="color:#718096;">${escapeHtml(user.company)}</span>
                     <span style="color:#718096;font-size:12px;">${user.role}</span>
@@ -497,7 +501,7 @@ async function loadUsers() {
             `;
         });
         
-        usersList.innerHTML = html || '<p style="color:#a0aec0;text-align:center;padding:20px;">Nema korisnika</p>';
+        usersList.innerHTML = html || '<p style="color:#a0aec0;text-align:center;padding:16px;">Nema korisnika</p>';
     } catch (error) {
         console.error('Load users error:', error);
     }
