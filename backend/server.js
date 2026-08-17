@@ -57,7 +57,7 @@ const initDb = async () => {
             )
         `);
 
-        // Tabela za progres (faze)
+        // Tabela za progres (faze) - sa datumom
         await pool.query(`
             CREATE TABLE IF NOT EXISTS progress (
                 id SERIAL PRIMARY KEY,
@@ -65,7 +65,7 @@ const initDb = async () => {
                 phase VARCHAR(10) NOT NULL,
                 status VARCHAR(20) DEFAULT 'pending',
                 comment TEXT DEFAULT '',
-                updated_at TIMESTAMP DEFAULT NOW(),
+                updated_at DATE DEFAULT CURRENT_DATE,
                 UNIQUE(order_id, phase)
             )
         `);
@@ -209,7 +209,7 @@ app.post('/api/users', authenticate, async (req, res) => {
     }
 });
 
-// ============ UPLOAD ============
+// ============ UPLOAD - ČUVA FAZE ============
 app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
@@ -234,13 +234,10 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
         };
 
         let inserted = 0;
-        const BATCH_SIZE = 200;
-        let ordersBatch = [];
-        let progressBatch = [];
+        let updated = 0;
 
         for (let i = 0; i < data.length; i++) {
             const row = data[i];
-            const orderId = Date.now() + i;
 
             const company = findValue(row, ['ime firme', 'IME FIRME', 'Firma', 'firma', 'Ime firme', 'Company', 'company', 'Naziv firme']);
             const code = findValue(row, ['cod artikal', 'COD ARTIKAL', 'Sifra', 'sifra', 'Šifra artikla', 'Sifra artikla', 'Code', 'code', 'Šifra', 'Sifra artikla']);
@@ -251,84 +248,53 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
 
             if (!company && !code && !orderNumber) continue;
 
-            ordersBatch.push({
-                id: orderId,
-                company,
-                code,
-                name,
-                order_number: orderNumber,
-                quantity,
-                delivery_date: deliveryDate
-            });
-
-            ['100', '200', '300', '400', '500'].forEach(phase => {
-                progressBatch.push({
-                    order_id: orderId,
-                    phase,
-                    status: 'pending',
-                    comment: ''
-                });
-            });
-
-            inserted++;
-
-            if (ordersBatch.length >= BATCH_SIZE) {
-                await saveBatch(ordersBatch, progressBatch);
-                ordersBatch = [];
-                progressBatch = [];
-                console.log(`📦 Batch: ${inserted}`);
+            // Proveri da li nalog već postoji
+            const existing = await pool.query('SELECT id FROM orders WHERE order_number = $1 AND company = $2', [orderNumber, company]);
+            
+            if (existing.rows.length > 0) {
+                // Ažuriraj postojeći nalog (ne diraj faze!)
+                await pool.query(
+                    `UPDATE orders SET 
+                        code = $1, name = $2, quantity = $3, delivery_date = $4
+                     WHERE order_number = $5 AND company = $6`,
+                    [code, name, quantity, deliveryDate, orderNumber, company]
+                );
+                updated++;
+            } else {
+                // Dodaj novi nalog
+                const newId = Date.now() + i;
+                await pool.query(
+                    `INSERT INTO orders (id, company, code, name, order_number, quantity, delivery_date)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                    [newId, company, code, name, orderNumber, quantity, deliveryDate]
+                );
+                
+                // Kreiraj faze za novi nalog
+                for (const phase of ['100', '200', '300', '400', '500']) {
+                    await pool.query(
+                        `INSERT INTO progress (order_id, phase, status, comment, updated_at)
+                         VALUES ($1, $2, 'pending', '', CURRENT_DATE)
+                         ON CONFLICT (order_id, phase) DO NOTHING`,
+                        [newId, phase]
+                    );
+                }
+                inserted++;
             }
         }
 
-        if (ordersBatch.length > 0) {
-            await saveBatch(ordersBatch, progressBatch);
-            console.log(`📦 Završni batch: ${inserted}`);
-        }
-
-        console.log(`📦 UKUPNO: ${inserted} naloga`);
-        res.json({ message: `✅ Učitano ${inserted} naloga`, count: inserted, totalRows: data.length });
+        console.log(`📦 Novih: ${inserted}, Ažuriranih: ${updated}`);
+        res.json({ 
+            message: `✅ Novih: ${inserted}, Ažuriranih: ${updated}`, 
+            inserted, 
+            updated,
+            totalRows: data.length 
+        });
 
     } catch (e) {
         console.error('❌ Upload error:', e);
         res.status(500).json({ error: e.message });
     }
 });
-
-const saveBatch = async (orders, progress) => {
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
-
-        for (const o of orders) {
-            await client.query(
-                `INSERT INTO orders (id, company, code, name, order_number, quantity, delivery_date)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-                 ON CONFLICT (id) DO UPDATE SET
-                 company = EXCLUDED.company, code = EXCLUDED.code, name = EXCLUDED.name,
-                 order_number = EXCLUDED.order_number, quantity = EXCLUDED.quantity,
-                 delivery_date = EXCLUDED.delivery_date`,
-                [o.id, o.company, o.code, o.name, o.order_number, o.quantity, o.delivery_date]
-            );
-        }
-
-        for (const p of progress) {
-            await client.query(
-                `INSERT INTO progress (order_id, phase, status, comment)
-                 VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (order_id, phase) DO UPDATE SET
-                 status = EXCLUDED.status, comment = EXCLUDED.comment`,
-                [p.order_id, p.phase, p.status, p.comment]
-            );
-        }
-
-        await client.query('COMMIT');
-    } catch (e) {
-        await client.query('ROLLBACK');
-        throw e;
-    } finally {
-        client.release();
-    }
-};
 
 // ============ GET ORDERS ============
 app.get('/api/orders', authenticate, async (req, res) => {
@@ -370,7 +336,7 @@ app.get('/api/orders', authenticate, async (req, res) => {
 
         const dataQuery = `
             SELECT o.*, 
-                   COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment) ORDER BY p.phase) 
+                   COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment, 'updated_at', p.updated_at) ORDER BY p.phase) 
                    FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
             FROM orders o
             LEFT JOIN progress p ON o.id = p.order_id
@@ -396,15 +362,17 @@ app.get('/api/orders', authenticate, async (req, res) => {
     }
 });
 
-// ============ UPDATE PHASE ============
+// ============ UPDATE PHASE - SA DATUMOM ============
 app.post('/api/update-phase', authenticate, async (req, res) => {
     try {
         const { orderId, phase, status, comment } = req.body;
         await pool.query(
-            `INSERT INTO progress (order_id, phase, status, comment)
-             VALUES ($1, $2, $3, $4)
+            `INSERT INTO progress (order_id, phase, status, comment, updated_at)
+             VALUES ($1, $2, $3, $4, CURRENT_DATE)
              ON CONFLICT (order_id, phase) DO UPDATE SET
-             status = EXCLUDED.status, comment = EXCLUDED.comment, updated_at = NOW()`,
+             status = EXCLUDED.status, 
+             comment = EXCLUDED.comment, 
+             updated_at = CURRENT_DATE`,
             [orderId, phase, status, comment || '']
         );
         res.json({ message: 'Phase updated' });
@@ -425,7 +393,7 @@ app.post('/api/send-report', authenticate, async (req, res) => {
 
         const ordersResult = await pool.query(
             `SELECT o.*, 
-                    COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment) ORDER BY p.phase) 
+                    COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment, 'updated_at', p.updated_at) ORDER BY p.phase) 
                     FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
              FROM orders o
              LEFT JOIN progress p ON o.id = p.order_id
@@ -701,11 +669,11 @@ app.post('/api/restore', authenticate, async (req, res) => {
             // Vrati progres
             for (const p of backup.progress) {
                 await client.query(
-                    `INSERT INTO progress (order_id, phase, status, comment)
-                     VALUES ($1, $2, $3, $4)
+                    `INSERT INTO progress (order_id, phase, status, comment, updated_at)
+                     VALUES ($1, $2, $3, $4, $5)
                      ON CONFLICT (order_id, phase) DO UPDATE SET
-                     status = EXCLUDED.status, comment = EXCLUDED.comment`,
-                    [p.order_id, p.phase, p.status, p.comment]
+                     status = EXCLUDED.status, comment = EXCLUDED.comment, updated_at = EXCLUDED.updated_at`,
+                    [p.order_id, p.phase, p.status, p.comment, p.updated_at]
                 );
             }
 
