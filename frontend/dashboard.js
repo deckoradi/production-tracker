@@ -328,11 +328,19 @@ function escapeHtml(text) {
 }
 
 function openOrder(orderId) {
-    const order = orders.find(o => o.id === orderId);
+    console.log('🔍 openOrder pozvana sa ID:', orderId);
+    console.log('📦 orders length:', orders.length);
+    
+    // Pronađi nalog po ID-u (pazi: ID može biti string ili broj)
+    const order = orders.find(o => String(o.id) === String(orderId));
+    
     if (!order) {
-        console.error('Order not found:', orderId);
+        console.error('❌ Order not found:', orderId);
+        console.log('📦 Svi ID-evi u orders:', orders.map(o => o.id));
         return;
     }
+    
+    console.log('✅ Order pronađen:', order);
     
     selectedOrderId = orderId;
     modalOrderNumber.textContent = order.order_number || order.orderNumber || 'N/A';
