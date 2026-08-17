@@ -501,3 +501,35 @@ async function loadUsers() {
         console.error('Load users error:', error);
     }
 }
+
+// ============ RESET BAZE ============
+document.getElementById('resetDbBtn').addEventListener('click', async () => {
+    if (!confirm('⚠️ Ovo će OBRISATI SVE podatke iz baze! Nastaviti?')) return;
+    
+    const statusDiv = document.getElementById('resetStatus');
+    statusDiv.textContent = '⏳ Resetovanje...';
+    statusDiv.className = '';
+    
+    try {
+        const response = await fetch('/api/reset-db', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        const data = await response.json();
+        
+        if (response.ok) {
+            statusDiv.textContent = '✅ Baza resetovana!';
+            statusDiv.className = 'success';
+            setTimeout(() => loadOrders('', 1), 1000);
+        } else {
+            statusDiv.textContent = `❌ Greška: ${data.error}`;
+            statusDiv.className = 'error';
+        }
+    } catch (e) {
+        statusDiv.textContent = '❌ Greška pri resetovanju';
+        statusDiv.className = 'error';
+        console.error(e);
+    }
+});
