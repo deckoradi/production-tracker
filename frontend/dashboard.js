@@ -396,7 +396,7 @@ function renderPhases(order) {
                 <div class="phase-comment">
                     <textarea 
                         placeholder="Komentar..." 
-                        onchange="updatePhaseComment(${order.id}, '${phase.phase}', this.value)"
+                        oninput="updatePhaseComment(${order.id}, '${phase.phase}', this.value)"
                     >${commentValue}</textarea>
                 </div>
             </div>
@@ -424,7 +424,7 @@ async function updatePhase(orderId, phase, status) {
         if (response.ok) {
             console.log('✅ Faza ažurirana');
             
-            // 1. Ažuriraj orders niz u memoriji
+            // Ažuriraj orders niz
             const orderIndex = orders.findIndex(o => o.id === orderId);
             if (orderIndex !== -1) {
                 const order = orders[orderIndex];
@@ -437,17 +437,13 @@ async function updatePhase(orderId, phase, status) {
                 }
             }
             
-            // 2. OTVORI PONOVO NALOG SA OSVEŽENIM PODACIMA
+            // Osvježi prikaz faza (bez zatvaranja modala)
             const updatedOrder = orders.find(o => o.id === orderId);
             if (updatedOrder) {
-                // Zatvori i ponovo otvori modal
-                phaseModal.classList.add('hidden');
-                setTimeout(() => {
-                    openOrder(orderId);
-                }, 50);
+                renderPhases(updatedOrder);
             }
             
-            // 3. Osvježi tabelu
+            // Osvježi tabelu
             renderOrders(orders, {
                 total: totalOrders,
                 page: currentPage,
@@ -494,13 +490,10 @@ async function updatePhaseComment(orderId, phase, comment) {
                 }
             }
             
-            // OTVORI PONOVO NALOG
+            // Osvježi prikaz faza (bez zatvaranja modala)
             const updatedOrder = orders.find(o => o.id === orderId);
             if (updatedOrder) {
-                phaseModal.classList.add('hidden');
-                setTimeout(() => {
-                    openOrder(orderId);
-                }, 50);
+                renderPhases(updatedOrder);
             }
             
         } else {
