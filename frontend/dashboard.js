@@ -396,7 +396,7 @@ function renderPhases(order) {
                 <div class="phase-comment">
                     <textarea 
                         placeholder="Komentar..." 
-                        oninput="updatePhaseComment(${order.id}, '${phase.phase}', this.value)"
+                        onchange="updatePhaseComment(${order.id}, '${phase.phase}', this.value)"
                     >${commentValue}</textarea>
                 </div>
             </div>
