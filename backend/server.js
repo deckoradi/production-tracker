@@ -10,7 +10,6 @@ const nodemailer = require('nodemailer');
 const ExcelJS = require('exceljs');
 const { Pool } = require('pg');
 
-// ============ UČITAVANJE .env FAJLA ============
 const dotenv = require('dotenv');
 dotenv.config({ path: path.join(__dirname, '.env') });
 
@@ -22,16 +21,13 @@ console.log('🗄️ DATABASE_URL:', process.env.DATABASE_URL ? '✅' : '❌');
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-// ============ POSTGRESQL BAZA ============
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
 });
 
-// Inicijalizacija tabela
 const initDb = async () => {
     try {
-        // Tabela za korisnike
         await pool.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -43,7 +39,6 @@ const initDb = async () => {
             )
         `);
 
-        // Tabela za naloge
         await pool.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id BIGINT PRIMARY KEY,
@@ -57,7 +52,6 @@ const initDb = async () => {
             )
         `);
 
-        // Tabela za progres (faze) - sa datumom
         await pool.query(`
             CREATE TABLE IF NOT EXISTS progress (
                 id SERIAL PRIMARY KEY,
@@ -70,7 +64,6 @@ const initDb = async () => {
             )
         `);
 
-        // Kreiraj admin korisnika ako ne postoji
         const adminCheck = await pool.query('SELECT * FROM users WHERE username = $1', ['admin']);
         if (adminCheck.rows.length === 0) {
             const hashedPassword = await bcrypt.hash('admin123', 10);
@@ -89,7 +82,6 @@ const initDb = async () => {
 
 initDb();
 
-// ============ MIDDLEWARE ============
 app.use(cors({
     origin: ['http://localhost:3000', 'https://production-tracker-wcy8.onrender.com', 'https://production-tracker.onrender.com'],
     credentials: true,
@@ -99,12 +91,10 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, '../frontend')));
 
-// ============ ROOT ROUTE ============
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, '../frontend/index.html'));
 });
 
-// ============ MULTER ============
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
@@ -125,7 +115,6 @@ const upload = multer({
     }
 });
 
-// ============ AUTH ============
 const authenticate = (req, res, next) => {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) return res.status(401).json({ error: 'No token' });
@@ -137,7 +126,6 @@ const authenticate = (req, res, next) => {
     }
 };
 
-// ============ EMAIL TRANSPORTER ============
 let transporter = null;
 try {
     if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
@@ -157,7 +145,6 @@ try {
 
 // ============ ROUTES ============
 
-// LOGIN
 app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -178,7 +165,6 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// GET USERS
 app.get('/api/users', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
     try {
@@ -189,7 +175,6 @@ app.get('/api/users', authenticate, async (req, res) => {
     }
 });
 
-// CREATE USER
 app.post('/api/users', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
     try {
@@ -209,7 +194,7 @@ app.post('/api/users', authenticate, async (req, res) => {
     }
 });
 
-// ============ UPLOAD - ČUVA FAZE ============
+// ============ UPLOAD ============
 app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
@@ -223,6 +208,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
         const data = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
 
         console.log('📊 Redova:', data.length);
+        console.log('📋 Kolone:', Object.keys(data[0] || {}));
 
         const findValue = (row, keys) => {
             for (let key of keys) {
@@ -239,20 +225,18 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
         for (let i = 0; i < data.length; i++) {
             const row = data[i];
 
-            const company = findValue(row, ['ime firme', 'IME FIRME', 'Firma', 'firma', 'Ime firme', 'Company', 'company', 'Naziv firme']);
-            const code = findValue(row, ['cod artikal', 'COD ARTIKAL', 'Sifra', 'sifra', 'Šifra artikla', 'Sifra artikla', 'Code', 'code', 'Šifra', 'Sifra artikla']);
+            const company = findValue(row, ['ime firme', 'IME FIRME', 'Firma', 'firma', 'Ime firme', 'FIRMA', 'Name', 'name', 'Company', 'company', 'Naziv firme']);
+            const code = findValue(row, ['cod artikal', 'COD ARTIKAL', 'Sifra', 'sifra', 'Šifra artikla', 'Sifra artikla', 'ŠIFRA ARTIKLA', 'Code', 'code', 'Šifra', 'Sifra artikla']);
             const name = findValue(row, ['naziv artikla', 'NAZIV ARTIKLA', 'Naziv', 'naziv', 'Naziv artikla', 'Name', 'name', 'Artikal', 'Proizvod']);
-            const orderNumber = findValue(row, ['broj nalog', 'BROJ NALOG', 'Nalog', 'nalog', 'Broj naloga', 'broj naloga', 'Order', 'order', 'Order Number']);
-            const quantity = parseInt(findValue(row, ['pari', 'PARI', 'Kolicina', 'kolicina', 'QUANTITA', 'Quantity', 'quantity', 'Količina'])) || 0;
-            const deliveryDate = findValue(row, ['datum isporuke', 'DATUM ISPORUKE', 'Datum', 'datum', 'Datum isporuke', 'Delivery Date', 'delivery']);
+            const orderNumber = findValue(row, ['broj nalog', 'BROJ NALOG', 'Nalog', 'nalog', 'Broj naloga', 'broj naloga', 'BROJ NALOGA', 'NALOG', 'Order', 'order', 'Order Number']);
+            const quantity = parseInt(findValue(row, ['pari', 'PARI', 'Kolicina', 'kolicina', 'QUANTITA', 'Quantity', 'quantity', 'Količina', 'KOLIČINA'])) || 0;
+            const deliveryDate = findValue(row, ['datum isporuke', 'DATUM ISPORUKE', 'Datum', 'datum', 'Datum isporuke', 'Delivery Date', 'delivery', 'DATUM ISPORUKE', 'DATUM']);
 
             if (!company && !code && !orderNumber) continue;
 
-            // Proveri da li nalog već postoji
             const existing = await pool.query('SELECT id FROM orders WHERE order_number = $1 AND company = $2', [orderNumber, company]);
             
             if (existing.rows.length > 0) {
-                // Ažuriraj postojeći nalog (ne diraj faze!)
                 await pool.query(
                     `UPDATE orders SET 
                         code = $1, name = $2, quantity = $3, delivery_date = $4
@@ -261,7 +245,6 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                 );
                 updated++;
             } else {
-                // Dodaj novi nalog
                 const newId = Date.now() + i;
                 await pool.query(
                     `INSERT INTO orders (id, company, code, name, order_number, quantity, delivery_date)
@@ -269,7 +252,6 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                     [newId, company, code, name, orderNumber, quantity, deliveryDate]
                 );
                 
-                // Kreiraj faze za novi nalog
                 for (const phase of ['100', '200', '300', '400', '500']) {
                     await pool.query(
                         `INSERT INTO progress (order_id, phase, status, comment, updated_at)
@@ -296,7 +278,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
     }
 });
 
-// ============ GET ORDERS ============
+// ============ ORDERS ============
 app.get('/api/orders', authenticate, async (req, res) => {
     try {
         const { search, page = 1, limit = 100 } = req.query;
@@ -362,7 +344,7 @@ app.get('/api/orders', authenticate, async (req, res) => {
     }
 });
 
-// ============ UPDATE PHASE - SA DATUMOM ============
+// ============ UPDATE PHASE ============
 app.post('/api/update-phase', authenticate, async (req, res) => {
     try {
         const { orderId, phase, status, comment } = req.body;
@@ -538,165 +520,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         res.json({ message: '✅ Izveštaj poslat!', activeCount: activeOrders.length });
     } catch (e) {
         console.error('❌ Send report error:', e);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// GET COMPANIES
-app.get('/api/companies', authenticate, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
-    }
-    try {
-        const result = await pool.query('SELECT DISTINCT company FROM orders WHERE company IS NOT NULL AND company != \'\'');
-        res.json(result.rows.map(r => r.company));
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// ============ BACKUP I RESTORE ============
-
-// 1. Proveri da li backup postoji
-app.get('/api/backup-status', authenticate, (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Samo admin može' });
-    }
-    try {
-        const backupPath = path.join(__dirname, 'backup.json');
-        if (fs.existsSync(backupPath)) {
-            const backup = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
-            res.json({
-                exists: true,
-                timestamp: backup.timestamp,
-                count: {
-                    users: backup.users.length,
-                    orders: backup.orders.length,
-                    progress: backup.progress.length
-                }
-            });
-        } else {
-            res.json({ exists: false });
-        }
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// 2. Kreiraj backup
-app.post('/api/backup', authenticate, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Samo admin može' });
-    }
-    try {
-        const orders = await pool.query('SELECT * FROM orders ORDER BY id');
-        const progress = await pool.query('SELECT * FROM progress');
-        const users = await pool.query('SELECT id, username, role, company FROM users');
-
-        const backup = {
-            timestamp: new Date().toISOString(),
-            users: users.rows,
-            orders: orders.rows,
-            progress: progress.rows
-        };
-
-        const backupPath = path.join(__dirname, 'backup.json');
-        fs.writeFileSync(backupPath, JSON.stringify(backup, null, 2));
-
-        console.log('✅ Backup kreiran:', backup.timestamp);
-        res.json({ 
-            message: '✅ Backup uspešno kreiran!', 
-            timestamp: backup.timestamp,
-            count: {
-                users: backup.users.length,
-                orders: backup.orders.length,
-                progress: backup.progress.length
-            }
-        });
-    } catch (e) {
-        console.error('❌ Backup error:', e);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// 3. Vrati podatke iz backup-a
-app.post('/api/restore', authenticate, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Samo admin može' });
-    }
-    try {
-        const backupPath = path.join(__dirname, 'backup.json');
-        
-        if (!fs.existsSync(backupPath)) {
-            return res.status(404).json({ error: 'Nema backup fajla. Prvo napravite backup.' });
-        }
-
-        const backup = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
-        console.log('📂 Vraćam backup od:', backup.timestamp);
-
-        const client = await pool.connect();
-        try {
-            await client.query('BEGIN');
-
-            // Obriši sve postojeće podatke
-            await client.query('DELETE FROM progress');
-            await client.query('DELETE FROM orders');
-            await client.query('DELETE FROM users');
-
-            // Vrati korisnike (osim admina koji je već tu)
-            for (const u of backup.users) {
-                if (u.username !== 'admin') {
-                    await client.query(
-                        'INSERT INTO users (id, username, role, company) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING',
-                        [u.id, u.username, u.role, u.company]
-                    );
-                }
-            }
-
-            // Vrati naloge
-            for (const o of backup.orders) {
-                await client.query(
-                    `INSERT INTO orders (id, company, code, name, order_number, quantity, delivery_date)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)
-                     ON CONFLICT (id) DO UPDATE SET
-                     company = EXCLUDED.company, code = EXCLUDED.code, name = EXCLUDED.name,
-                     order_number = EXCLUDED.order_number, quantity = EXCLUDED.quantity,
-                     delivery_date = EXCLUDED.delivery_date`,
-                    [o.id, o.company, o.code, o.name, o.order_number, o.quantity, o.delivery_date]
-                );
-            }
-
-            // Vrati progres
-            for (const p of backup.progress) {
-                await client.query(
-                    `INSERT INTO progress (order_id, phase, status, comment, updated_at)
-                     VALUES ($1, $2, $3, $4, $5)
-                     ON CONFLICT (order_id, phase) DO UPDATE SET
-                     status = EXCLUDED.status, comment = EXCLUDED.comment, updated_at = EXCLUDED.updated_at`,
-                    [p.order_id, p.phase, p.status, p.comment, p.updated_at]
-                );
-            }
-
-            await client.query('COMMIT');
-            console.log('✅ Restore uspešan!');
-
-            res.json({ 
-                message: '✅ Podaci uspešno vraćeni!',
-                timestamp: backup.timestamp,
-                count: {
-                    users: backup.users.length,
-                    orders: backup.orders.length,
-                    progress: backup.progress.length
-                }
-            });
-        } catch (e) {
-            await client.query('ROLLBACK');
-            throw e;
-        } finally {
-            client.release();
-        }
-    } catch (e) {
-        console.error('❌ Restore error:', e);
         res.status(500).json({ error: e.message });
     }
 });
