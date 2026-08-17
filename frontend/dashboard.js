@@ -379,6 +379,7 @@ function renderPhases(order) {
     phases.forEach(phase => {
         const statusEmoji = phase.status === 'completed' ? '✅' : 
                            phase.status === 'problem' ? '⚠️' : '⬜';
+        const commentValue = phase.comment || '';
         
         html += `
             <div class="phase-card">
@@ -396,7 +397,7 @@ function renderPhases(order) {
                     <textarea 
                         placeholder="Komentar..." 
                         onchange="updatePhaseComment(${order.id}, '${phase.phase}', this.value)"
-                    >${phase.comment || ''}</textarea>
+                    >${commentValue}</textarea>
                 </div>
             </div>
         `;
@@ -423,13 +424,12 @@ async function updatePhase(orderId, phase, status) {
         if (response.ok) {
             console.log('✅ Faza ažurirana');
             
+            // Ažuriraj orders niz u memoriji
             const orderIndex = orders.findIndex(o => o.id === orderId);
             if (orderIndex !== -1) {
                 const order = orders[orderIndex];
                 
-                if (!order.progress) {
-                    order.progress = [];
-                }
+                if (!order.progress) order.progress = [];
                 
                 const phaseData = order.progress.find(p => p.phase === phase);
                 if (phaseData) {
@@ -437,16 +437,21 @@ async function updatePhase(orderId, phase, status) {
                 } else {
                     order.progress.push({ phase, status, comment: '' });
                 }
-                
-                renderPhases(order);
-                
-                renderOrders(orders, {
-                    total: totalOrders,
-                    page: currentPage,
-                    totalPages: totalPages,
-                    limit: LIMIT
-                });
             }
+            
+            // Ponovo prikaži faze (odmah)
+            const order = orders.find(o => o.id === orderId);
+            if (order) {
+                renderPhases(order);
+            }
+            
+            // Osvježi tabelu (status u tabeli)
+            renderOrders(orders, {
+                total: totalOrders,
+                page: currentPage,
+                totalPages: totalPages,
+                limit: LIMIT
+            });
             
         } else {
             alert(`❌ Greška: ${data.error}`);
@@ -459,7 +464,9 @@ async function updatePhase(orderId, phase, status) {
 
 async function updatePhaseComment(orderId, phase, comment) {
     try {
-        await fetch('/api/update-phase', {
+        console.log(`💬 Čuvam komentar za fazu ${phase}: "${comment}"`);
+        
+        const response = await fetch('/api/update-phase', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -467,6 +474,32 @@ async function updatePhaseComment(orderId, phase, comment) {
             },
             body: JSON.stringify({ orderId, phase, status: 'pending', comment })
         });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            console.log('✅ Komentar sačuvan');
+            
+            // Ažuriraj orders niz
+            const orderIndex = orders.findIndex(o => o.id === orderId);
+            if (orderIndex !== -1) {
+                const order = orders[orderIndex];
+                if (order.progress) {
+                    const phaseData = order.progress.find(p => p.phase === phase);
+                    if (phaseData) {
+                        phaseData.comment = comment;
+                    }
+                }
+            }
+            
+            // Ponovo prikaži faze (da se vidi komentar)
+            const order = orders.find(o => o.id === orderId);
+            if (order) {
+                renderPhases(order);
+            }
+        } else {
+            console.error('❌ Greška pri čuvanju komentara:', data.error);
+        }
     } catch (error) {
         console.error('Update comment error:', error);
     }
@@ -510,11 +543,9 @@ const uploadStatus = document.getElementById('uploadStatus');
 if (uploadForm) {
     console.log('✅ Upload form pronađen');
     
-    // Ukloni stare event listenere (ako ih ima)
     const newUploadForm = uploadForm.cloneNode(true);
     uploadForm.parentNode.replaceChild(newUploadForm, uploadForm);
     
-    // Ponovo pronađi elemente
     const newFileInput = document.getElementById('fileInput');
     const newUploadStatus = document.getElementById('uploadStatus');
     
