@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Production Tracker</title>
     <link rel="stylesheet" href="style.css">
+    <!-- Ikona za telefon -->
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-title" content="Production Tracker">
+    <meta name="mobile-web-app-capable" content="yes">
 </head>
 <body>
     <div class="dashboard">
@@ -46,6 +53,16 @@
                     <div class="admin-section">
                         <h3>📋 Korisnici</h3>
                         <div id="usersList"></div>
+                    </div>
+                    <!-- ======== BACKUP I RESTORE ======== -->
+                    <div class="admin-section">
+                        <h3>💾 Backup & Restore</h3>
+                        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+                            <button id="backupBtn" class="btn-primary" style="background:#48bb78;">📥 Backup</button>
+                            <button id="restoreBtn" class="btn-primary" style="background:#ed8936;">📤 Restore</button>
+                            <span id="backupStatus" style="font-size:14px;color:#718096;padding:8px;"></span>
+                        </div>
+                        <div id="backupMessage" style="margin-top:10px;"></div>
                     </div>
                 </div>
             </div>
