@@ -28,10 +28,8 @@ const pool = new Pool({
     ssl: { rejectUnauthorized: false }
 });
 
-// Inicijalizacija tabela
 const initDb = async () => {
     try {
-        // Tabela za korisnike
         await pool.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -43,7 +41,6 @@ const initDb = async () => {
             )
         `);
 
-        // Tabela za naloge
         await pool.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id BIGINT PRIMARY KEY,
@@ -57,7 +54,6 @@ const initDb = async () => {
             )
         `);
 
-        // Tabela za progres (faze) - sa datumom
         await pool.query(`
             CREATE TABLE IF NOT EXISTS progress (
                 id SERIAL PRIMARY KEY,
@@ -70,7 +66,6 @@ const initDb = async () => {
             )
         `);
 
-        // Kreiraj admin korisnika ako ne postoji
         const adminCheck = await pool.query('SELECT * FROM users WHERE username = $1', ['admin']);
         if (adminCheck.rows.length === 0) {
             const hashedPassword = await bcrypt.hash('admin123', 10);
@@ -99,7 +94,6 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, '../frontend')));
 
-// ============ ROOT ROUTE ============
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, '../frontend/index.html'));
 });
@@ -137,7 +131,7 @@ const authenticate = (req, res, next) => {
     }
 };
 
-// ============ EMAIL TRANSPORTER ============
+// ============ EMAIL ============
 let transporter = null;
 try {
     if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
@@ -157,7 +151,6 @@ try {
 
 // ============ ROUTES ============
 
-// LOGIN
 app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -178,7 +171,6 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// GET USERS
 app.get('/api/users', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
     try {
@@ -189,7 +181,6 @@ app.get('/api/users', authenticate, async (req, res) => {
     }
 });
 
-// CREATE USER
 app.post('/api/users', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
     try {
@@ -209,8 +200,49 @@ app.post('/api/users', authenticate, async (req, res) => {
     }
 });
 
-// ============ UPLOAD - ČUVA FAZE ============
-app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
+// ============ ZAJEDNIČKA FUNKCIJA ============
+const findValue = (row, keys) => {
+    for (let key of keys) {
+        if (row[key] !== undefined && row[key] !== null && row[key] !== '') {
+            return row[key];
+        }
+    }
+    return '';
+};
+
+// ============ 1. OBRISI SVE ============
+app.post('/api/clear-all', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Samo admin može' });
+    }
+    try {
+        const ordersBackup = await pool.query('SELECT * FROM orders');
+        const progressBackup = await pool.query('SELECT * FROM progress');
+        const backup = {
+            timestamp: new Date().toISOString(),
+            orders: ordersBackup.rows,
+            progress: progressBackup.rows
+        };
+        const backupPath = path.join(__dirname, 'backup_before_clear.json');
+        fs.writeFileSync(backupPath, JSON.stringify(backup, null, 2));
+        console.log('📦 Backup kreiran pre brisanja');
+
+        await pool.query('DELETE FROM progress');
+        await pool.query('DELETE FROM orders');
+        
+        console.log('🗑️ Svi podaci obrisani');
+        res.json({ 
+            message: '✅ Svi podaci obrisani! Backup sačuvan.',
+            count: ordersBackup.rows.length 
+        });
+    } catch (e) {
+        console.error('❌ Clear error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ 2. SINHRONIZUJ SA EXCEL-OM ============
+app.post('/api/upload-sync', authenticate, upload.single('file'), async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
     }
@@ -224,18 +256,37 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
 
         console.log('📊 Redova:', data.length);
 
-        const findValue = (row, keys) => {
-            for (let key of keys) {
-                if (row[key] !== undefined && row[key] !== null && row[key] !== '') {
-                    return row[key];
-                }
+        // 1. Sakupi sve naloge iz Excel-a
+        const excelOrders = [];
+        for (const row of data) {
+            const company = findValue(row, ['ime firme', 'IME FIRME', 'Firma', 'firma', 'Ime firme', 'Company', 'company', 'Naziv firme']);
+            const orderNumber = findValue(row, ['broj nalog', 'BROJ NALOG', 'Nalog', 'nalog', 'Broj naloga', 'broj naloga', 'Order', 'order', 'Order Number']);
+            if (company && orderNumber) {
+                excelOrders.push({ company, order_number: orderNumber });
             }
-            return '';
-        };
+        }
 
-        let inserted = 0;
+        console.log(`📋 Excel ima ${excelOrders.length} naloga`);
+
+        // 2. Pronađi i obriši naloge koji NISU u Excel-u
+        const allDbOrders = await pool.query('SELECT id, company, order_number FROM orders');
+        let deleted = 0;
         let updated = 0;
+        let inserted = 0;
 
+        for (const dbOrder of allDbOrders.rows) {
+            const exists = excelOrders.some(e => e.company === dbOrder.company && e.order_number === dbOrder.order_number);
+            if (!exists) {
+                await pool.query('DELETE FROM progress WHERE order_id = $1', [dbOrder.id]);
+                await pool.query('DELETE FROM orders WHERE id = $1', [dbOrder.id]);
+                deleted++;
+                console.log(`🗑️ Obrisan nalog: ${dbOrder.order_number} (${dbOrder.company})`);
+            }
+        }
+
+        console.log(`🗑️ Obrisano ${deleted} naloga koji nisu u Excel-u`);
+
+        // 3. Procesiraj Excel (dodaj nove, ažuriraj postojeće)
         for (let i = 0; i < data.length; i++) {
             const row = data[i];
 
@@ -248,11 +299,9 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
 
             if (!company && !code && !orderNumber) continue;
 
-            // Proveri da li nalog već postoji
             const existing = await pool.query('SELECT id FROM orders WHERE order_number = $1 AND company = $2', [orderNumber, company]);
             
             if (existing.rows.length > 0) {
-                // Ažuriraj postojeći nalog (ne diraj faze!)
                 await pool.query(
                     `UPDATE orders SET 
                         code = $1, name = $2, quantity = $3, delivery_date = $4
@@ -261,7 +310,6 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                 );
                 updated++;
             } else {
-                // Dodaj novi nalog
                 const newId = Date.now() + i;
                 await pool.query(
                     `INSERT INTO orders (id, company, code, name, order_number, quantity, delivery_date)
@@ -269,7 +317,6 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                     [newId, company, code, name, orderNumber, quantity, deliveryDate]
                 );
                 
-                // Kreiraj faze za novi nalog
                 for (const phase of ['100', '200', '300', '400', '500']) {
                     await pool.query(
                         `INSERT INTO progress (order_id, phase, status, comment, updated_at)
@@ -282,11 +329,12 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
             }
         }
 
-        console.log(`📦 Novih: ${inserted}, Ažuriranih: ${updated}`);
+        console.log(`📦 Novih: ${inserted}, Ažuriranih: ${updated}, Obrisanih: ${deleted}`);
         res.json({ 
-            message: `✅ Novih: ${inserted}, Ažuriranih: ${updated}`, 
+            message: `✅ Novih: ${inserted}, Ažuriranih: ${updated}, Obrisanih: ${deleted}`,
             inserted, 
-            updated,
+            updated, 
+            deleted,
             totalRows: data.length 
         });
 
@@ -296,7 +344,8 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
     }
 });
 
-// ============ GET ORDERS ============
+// ============ OSTALE RUTE ============
+
 app.get('/api/orders', authenticate, async (req, res) => {
     try {
         const { search, page = 1, limit = 100 } = req.query;
@@ -362,7 +411,6 @@ app.get('/api/orders', authenticate, async (req, res) => {
     }
 });
 
-// ============ UPDATE PHASE - SA DATUMOM ============
 app.post('/api/update-phase', authenticate, async (req, res) => {
     try {
         const { orderId, phase, status, comment } = req.body;
@@ -381,7 +429,6 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
     }
 });
 
-// ============ SEND REPORT ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
         if (!transporter) {
@@ -542,7 +589,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
     }
 });
 
-// GET COMPANIES
 app.get('/api/companies', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
@@ -557,7 +603,6 @@ app.get('/api/companies', authenticate, async (req, res) => {
 
 // ============ BACKUP I RESTORE ============
 
-// 1. Proveri da li backup postoji
 app.get('/api/backup-status', authenticate, (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Samo admin može' });
@@ -583,7 +628,6 @@ app.get('/api/backup-status', authenticate, (req, res) => {
     }
 });
 
-// 2. Kreiraj backup
 app.post('/api/backup', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Samo admin može' });
@@ -619,7 +663,6 @@ app.post('/api/backup', authenticate, async (req, res) => {
     }
 });
 
-// 3. Vrati podatke iz backup-a
 app.post('/api/restore', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Samo admin može' });
@@ -637,13 +680,10 @@ app.post('/api/restore', authenticate, async (req, res) => {
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
-
-            // Obriši sve postojeće podatke
             await client.query('DELETE FROM progress');
             await client.query('DELETE FROM orders');
             await client.query('DELETE FROM users');
 
-            // Vrati korisnike (osim admina koji je već tu)
             for (const u of backup.users) {
                 if (u.username !== 'admin') {
                     await client.query(
@@ -653,7 +693,6 @@ app.post('/api/restore', authenticate, async (req, res) => {
                 }
             }
 
-            // Vrati naloge
             for (const o of backup.orders) {
                 await client.query(
                     `INSERT INTO orders (id, company, code, name, order_number, quantity, delivery_date)
@@ -666,7 +705,6 @@ app.post('/api/restore', authenticate, async (req, res) => {
                 );
             }
 
-            // Vrati progres
             for (const p of backup.progress) {
                 await client.query(
                     `INSERT INTO progress (order_id, phase, status, comment, updated_at)

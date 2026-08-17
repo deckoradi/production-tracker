@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Production Tracker</title>
     <link rel="stylesheet" href="style.css">
-    <!-- Ikona za telefon -->
     <link rel="apple-touch-icon" href="icon-192.png">
     <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -34,14 +33,6 @@
                 </div>
                 <div class="panel-body">
                     <div class="admin-section">
-                        <h3>📤 Upload Excel</h3>
-                        <form id="uploadForm" class="upload-form">
-                            <input type="file" id="fileInput" accept=".xlsx,.xls">
-                            <button type="submit" class="btn-primary">Upload</button>
-                        </form>
-                        <div id="uploadStatus"></div>
-                    </div>
-                    <div class="admin-section">
                         <h3>👤 Novi korisnik</h3>
                         <form id="createUserForm" class="user-form">
                             <input type="text" id="newUsername" placeholder="Korisničko ime" required>
@@ -50,11 +41,32 @@
                         </form>
                         <div id="userStatus"></div>
                     </div>
+
                     <div class="admin-section">
                         <h3>📋 Korisnici</h3>
                         <div id="usersList"></div>
                     </div>
-                    <!-- ======== BACKUP I RESTORE ======== -->
+
+                    <!-- ============ SINHRONIZUJ ============ -->
+                    <div class="admin-section" style="border: 2px solid #48bb78; border-radius: 8px;">
+                        <h3 style="color: #276749;">🔄 Sinhronizuj sa Excel-om</h3>
+                        <p style="font-size:12px;color:#718096;">Dodaje nove, ažurira postojeće, BRIŠE one koji nisu u Excel-u (čuva faze)</p>
+                        <form id="uploadSyncForm" class="upload-form">
+                            <input type="file" id="fileInputSync" accept=".xlsx,.xls">
+                            <button type="submit" class="btn-primary" style="background:#48bb78;">🔄 Sinhronizuj</button>
+                        </form>
+                        <div id="uploadSyncStatus"></div>
+                    </div>
+
+                    <!-- ============ OBRISI SVE ============ -->
+                    <div class="admin-section" style="border: 2px solid #fc8181; border-radius: 8px;">
+                        <h3 style="color: #e53e3e;">🗑️ Obriši sve podatke</h3>
+                        <p style="font-size:12px;color:#718096;">Briše SVE naloge i faze (pravi automatski backup)</p>
+                        <button id="clearAllBtn" class="btn-primary" style="background:#e53e3e;">🗑️ Obriši sve</button>
+                        <div id="clearAllStatus"></div>
+                    </div>
+
+                    <!-- ============ BACKUP ============ -->
                     <div class="admin-section">
                         <h3>💾 Backup & Restore</h3>
                         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">

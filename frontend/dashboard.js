@@ -38,6 +38,7 @@ companyDisplay.textContent = currentUser.company;
 if (currentUser.role === 'admin') {
     adminPanel.classList.remove('hidden');
     loadUsers();
+    checkBackupStatus();
 }
 
 // Event Listeners
@@ -76,54 +77,6 @@ closeModal.addEventListener('click', () => {
 window.addEventListener('click', (e) => {
     if (e.target === phaseModal) {
         phaseModal.classList.add('hidden');
-    }
-});
-
-// Upload form
-document.getElementById('uploadForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const fileInput = document.getElementById('fileInput');
-    const statusDiv = document.getElementById('uploadStatus');
-    
-    if (!fileInput.files[0]) {
-        statusDiv.textContent = 'Molimo izaberite fajl';
-        statusDiv.className = 'error';
-        return;
-    }
-    
-    statusDiv.textContent = '⏳ Učitavanje...';
-    statusDiv.className = '';
-    
-    const formData = new FormData();
-    formData.append('file', fileInput.files[0]);
-    
-    try {
-        const startTime = Date.now();
-        const response = await fetch('/api/upload', {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${token}`
-            },
-            body: formData
-        });
-        
-        const data = await response.json();
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        
-        if (response.ok) {
-            statusDiv.textContent = `✅ Učitano ${data.count} naloga za ${elapsed}s`;
-            statusDiv.className = 'success';
-            fileInput.value = '';
-            currentPage = 1;
-            setTimeout(() => loadOrders('', 1), 500);
-        } else {
-            statusDiv.textContent = `❌ Greška: ${data.error}`;
-            statusDiv.className = 'error';
-        }
-    } catch (error) {
-        statusDiv.textContent = '❌ Greška pri upload-u';
-        statusDiv.className = 'error';
-        console.error('Upload error:', error);
     }
 });
 
@@ -189,6 +142,165 @@ sendReportBtn.addEventListener('click', async () => {
     } catch (error) {
         alert('❌ Greška pri slanju');
         console.error('Send report error:', error);
+    }
+});
+
+// ============ BACKUP ============
+
+async function checkBackupStatus() {
+    try {
+        const response = await fetch('/api/backup-status', {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        const data = await response.json();
+        const statusEl = document.getElementById('backupStatus');
+        if (data.exists) {
+            statusEl.textContent = `📁 Backup: ${data.timestamp} (${data.count.orders} naloga)`;
+            statusEl.style.color = '#48bb78';
+        } else {
+            statusEl.textContent = '❌ Nema backup-a';
+            statusEl.style.color = '#fc8181';
+        }
+    } catch (e) {
+        console.error('Backup status error:', e);
+    }
+}
+
+document.getElementById('backupBtn').addEventListener('click', async () => {
+    const msg = document.getElementById('backupMessage');
+    msg.innerHTML = '⏳ Kreiranje backup-a...';
+    msg.className = '';
+    
+    try {
+        const response = await fetch('/api/backup', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        const data = await response.json();
+        
+        if (response.ok) {
+            msg.innerHTML = `✅ ${data.message} (${data.count.orders} naloga, ${data.count.users} korisnika)`;
+            msg.className = 'success';
+            checkBackupStatus();
+        } else {
+            msg.innerHTML = `❌ Greška: ${data.error}`;
+            msg.className = 'error';
+        }
+    } catch (e) {
+        msg.innerHTML = '❌ Greška pri backup-u';
+        msg.className = 'error';
+        console.error(e);
+    }
+});
+
+document.getElementById('restoreBtn').addEventListener('click', async () => {
+    if (!confirm('⚠️ Ovo će ZAMENITI sve podatke u bazi sa backup-om. Nastaviti?')) return;
+    
+    const msg = document.getElementById('backupMessage');
+    msg.innerHTML = '⏳ Vraćanje podataka...';
+    msg.className = '';
+    
+    try {
+        const response = await fetch('/api/restore', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        const data = await response.json();
+        
+        if (response.ok) {
+            msg.innerHTML = `✅ ${data.message} (${data.count.orders} naloga, ${data.count.users} korisnika)`;
+            msg.className = 'success';
+            checkBackupStatus();
+            setTimeout(() => loadOrders('', 1), 1000);
+        } else {
+            msg.innerHTML = `❌ Greška: ${data.error}`;
+            msg.className = 'error';
+        }
+    } catch (e) {
+        msg.innerHTML = '❌ Greška pri restore-u';
+        msg.className = 'error';
+        console.error(e);
+    }
+});
+
+// ============ CLEAN ALL ============
+document.getElementById('clearAllBtn').addEventListener('click', async () => {
+    if (!confirm('⚠️ Ovo će OBRISATI SVE naloge i faze! Backup će biti sačuvan. Nastaviti?')) return;
+    
+    const statusDiv = document.getElementById('clearAllStatus');
+    statusDiv.textContent = '⏳ Brisanje...';
+    statusDiv.className = '';
+    
+    try {
+        const response = await fetch('/api/clear-all', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        const data = await response.json();
+        
+        if (response.ok) {
+            statusDiv.textContent = `✅ ${data.message} (${data.count} naloga obrisano)`;
+            statusDiv.className = 'success';
+            setTimeout(() => loadOrders('', 1), 1000);
+        } else {
+            statusDiv.textContent = `❌ Greška: ${data.error}`;
+            statusDiv.className = 'error';
+        }
+    } catch (e) {
+        statusDiv.textContent = '❌ Greška pri brisanju';
+        statusDiv.className = 'error';
+        console.error(e);
+    }
+});
+
+// ============ SYNC UPLOAD ============
+document.getElementById('uploadSyncForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fileInput = document.getElementById('fileInputSync');
+    const statusDiv = document.getElementById('uploadSyncStatus');
+    
+    if (!fileInput.files[0]) {
+        statusDiv.textContent = 'Molimo izaberite fajl';
+        statusDiv.className = 'error';
+        return;
+    }
+    
+    statusDiv.textContent = '⏳ Sinhronizacija...';
+    statusDiv.className = '';
+    
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    
+    try {
+        const response = await fetch('/api/upload-sync', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            },
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            statusDiv.textContent = `✅ ${data.message}`;
+            statusDiv.className = 'success';
+            fileInput.value = '';
+            setTimeout(() => loadOrders('', 1), 1000);
+        } else {
+            statusDiv.textContent = `❌ Greška: ${data.error}`;
+            statusDiv.className = 'error';
+        }
+    } catch (error) {
+        statusDiv.textContent = '❌ Greška pri sinhronizaciji';
+        statusDiv.className = 'error';
+        console.error('Upload error:', error);
     }
 });
 
@@ -365,7 +477,6 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// ============ OPEN ORDER - SA SAKRIVANJEM FIRME ZA TUĐE NALOGE ============
 function openOrder(orderId) {
     const order = orders.find(o => o.id === orderId);
     if (!order) {
@@ -376,16 +487,13 @@ function openOrder(orderId) {
     selectedOrderId = orderId;
     modalOrderNumber.textContent = order.orderNumber || order.nalog || 'N/A';
     
-    // Proveri da li je admin ILI je nalog korisnikov
     const isAdmin = currentUser && currentUser.role === 'admin';
     const isOwnOrder = order.company === currentUser.company;
     
     let companyHtml = '';
     if (isAdmin || isOwnOrder) {
-        // Admin i vlasnik naloga vide firmu
         companyHtml = `<p><strong>Firma:</strong> ${escapeHtml(order.company || order.firma || '')}</p>`;
     } else {
-        // Tuđi nalog - sakrivamo firmu
         companyHtml = `<p style="display:none;"><strong>Firma:</strong> ${escapeHtml(order.company || order.firma || '')}</p>`;
     }
     
