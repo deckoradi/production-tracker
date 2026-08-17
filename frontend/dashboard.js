@@ -437,10 +437,14 @@ async function updatePhase(orderId, phase, status) {
                 }
             }
             
-            // 2. PONOVO PRIKAŽI FAZE - OVO JE KLJUČNO!
+            // 2. OTVORI PONOVO NALOG SA OSVEŽENIM PODACIMA
             const updatedOrder = orders.find(o => o.id === orderId);
             if (updatedOrder) {
-                renderPhases(updatedOrder);
+                // Zatvori i ponovo otvori modal
+                phaseModal.classList.add('hidden');
+                setTimeout(() => {
+                    openOrder(orderId);
+                }, 50);
             }
             
             // 3. Osvježi tabelu
@@ -490,10 +494,13 @@ async function updatePhaseComment(orderId, phase, comment) {
                 }
             }
             
-            // PONOVO PRIKAŽI FAZE - OVO JE KLJUČNO!
+            // OTVORI PONOVO NALOG
             const updatedOrder = orders.find(o => o.id === orderId);
             if (updatedOrder) {
-                renderPhases(updatedOrder);
+                phaseModal.classList.add('hidden');
+                setTimeout(() => {
+                    openOrder(orderId);
+                }, 50);
             }
             
         } else {
