@@ -329,14 +329,11 @@ function escapeHtml(text) {
 
 function openOrder(orderId) {
     console.log('🔍 openOrder pozvana sa ID:', orderId);
-    console.log('📦 orders length:', orders.length);
     
-    // Pronađi nalog po ID-u (pazi: ID može biti string ili broj)
     const order = orders.find(o => String(o.id) === String(orderId));
     
     if (!order) {
         console.error('❌ Order not found:', orderId);
-        console.log('📦 Svi ID-evi u orders:', orders.map(o => o.id));
         return;
     }
     
@@ -407,6 +404,8 @@ function renderPhases(order) {
 
 async function updatePhase(orderId, phase, status) {
     try {
+        console.log(`🔄 Menjam fazu ${phase} na status ${status} za nalog ${orderId}`);
+        
         const response = await fetch('/api/update-phase', {
             method: 'POST',
             headers: {
@@ -419,12 +418,36 @@ async function updatePhase(orderId, phase, status) {
         const data = await response.json();
         
         if (response.ok) {
-            const search = document.getElementById('searchInput').value || '';
-            await loadOrders(search, currentPage);
+            console.log('✅ Faza ažurirana');
+            
+            // Ažuriraj orders niz u memoriji
             const order = orders.find(o => o.id === orderId);
             if (order) {
-                renderPhases(order);
+                if (order.progress) {
+                    const phaseData = order.progress.find(p => p.phase === phase);
+                    if (phaseData) {
+                        phaseData.status = status;
+                    }
+                }
+                if (!order.progress) {
+                    order.progress = [];
+                }
+                if (!order.progress.find(p => p.phase === phase)) {
+                    order.progress.push({ phase, status, comment: '' });
+                }
             }
+            
+            // Ponovo prikaži faze (bez reload-a)
+            renderPhases(order);
+            
+            // Osvježi tabelu
+            renderOrders(orders, {
+                total: totalOrders,
+                page: currentPage,
+                totalPages: totalPages,
+                limit: LIMIT
+            });
+            
         } else {
             alert(`❌ Greška: ${data.error}`);
         }
