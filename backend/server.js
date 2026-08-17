@@ -524,6 +524,22 @@ app.post('/api/send-report', authenticate, async (req, res) => {
     }
 });
 
+// ============ RESET BAZE ============
+app.post('/api/reset-db', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Samo admin može' });
+    }
+    try {
+        await pool.query('DROP TABLE IF EXISTS progress');
+        await pool.query('DROP TABLE IF EXISTS orders');
+        await pool.query('DROP TABLE IF EXISTS users');
+        await initDb();
+        res.json({ message: '✅ Baza resetovana!' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ============ POKRENI SERVER ============
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`);
