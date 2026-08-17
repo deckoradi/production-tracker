@@ -502,7 +502,87 @@ async function loadUsers() {
     }
 }
 
-// ============ RESET BAZE - SA PROVEROM DA LI DUGME POSTOJI ============
+// ============ UPLOAD ============
+const uploadForm = document.getElementById('uploadForm');
+const fileInput = document.getElementById('fileInput');
+const uploadStatus = document.getElementById('uploadStatus');
+
+if (uploadForm) {
+    console.log('✅ Upload form pronađen');
+    
+    // Ukloni stare event listenere (ako ih ima)
+    const newUploadForm = uploadForm.cloneNode(true);
+    uploadForm.parentNode.replaceChild(newUploadForm, uploadForm);
+    
+    // Ponovo pronađi elemente
+    const newFileInput = document.getElementById('fileInput');
+    const newUploadStatus = document.getElementById('uploadStatus');
+    
+    newUploadForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        console.log('📤 Upload dugme kliknuto!');
+        
+        if (!newFileInput || !newFileInput.files || newFileInput.files.length === 0) {
+            if (newUploadStatus) {
+                newUploadStatus.textContent = '⚠️ Izaberite fajl!';
+                newUploadStatus.className = 'error';
+            }
+            return;
+        }
+        
+        const file = newFileInput.files[0];
+        console.log('📂 Fajl:', file.name, file.size, 'bajtova');
+        
+        if (newUploadStatus) {
+            newUploadStatus.textContent = '⏳ Učitavanje...';
+            newUploadStatus.className = '';
+        }
+        
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        try {
+            const response = await fetch('/api/upload', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                },
+                body: formData
+            });
+            
+            const data = await response.json();
+            console.log('📦 Odgovor:', data);
+            
+            if (response.ok) {
+                if (newUploadStatus) {
+                    newUploadStatus.textContent = `✅ ${data.message}`;
+                    newUploadStatus.className = 'success';
+                }
+                newFileInput.value = '';
+                setTimeout(() => loadOrders('', 1), 1000);
+            } else {
+                if (newUploadStatus) {
+                    newUploadStatus.textContent = `❌ Greška: ${data.error}`;
+                    newUploadStatus.className = 'error';
+                }
+            }
+        } catch (error) {
+            console.error('❌ Upload error:', error);
+            if (newUploadStatus) {
+                newUploadStatus.textContent = '❌ Greška pri upload-u';
+                newUploadStatus.className = 'error';
+            }
+        }
+    });
+    
+    console.log('✅ Upload event listener dodat');
+} else {
+    console.error('❌ Upload form nije pronađen');
+}
+
+// ============ RESET BAZE ============
 const resetBtn = document.getElementById('resetDbBtn');
 if (resetBtn) {
     resetBtn.addEventListener('click', async () => {
