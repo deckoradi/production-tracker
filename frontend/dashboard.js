@@ -428,9 +428,7 @@ async function updatePhase(orderId, phase, status) {
             const orderIndex = orders.findIndex(o => o.id === orderId);
             if (orderIndex !== -1) {
                 const order = orders[orderIndex];
-                
                 if (!order.progress) order.progress = [];
-                
                 const phaseData = order.progress.find(p => p.phase === phase);
                 if (phaseData) {
                     phaseData.status = status;
@@ -439,25 +437,19 @@ async function updatePhase(orderId, phase, status) {
                 }
             }
             
-            // 2. Ponovo prikaži faze (odmah)
-            const order = orders.find(o => o.id === orderId);
-            if (order) {
-                renderPhases(order);
+            // 2. PONOVO PRIKAŽI FAZE - OVO JE KLJUČNO!
+            const updatedOrder = orders.find(o => o.id === orderId);
+            if (updatedOrder) {
+                renderPhases(updatedOrder);
             }
             
-            // 3. Osvježi tabelu (status u tabeli)
+            // 3. Osvježi tabelu
             renderOrders(orders, {
                 total: totalOrders,
                 page: currentPage,
                 totalPages: totalPages,
                 limit: LIMIT
             });
-            
-            // 4. Osvježi modal - ako je otvoren, ostani otvoren
-            if (phaseModal.classList.contains('hidden') === false) {
-                // Modal je otvoren, ostaje otvoren sa novim podacima
-                phaseModal.classList.remove('hidden');
-            }
             
         } else {
             alert(`❌ Greška: ${data.error}`);
@@ -498,15 +490,10 @@ async function updatePhaseComment(orderId, phase, comment) {
                 }
             }
             
-            // Ponovo prikaži faze (da se vidi komentar)
-            const order = orders.find(o => o.id === orderId);
-            if (order) {
-                renderPhases(order);
-            }
-            
-            // Osvježi modal
-            if (phaseModal.classList.contains('hidden') === false) {
-                phaseModal.classList.remove('hidden');
+            // PONOVO PRIKAŽI FAZE - OVO JE KLJUČNO!
+            const updatedOrder = orders.find(o => o.id === orderId);
+            if (updatedOrder) {
+                renderPhases(updatedOrder);
             }
             
         } else {
