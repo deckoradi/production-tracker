@@ -1,8 +1,29 @@
-// ============ MINIMALNA RADNA VERZIJA ============
-console.log('🔥 MINIMALNA VERZIJA UČITANA!');
-
 // State
+let currentUser = null;
 let orders = [];
+let selectedOrderId = null;
+let currentPage = 1;
+let totalPages = 1;
+let totalOrders = 0;
+const LIMIT = 100;
+
+// DOM Elements
+const companyDisplay = document.getElementById('companyDisplay');
+const adminPanel = document.getElementById('adminPanel');
+const ordersContainer = document.getElementById('ordersContainer');
+const searchInput = document.getElementById('searchInput');
+const searchBtn = document.getElementById('searchBtn');
+const clearSearchBtn = document.getElementById('clearSearchBtn');
+const logoutBtn = document.getElementById('logoutBtn');
+const sendReportBtn = document.getElementById('sendReportBtn');
+const phaseModal = document.getElementById('phaseModal');
+const modalOrderNumber = document.getElementById('modalOrderNumber');
+const modalOrderInfo = document.getElementById('modalOrderInfo');
+const phasesContainer = document.getElementById('phasesContainer');
+const closeModal = document.querySelector('.close-modal');
+const orderCount = document.getElementById('orderCount');
+
+// Check authentication
 const token = localStorage.getItem('token');
 const userStr = localStorage.getItem('user');
 
@@ -10,74 +31,385 @@ if (!token || !userStr) {
     window.location.href = 'index.html';
 }
 
-const currentUser = JSON.parse(userStr);
-document.getElementById('companyDisplay').textContent = currentUser.company;
+currentUser = JSON.parse(userStr);
+companyDisplay.textContent = currentUser.company;
 
-// Admin panel
+// Show admin panel if admin
 if (currentUser.role === 'admin') {
-    document.getElementById('adminPanel').classList.remove('hidden');
+    adminPanel.classList.remove('hidden');
+    loadUsers();
 }
 
-// ============ UČITAVANJE NALOGA ============
-async function loadOrders() {
+// Event Listeners
+document.addEventListener('DOMContentLoaded', () => {
+    loadOrders();
+});
+
+searchBtn.addEventListener('click', () => {
+    currentPage = 1;
+    loadOrders(searchInput.value, 1);
+});
+
+searchInput.addEventListener('keyup', (e) => {
+    if (e.key === 'Enter') {
+        currentPage = 1;
+        loadOrders(searchInput.value, 1);
+    }
+});
+
+clearSearchBtn.addEventListener('click', () => {
+    searchInput.value = '';
+    currentPage = 1;
+    loadOrders('', 1);
+});
+
+logoutBtn.addEventListener('click', () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    window.location.href = 'index.html';
+});
+
+closeModal.addEventListener('click', () => {
+    phaseModal.classList.add('hidden');
+});
+
+window.addEventListener('click', (e) => {
+    if (e.target === phaseModal) {
+        phaseModal.classList.add('hidden');
+    }
+});
+
+// Create user form
+document.getElementById('createUserForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = document.getElementById('newUsername').value;
+    const company = document.getElementById('newCompany').value;
+    const statusDiv = document.getElementById('userStatus');
+    
     try {
-        console.log('📡 Učitavam naloge...');
-        const response = await fetch('/api/orders?limit=100', {
-            headers: { 'Authorization': `Bearer ${token}` }
+        const response = await fetch('/api/users', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ username, company })
         });
-        const data = await response.json();
-        orders = data.data || [];
-        console.log('📦 Učitano:', orders.length);
         
-        let html = `<table><thead><tr><th>Nalog</th><th>Naziv</th><th>Količina</th><th>Status</th></tr></thead><tbody>`;
-        orders.forEach(o => {
-            const phases = o.progress || [];
-            const done = phases.filter(p => p.status === 'completed').length;
-            const total = phases.length;
-            html += `<tr><td onclick="openOrder(${o.id})" style="color:#667eea;cursor:pointer;">${o.order_number}</td>
-                     <td>${o.name}</td><td>${o.quantity}</td>
-                     <td>${done}/${total}</td></tr>`;
+        const data = await response.json();
+        
+        if (response.ok) {
+            statusDiv.textContent = `✅ Korisnik ${username} kreiran`;
+            statusDiv.className = 'success';
+            document.getElementById('newUsername').value = '';
+            document.getElementById('newCompany').value = '';
+            loadUsers();
+        } else {
+            statusDiv.textContent = `❌ Greška: ${data.error}`;
+            statusDiv.className = 'error';
+        }
+    } catch (error) {
+        statusDiv.textContent = '❌ Greška pri kreiranju';
+        statusDiv.className = 'error';
+        console.error('Create user error:', error);
+    }
+});
+
+// Send report
+sendReportBtn.addEventListener('click', async () => {
+    if (!confirm('📧 Pošalji dnevni izveštaj?')) return;
+    
+    try {
+        const response = await fetch('/api/send-report', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ 
+                date: new Date().toLocaleDateString('sr-RS')
+            })
         });
-        html += `</tbody></table>`;
-        document.getElementById('ordersContainer').innerHTML = html;
-    } catch(e) {
-        console.error('❌ Greška:', e);
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            alert('✅ Izveštaj poslat!');
+        } else {
+            alert(`❌ Greška: ${data.error}`);
+        }
+    } catch (error) {
+        alert('❌ Greška pri slanju');
+        console.error('Send report error:', error);
+    }
+});
+
+// ============ GLAVNE FUNKCIJE ============
+
+async function loadOrders(search = '', page = 1) {
+    try {
+        const url = search ? 
+            `/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}` :
+            `/api/orders?page=${page}&limit=${LIMIT}`;
+        
+        console.log('📡 Učitavam naloge sa:', url);
+        ordersContainer.innerHTML = '<div class="loading">⏳ Učitavanje...</div>';
+        
+        const response = await fetch(url, {
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        
+        if (!response.ok) {
+            if (response.status === 401) {
+                localStorage.removeItem('token');
+                localStorage.removeItem('user');
+                window.location.href = 'index.html';
+                return;
+            }
+            throw new Error('Failed to load orders');
+        }
+        
+        const result = await response.json();
+        console.log('📦 Odgovor od servera:', result);
+        
+        orders = result.data || [];
+        totalOrders = result.total || 0;
+        currentPage = result.page || 1;
+        totalPages = result.totalPages || 1;
+        
+        console.log(`📦 Učitano ${orders.length} naloga od ${totalOrders} ukupno`);
+        
+        if (orderCount) {
+            orderCount.textContent = `${totalOrders} naloga`;
+        }
+        
+        renderOrders(orders, {
+            total: totalOrders,
+            page: currentPage,
+            totalPages: totalPages,
+            limit: LIMIT
+        });
+        
+    } catch (error) {
+        console.error('❌ Load orders error:', error);
+        ordersContainer.innerHTML = '<div class="error">❌ Greška pri učitavanju</div>';
     }
 }
 
-// ============ OTVARANJE NALOGA ============
-function openOrder(orderId) {
-    console.log('🔍 Otvaram nalog:', orderId);
-    const order = orders.find(o => o.id === orderId);
-    if (!order) { alert('Nalog nije pronađen'); return; }
+function renderOrders(ordersList, meta) {
+    console.log('🖥️ renderOrders pozvana, broj naloga:', ordersList?.length);
+    console.log('🖥️ Prvi nalog:', ordersList?.[0]);
     
-    const phases = order.progress || [];
-    let html = `<h3>Nalog: ${order.order_number}</h3>
-                <p><strong>Artikal:</strong> ${order.name}</p>
-                <p><strong>Količina:</strong> ${order.quantity}</p>
-                <hr>`;
+    if (!ordersList || ordersList.length === 0) {
+        ordersContainer.innerHTML = '<p style="text-align:center;padding:40px;color:#a0aec0;">📭 Nema naloga za prikaz</p>';
+        return;
+    }
     
-    phases.forEach(p => {
-        const emoji = p.status === 'completed' ? '✅' : p.status === 'problem' ? '⚠️' : '⬜';
-        html += `<div style="border:1px solid #ddd;padding:10px;margin:5px;border-radius:5px;">
-                    <h4>Faza ${p.phase} ${emoji}</h4>
-                    <button onclick="updatePhase(${order.id}, '${p.phase}', 'completed')" style="background:#48bb78;color:white;border:none;padding:5px 10px;border-radius:5px;">✅ Završi</button>
-                    <button onclick="updatePhase(${order.id}, '${p.phase}', 'problem')" style="background:#fc8181;color:white;border:none;padding:5px 10px;border-radius:5px;">⚠️ Problem</button>
-                    <button onclick="updatePhase(${order.id}, '${p.phase}', 'pending')" style="background:#e2e8f0;border:none;padding:5px 10px;border-radius:5px;">⬜ Reset</button>
-                    <br><input type="text" placeholder="Komentar..." onchange="updateComment(${order.id}, '${p.phase}', this.value)" style="width:100%;margin-top:5px;padding:5px;" value="${p.comment || ''}">
-                </div>`;
-    });
+    const isAdmin = currentUser && currentUser.role === 'admin';
     
-    document.getElementById('modalOrderNumber').textContent = order.order_number;
-    document.getElementById('modalOrderInfo').innerHTML = `<p>Firma: ${order.company}</p>`;
-    document.getElementById('phasesContainer').innerHTML = html;
-    document.getElementById('phaseModal').classList.remove('hidden');
+    let html = `
+        <div style="overflow-x:auto;padding:5px;">
+        <table style="width:100%;border-collapse:collapse;font-size:14px;">
+            <thead>
+                <tr style="background:#f7fafc;border-bottom:2px solid #e2e8f0;">
+    `;
+    
+    if (isAdmin) {
+        html += `
+                    <th style="padding:10px;text-align:left;">Firma</th>
+                    <th style="padding:10px;text-align:left;">Šifra</th>
+                    <th style="padding:10px;text-align:left;">Naziv</th>
+                    <th style="padding:10px;text-align:left;">Nalog</th>
+                    <th style="padding:10px;text-align:center;">Količina</th>
+                    <th style="padding:10px;text-align:left;">Datum</th>
+                    <th style="padding:10px;text-align:center;">Status</th>
+        `;
+    } else {
+        html += `
+                    <th style="padding:10px;text-align:left;">Nalog</th>
+                    <th style="padding:10px;text-align:left;">Naziv</th>
+                    <th style="padding:10px;text-align:center;">Količina</th>
+                    <th style="padding:10px;text-align:center;">Status</th>
+        `;
+    }
+    
+    html += `
+                </tr>
+            </thead>
+            <tbody>
+    `;
+    
+    for (let i = 0; i < ordersList.length; i++) {
+        const order = ordersList[i];
+        
+        const phases = order.progress || order.phases || [];
+        const totalPhases = phases.length;
+        const completedPhases = phases.filter(p => p.status === 'completed').length || 0;
+        const problemPhases = phases.filter(p => p.status === 'problem').length || 0;
+        
+        let statusText = 'U toku';
+        let statusClass = 'status-pending';
+        
+        if (totalPhases > 0 && completedPhases === totalPhases) {
+            statusText = '✅ Završeno';
+            statusClass = 'status-completed';
+        } else if (problemPhases > 0) {
+            statusText = `⚠️ Problem`;
+            statusClass = 'status-problem';
+        } else if (completedPhases > 0) {
+            statusText = `${completedPhases}/${totalPhases}`;
+        }
+        
+        const rowBg = i % 2 === 0 ? 'background:#fafafa;' : '';
+        
+        html += `<tr style="border-bottom:1px solid #e2e8f0;${rowBg}">`;
+        
+        if (isAdmin) {
+            html += `
+                        <td style="padding:10px;font-size:13px;">${escapeHtml(order.company || '')}</td>
+                        <td style="padding:10px;font-size:12px;">${escapeHtml(order.code || '')}</td>
+                        <td style="padding:10px;">${escapeHtml(order.name || '')}</td>
+                        <td style="padding:10px;color:#667eea;font-weight:600;cursor:pointer;" onclick="openOrder(${order.id})">${escapeHtml(order.order_number || order.orderNumber || '')}</td>
+                        <td style="padding:10px;text-align:center;font-weight:600;">${order.quantity || 0}</td>
+                        <td style="padding:10px;font-size:12px;">${order.delivery_date || order.deliveryDate || '-'}</td>
+                        <td style="padding:10px;text-align:center;"><span class="status-badge ${statusClass}">${statusText}</span></td>
+            `;
+        } else {
+            html += `
+                        <td style="padding:12px 8px;color:#667eea;font-weight:600;cursor:pointer;font-size:16px;" onclick="openOrder(${order.id})">${escapeHtml(order.order_number || order.orderNumber || '')}</td>
+                        <td style="padding:12px 8px;font-size:15px;">${escapeHtml(order.name || '')}</td>
+                        <td style="padding:12px 8px;text-align:center;font-size:17px;font-weight:700;">${order.quantity || 0}</td>
+                        <td style="padding:12px 8px;text-align:center;"><span class="status-badge ${statusClass}" style="font-size:13px;padding:4px 12px;">${statusText}</span></td>
+            `;
+        }
+        
+        html += `</tr>`;
+    }
+    
+    html += `
+            </tbody>
+        </table>
+        </div>
+    `;
+    
+    if (meta && meta.totalPages > 1) {
+        html += `
+            <div style="display:flex;justify-content:center;align-items:center;gap:12px;padding:14px;border-top:1px solid #e2e8f0;flex-wrap:wrap;">
+                <button onclick="goToPage(${meta.page - 1})" 
+                        style="padding:8px 20px;background:${meta.page <= 1 ? '#e2e8f0' : '#667eea'};color:${meta.page <= 1 ? '#a0aec0' : 'white'};border:none;border-radius:8px;font-weight:600;font-size:14px;" 
+                        ${meta.page <= 1 ? 'disabled' : ''}>
+                    ◀
+                </button>
+                <span style="color:#4a5568;font-weight:500;font-size:14px;">${meta.page} / ${meta.totalPages}</span>
+                <button onclick="goToPage(${meta.page + 1})" 
+                        style="padding:8px 20px;background:${meta.page >= meta.totalPages ? '#e2e8f0' : '#667eea'};color:${meta.page >= meta.totalPages ? '#a0aec0' : 'white'};border:none;border-radius:8px;font-weight:600;font-size:14px;" 
+                        ${meta.page >= meta.totalPages ? 'disabled' : ''}>
+                    ▶
+                </button>
+            </div>
+        `;
+    }
+    
+    ordersContainer.innerHTML = html;
+    console.log('✅ renderOrders završena');
 }
 
-// ============ AŽURIRANJE FAZE ============
+function goToPage(page) {
+    if (page < 1 || page > totalPages) return;
+    const search = document.getElementById('searchInput').value || '';
+    loadOrders(search, page);
+    document.querySelector('.panel:last-child')?.scrollIntoView({ behavior: 'smooth' });
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = String(text);
+    return div.innerHTML;
+}
+
+function openOrder(orderId) {
+    console.log('🔍 openOrder pozvana sa ID:', orderId);
+    
+    const order = orders.find(o => String(o.id) === String(orderId));
+    
+    if (!order) {
+        console.error('❌ Order not found:', orderId);
+        return;
+    }
+    
+    console.log('✅ Order pronađen:', order);
+    
+    selectedOrderId = orderId;
+    modalOrderNumber.textContent = order.order_number || order.orderNumber || 'N/A';
+    
+    const isAdmin = currentUser && currentUser.role === 'admin';
+    const isOwnOrder = order.company === currentUser.company;
+    
+    let companyHtml = '';
+    if (isAdmin || isOwnOrder) {
+        companyHtml = `<p><strong>Firma:</strong> ${escapeHtml(order.company || order.firma || '')}</p>`;
+    } else {
+        companyHtml = `<p style="display:none;"><strong>Firma:</strong> ${escapeHtml(order.company || order.firma || '')}</p>`;
+    }
+    
+    modalOrderInfo.innerHTML = `
+        ${companyHtml}
+        <p><strong>Artikal:</strong> ${escapeHtml(order.name || order.naziv || '')}</p>
+        <p><strong>Šifra:</strong> ${escapeHtml(order.code || order.sifra || '')}</p>
+        <p><strong>Količina:</strong> ${order.quantity || order.pari || 0}</p>
+        <p><strong>Datum isporuke:</strong> ${order.delivery_date || order.deliveryDate || '-'}</p>
+    `;
+    
+    renderPhases(order);
+    phaseModal.classList.remove('hidden');
+}
+
+function renderPhases(order) {
+    const phases = order.progress || order.phases || [];
+    
+    if (phases.length === 0) {
+        phasesContainer.innerHTML = '<p style="text-align:center;padding:20px;color:#a0aec0;">Nema faza</p>';
+        return;
+    }
+    
+    let html = '';
+    phases.forEach(phase => {
+        const statusEmoji = phase.status === 'completed' ? '✅' : 
+                           phase.status === 'problem' ? '⚠️' : '⬜';
+        const commentValue = phase.comment || '';
+        
+        html += `
+            <div class="phase-card">
+                <h4>Faza ${phase.phase}</h4>
+                <div class="phase-status">
+                    <span style="font-size:28px;">${statusEmoji}</span>
+                    <div>${phase.status}</div>
+                </div>
+                <div class="phase-buttons">
+                    <button onclick="updatePhase(${order.id}, '${phase.phase}', 'completed')">✅ Završi</button>
+                    <button onclick="updatePhase(${order.id}, '${phase.phase}', 'problem')">⚠️ Problem</button>
+                    <button onclick="updatePhase(${order.id}, '${phase.phase}', 'pending')">⬜ Reset</button>
+                </div>
+                <div class="phase-comment">
+                    <textarea 
+                        placeholder="Komentar..." 
+                        oninput="updatePhaseComment(${order.id}, '${phase.phase}', this.value)"
+                    >${commentValue}</textarea>
+                </div>
+            </div>
+        `;
+    });
+    
+    phasesContainer.innerHTML = html;
+}
+
 async function updatePhase(orderId, phase, status) {
-    console.log(`🔄 Menjam ${phase} na ${status}`);
     try {
+        console.log(`🔄 Menjam fazu ${phase} na status ${status} za nalog ${orderId}`);
+        
         const response = await fetch('/api/update-phase', {
             method: 'POST',
             headers: {
@@ -86,24 +418,55 @@ async function updatePhase(orderId, phase, status) {
             },
             body: JSON.stringify({ orderId, phase, status })
         });
-        const data = await response.json();
-        console.log('✅ Odgovor:', data);
         
-        // Osvježi prikaz
-        await loadOrders();
-        const order = orders.find(o => o.id === orderId);
-        if (order) openOrder(orderId);
-    } catch(e) {
-        console.error('❌ Greška:', e);
-        alert('Greška: ' + e.message);
+        const data = await response.json();
+        
+        if (response.ok) {
+            console.log('✅ Faza ažurirana');
+            
+            // Ažuriraj orders niz u memoriji
+            const orderIndex = orders.findIndex(o => o.id === orderId);
+            if (orderIndex !== -1) {
+                const order = orders[orderIndex];
+                
+                if (!order.progress) order.progress = [];
+                
+                const phaseData = order.progress.find(p => p.phase === phase);
+                if (phaseData) {
+                    phaseData.status = status;
+                } else {
+                    order.progress.push({ phase, status, comment: '' });
+                }
+            }
+            
+            // Ponovo prikaži faze (odmah)
+            const order = orders.find(o => o.id === orderId);
+            if (order) {
+                renderPhases(order);
+            }
+            
+            // Osvježi tabelu (status u tabeli)
+            renderOrders(orders, {
+                total: totalOrders,
+                page: currentPage,
+                totalPages: totalPages,
+                limit: LIMIT
+            });
+            
+        } else {
+            alert(`❌ Greška: ${data.error}`);
+        }
+    } catch (error) {
+        alert('❌ Greška pri ažuriranju');
+        console.error('Update phase error:', error);
     }
 }
 
-// ============ KOMENTAR ============
-async function updateComment(orderId, phase, comment) {
-    console.log(`💬 Komentar: ${comment}`);
+async function updatePhaseComment(orderId, phase, comment) {
     try {
-        await fetch('/api/update-phase', {
+        console.log(`💬 Čuvam komentar za fazu ${phase}: "${comment}"`);
+        
+        const response = await fetch('/api/update-phase', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -111,22 +474,142 @@ async function updateComment(orderId, phase, comment) {
             },
             body: JSON.stringify({ orderId, phase, status: 'pending', comment })
         });
-    } catch(e) {
-        console.error('❌ Greška:', e);
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            console.log('✅ Komentar sačuvan');
+            
+            // Ažuriraj orders niz
+            const orderIndex = orders.findIndex(o => o.id === orderId);
+            if (orderIndex !== -1) {
+                const order = orders[orderIndex];
+                if (order.progress) {
+                    const phaseData = order.progress.find(p => p.phase === phase);
+                    if (phaseData) {
+                        phaseData.comment = comment;
+                    }
+                }
+            }
+            
+            // Ponovo prikaži faze (da se vidi komentar)
+            const order = orders.find(o => o.id === orderId);
+            if (order) {
+                renderPhases(order);
+            }
+            
+        } else {
+            console.error('❌ Greška pri čuvanju komentara:', data.error);
+        }
+    } catch (error) {
+        console.error('Update comment error:', error);
     }
 }
 
-// ============ DUGMAD ============
-document.getElementById('logoutBtn').addEventListener('click', () => {
-    localStorage.clear();
-    window.location.href = 'index.html';
-});
+async function loadUsers() {
+    try {
+        const response = await fetch('/api/users', {
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        
+        if (!response.ok) return;
+        
+        const users = await response.json();
+        const usersList = document.getElementById('usersList');
+        
+        let html = '';
+        users.forEach(user => {
+            html += `
+                <div class="user-item">
+                    <span>${escapeHtml(user.username)}</span>
+                    <span style="color:#718096;">${escapeHtml(user.company)}</span>
+                    <span style="color:#718096;font-size:12px;">${user.role}</span>
+                </div>
+            `;
+        });
+        
+        usersList.innerHTML = html || '<p style="color:#a0aec0;text-align:center;padding:16px;">Nema korisnika</p>';
+    } catch (error) {
+        console.error('Load users error:', error);
+    }
+}
 
-document.getElementById('closeModal').addEventListener('click', () => {
-    document.getElementById('phaseModal').classList.add('hidden');
-});
+// ============ UPLOAD ============
+const uploadForm = document.getElementById('uploadForm');
+const fileInput = document.getElementById('fileInput');
+const uploadStatus = document.getElementById('uploadStatus');
 
-// ============ POKRENI ============
-loadOrders();
-
-console.log('✅ Aplikacija pokrenuta!');
+if (uploadForm) {
+    console.log('✅ Upload form pronađen');
+    
+    const newUploadForm = uploadForm.cloneNode(true);
+    uploadForm.parentNode.replaceChild(newUploadForm, uploadForm);
+    
+    const newFileInput = document.getElementById('fileInput');
+    const newUploadStatus = document.getElementById('uploadStatus');
+    
+    newUploadForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        console.log('📤 Upload dugme kliknuto!');
+        
+        if (!newFileInput || !newFileInput.files || newFileInput.files.length === 0) {
+            if (newUploadStatus) {
+                newUploadStatus.textContent = '⚠️ Izaberite fajl!';
+                newUploadStatus.className = 'error';
+            }
+            return;
+        }
+        
+        const file = newFileInput.files[0];
+        console.log('📂 Fajl:', file.name, file.size, 'bajtova');
+        
+        if (newUploadStatus) {
+            newUploadStatus.textContent = '⏳ Učitavanje...';
+            newUploadStatus.className = '';
+        }
+        
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        try {
+            const response = await fetch('/api/upload', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                },
+                body: formData
+            });
+            
+            const data = await response.json();
+            console.log('📦 Odgovor:', data);
+            
+            if (response.ok) {
+                if (newUploadStatus) {
+                    newUploadStatus.textContent = `✅ ${data.message}`;
+                    newUploadStatus.className = 'success';
+                }
+                newFileInput.value = '';
+                setTimeout(() => loadOrders('', 1), 1000);
+            } else {
+                if (newUploadStatus) {
+                    newUploadStatus.textContent = `❌ Greška: ${data.error}`;
+                    newUploadStatus.className = 'error';
+                }
+            }
+        } catch (error) {
+            console.error('❌ Upload error:', error);
+            if (newUploadStatus) {
+                newUploadStatus.textContent = '❌ Greška pri upload-u';
+                newUploadStatus.className = 'error';
+            }
+        }
+    });
+    
+    console.log('✅ Upload event listener dodat');
+} else {
+    console.error('❌ Upload form nije pronađen');
+}

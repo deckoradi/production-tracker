@@ -196,18 +196,10 @@ app.post('/api/users', authenticate, async (req, res) => {
 
 // ============ UPLOAD ============
 app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
-    console.log('📥 Upload ruta pozvana!');
-    
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
     }
-    
     try {
-        if (!req.file) {
-            console.log('❌ Nema fajla u zahtevu');
-            return res.status(400).json({ error: 'Nije poslat fajl' });
-        }
-
         const filePath = req.file.path;
         console.log('📂 Fajl primljen:', req.file.originalname);
         console.log('📂 Veličina:', req.file.size, 'bajtova');
@@ -218,10 +210,6 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
 
         console.log('📊 Redova:', data.length);
         console.log('📋 Kolone:', Object.keys(data[0] || {}));
-
-        if (!data || data.length === 0) {
-            return res.status(400).json({ error: 'Excel fajl je prazan' });
-        }
 
         const findValue = (row, keys) => {
             for (let key of keys) {
@@ -245,9 +233,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
             const quantity = parseInt(findValue(row, ['pari', 'PARI', 'Kolicina', 'kolicina', 'QUANTITA', 'Quantity', 'quantity', 'Količina', 'KOLIČINA'])) || 0;
             const deliveryDate = findValue(row, ['datum isporuke', 'DATUM ISPORUKE', 'Datum', 'datum', 'Datum isporuke', 'Delivery Date', 'delivery', 'DATUM ISPORUKE', 'DATUM']);
 
-            if (!company && !code && !orderNumber) {
-                continue;
-            }
+            if (!company && !code && !orderNumber) continue;
 
             const existing = await pool.query('SELECT id FROM orders WHERE order_number = $1 AND company = $2', [orderNumber, company]);
             
@@ -363,6 +349,8 @@ app.get('/api/orders', authenticate, async (req, res) => {
 app.post('/api/update-phase', authenticate, async (req, res) => {
     try {
         const { orderId, phase, status, comment } = req.body;
+        console.log(`🔄 Menjam fazu ${phase} na ${status} za nalog ${orderId}`);
+        
         await pool.query(
             `INSERT INTO progress (order_id, phase, status, comment, updated_at)
              VALUES ($1, $2, $3, $4, CURRENT_DATE)
@@ -372,8 +360,11 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
              updated_at = CURRENT_DATE`,
             [orderId, phase, status, comment || '']
         );
+        
+        console.log('✅ Faza ažurirana u bazi');
         res.json({ message: 'Phase updated' });
     } catch (e) {
+        console.error('❌ Update phase error:', e);
         res.status(500).json({ error: e.message });
     }
 });
