@@ -151,6 +151,7 @@ try {
 
 // ============ ROUTES ============
 
+// LOGIN
 app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -171,6 +172,7 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
+// GET USERS
 app.get('/api/users', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
     try {
@@ -181,6 +183,7 @@ app.get('/api/users', authenticate, async (req, res) => {
     }
 });
 
+// CREATE USER
 app.post('/api/users', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
     try {
@@ -200,7 +203,7 @@ app.post('/api/users', authenticate, async (req, res) => {
     }
 });
 
-// ============ UPLOAD - RADI KAO PRE ============
+// ============ UPLOAD (OBIČAN) ============
 app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
@@ -289,8 +292,151 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
     }
 });
 
-// ============ OSTALE RUTE ============
+// ============ OBRISI SVE (clear-all) ============
+app.post('/api/clear-all', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Samo admin može' });
+    }
+    try {
+        const ordersBackup = await pool.query('SELECT * FROM orders');
+        const progressBackup = await pool.query('SELECT * FROM progress');
+        const backup = {
+            timestamp: new Date().toISOString(),
+            orders: ordersBackup.rows,
+            progress: progressBackup.rows
+        };
+        const backupPath = path.join(__dirname, 'backup_before_clear.json');
+        fs.writeFileSync(backupPath, JSON.stringify(backup, null, 2));
+        console.log('📦 Backup kreiran pre brisanja');
 
+        await pool.query('DELETE FROM progress');
+        await pool.query('DELETE FROM orders');
+        
+        console.log('🗑️ Svi podaci obrisani');
+        res.json({ 
+            message: '✅ Svi podaci obrisani! Backup sačuvan.',
+            count: ordersBackup.rows.length 
+        });
+    } catch (e) {
+        console.error('❌ Clear error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ SINHRONIZUJ SA EXCEL-OM (upload-sync) ============
+app.post('/api/upload-sync', authenticate, upload.single('file'), async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const filePath = req.file.path;
+        console.log('📂 Fajl:', req.file.originalname);
+
+        const workbook = XLSX.readFile(filePath, { cellDates: true, cellNF: false, cellText: false });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+
+        console.log('📊 Redova:', data.length);
+        console.log('📋 Kolone:', Object.keys(data[0] || {}));
+
+        const findValue = (row, keys) => {
+            for (let key of keys) {
+                if (row[key] !== undefined && row[key] !== null && row[key] !== '') {
+                    return row[key];
+                }
+            }
+            return '';
+        };
+
+        // 1. Sakupi sve naloge iz Excel-a
+        const excelOrders = [];
+        for (const row of data) {
+            const company = findValue(row, ['ime firme', 'IME FIRME', 'Firma', 'firma', 'Ime firme', 'FIRMA', 'Name', 'name', 'Company', 'company', 'Naziv firme']);
+            const orderNumber = findValue(row, ['broj nalog', 'BROJ NALOG', 'Nalog', 'nalog', 'Broj naloga', 'broj naloga', 'BROJ NALOGA', 'NALOG', 'Order', 'order', 'Order Number']);
+            if (company && orderNumber) {
+                excelOrders.push({ company, order_number: orderNumber });
+            }
+        }
+
+        console.log(`📋 Excel ima ${excelOrders.length} naloga`);
+
+        // 2. Pronađi i obriši naloge koji NISU u Excel-u
+        const allDbOrders = await pool.query('SELECT id, company, order_number FROM orders');
+        let deleted = 0;
+        let updated = 0;
+        let inserted = 0;
+
+        for (const dbOrder of allDbOrders.rows) {
+            const exists = excelOrders.some(e => e.company === dbOrder.company && e.order_number === dbOrder.order_number);
+            if (!exists) {
+                await pool.query('DELETE FROM progress WHERE order_id = $1', [dbOrder.id]);
+                await pool.query('DELETE FROM orders WHERE id = $1', [dbOrder.id]);
+                deleted++;
+                console.log(`🗑️ Obrisan nalog: ${dbOrder.order_number} (${dbOrder.company})`);
+            }
+        }
+
+        console.log(`🗑️ Obrisano ${deleted} naloga koji nisu u Excel-u`);
+
+        // 3. Procesiraj Excel (dodaj nove, ažuriraj postojeće)
+        for (let i = 0; i < data.length; i++) {
+            const row = data[i];
+
+            const company = findValue(row, ['ime firme', 'IME FIRME', 'Firma', 'firma', 'Ime firme', 'FIRMA', 'Name', 'name', 'Company', 'company', 'Naziv firme']);
+            const code = findValue(row, ['cod artikal', 'COD ARTIKAL', 'Sifra', 'sifra', 'Šifra artikla', 'Sifra artikla', 'ŠIFRA ARTIKLA', 'Code', 'code', 'Šifra', 'Sifra artikla']);
+            const name = findValue(row, ['naziv artikla', 'NAZIV ARTIKLA', 'Naziv', 'naziv', 'Naziv artikla', 'Name', 'name', 'Artikal', 'Proizvod']);
+            const orderNumber = findValue(row, ['broj nalog', 'BROJ NALOG', 'Nalog', 'nalog', 'Broj naloga', 'broj naloga', 'BROJ NALOGA', 'NALOG', 'Order', 'order', 'Order Number']);
+            const quantity = parseInt(findValue(row, ['pari', 'PARI', 'Kolicina', 'kolicina', 'QUANTITA', 'Quantity', 'quantity', 'Količina', 'KOLIČINA'])) || 0;
+            const deliveryDate = findValue(row, ['datum isporuke', 'DATUM ISPORUKE', 'Datum', 'datum', 'Datum isporuke', 'Delivery Date', 'delivery', 'DATUM ISPORUKE', 'DATUM']);
+
+            if (!company && !code && !orderNumber) continue;
+
+            const existing = await pool.query('SELECT id FROM orders WHERE order_number = $1 AND company = $2', [orderNumber, company]);
+            
+            if (existing.rows.length > 0) {
+                await pool.query(
+                    `UPDATE orders SET 
+                        code = $1, name = $2, quantity = $3, delivery_date = $4
+                     WHERE order_number = $5 AND company = $6`,
+                    [code, name, quantity, deliveryDate, orderNumber, company]
+                );
+                updated++;
+            } else {
+                const newId = Date.now() + i;
+                await pool.query(
+                    `INSERT INTO orders (id, company, code, name, order_number, quantity, delivery_date)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                    [newId, company, code, name, orderNumber, quantity, deliveryDate]
+                );
+                
+                for (const phase of ['100', '200', '300', '400', '500']) {
+                    await pool.query(
+                        `INSERT INTO progress (order_id, phase, status, comment, updated_at)
+                         VALUES ($1, $2, 'pending', '', CURRENT_DATE)
+                         ON CONFLICT (order_id, phase) DO NOTHING`,
+                        [newId, phase]
+                    );
+                }
+                inserted++;
+            }
+        }
+
+        console.log(`📦 Novih: ${inserted}, Ažuriranih: ${updated}, Obrisanih: ${deleted}`);
+        res.json({ 
+            message: `✅ Novih: ${inserted}, Ažuriranih: ${updated}, Obrisanih: ${deleted}`,
+            inserted, 
+            updated, 
+            deleted,
+            totalRows: data.length 
+        });
+
+    } catch (e) {
+        console.error('❌ Upload error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ ORDERS ============
 app.get('/api/orders', authenticate, async (req, res) => {
     try {
         const { search, page = 1, limit = 100 } = req.query;
@@ -356,6 +502,7 @@ app.get('/api/orders', authenticate, async (req, res) => {
     }
 });
 
+// ============ UPDATE PHASE ============
 app.post('/api/update-phase', authenticate, async (req, res) => {
     try {
         const { orderId, phase, status, comment } = req.body;
@@ -374,6 +521,7 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
     }
 });
 
+// ============ SEND REPORT ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
         if (!transporter) {
@@ -534,6 +682,7 @@ app.post('/api/send-report', authenticate, async (req, res) => {
     }
 });
 
+// ============ COMPANIES ============
 app.get('/api/companies', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
@@ -546,8 +695,7 @@ app.get('/api/companies', authenticate, async (req, res) => {
     }
 });
 
-// ============ BACKUP I RESTORE ============
-
+// ============ BACKUP ============
 app.get('/api/backup-status', authenticate, (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Samo admin može' });
