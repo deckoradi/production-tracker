@@ -6,6 +6,7 @@ let currentPage = 1;
 let totalPages = 1;
 let totalOrders = 0;
 const LIMIT = 100;
+const commentTimers = {}; // debounce timer po fazi, da ne šaljemo zahtev na svaki taster
 
 // DOM Elements
 const companyDisplay = document.getElementById('companyDisplay');
@@ -380,6 +381,7 @@ function renderPhases(order) {
         const statusEmoji = phase.status === 'completed' ? '✅' : 
                            phase.status === 'problem' ? '⚠️' : '⬜';
         const commentValue = phase.comment || '';
+        const safeKey = `${order.id}-${phase.phase}`;
         
         html += `
             <div class="phase-card">
@@ -396,8 +398,9 @@ function renderPhases(order) {
                 <div class="phase-comment">
                     <textarea 
                         placeholder="Komentar..." 
-                        oninput="updatePhaseComment(${order.id}, '${phase.phase}', this.value)"
+                        oninput="handleCommentInput(${order.id}, '${phase.phase}', this)"
                     >${commentValue}</textarea>
+                    <div id="commentStatus-${safeKey}" style="font-size:11px;color:#a0aec0;height:14px;margin-top:2px;"></div>
                 </div>
             </div>
         `;
@@ -407,9 +410,31 @@ function renderPhases(order) {
 }
 
 async function updatePhase(orderId, phase, status) {
+    console.log(`🔄 Menjam fazu ${phase} na status ${status} za nalog ${orderId}`);
+
+    const order = orders.find(o => o.id === orderId);
+    if (!order) return;
+
+    if (!order.progress) order.progress = [];
+    let phaseData = order.progress.find(p => p.phase === phase);
+    const previousStatus = phaseData ? phaseData.status : 'pending';
+
+    // ⚡ OPTIMISTIC UPDATE: prikaži promenu ODMAH, pre nego što server odgovori
+    if (phaseData) {
+        phaseData.status = status;
+    } else {
+        phaseData = { phase, status, comment: '' };
+        order.progress.push(phaseData);
+    }
+    renderPhases(order);
+    renderOrders(orders, {
+        total: totalOrders,
+        page: currentPage,
+        totalPages: totalPages,
+        limit: LIMIT
+    });
+
     try {
-        console.log(`🔄 Menjam fazu ${phase} na status ${status} za nalog ${orderId}`);
-        
         const response = await fetch('/api/update-phase', {
             method: 'POST',
             headers: {
@@ -418,52 +443,62 @@ async function updatePhase(orderId, phase, status) {
             },
             body: JSON.stringify({ orderId, phase, status })
         });
-        
+
         const data = await response.json();
-        
+
         if (response.ok) {
             console.log('✅ Faza ažurirana');
-            
-            // Ažuriraj orders niz
-            const orderIndex = orders.findIndex(o => o.id === orderId);
-            if (orderIndex !== -1) {
-                const order = orders[orderIndex];
-                if (!order.progress) order.progress = [];
-                const phaseData = order.progress.find(p => p.phase === phase);
-                if (phaseData) {
-                    phaseData.status = status;
-                } else {
-                    order.progress.push({ phase, status, comment: '' });
-                }
-            }
-            
-            // Osvježi prikaz faza (bez zatvaranja modala)
-            const updatedOrder = orders.find(o => o.id === orderId);
-            if (updatedOrder) {
-                renderPhases(updatedOrder);
-            }
-            
-            // Osvježi tabelu
-            renderOrders(orders, {
-                total: totalOrders,
-                page: currentPage,
-                totalPages: totalPages,
-                limit: LIMIT
-            });
-            
         } else {
+            // Server je odbio - vrati na prethodno stanje
+            phaseData.status = previousStatus;
+            renderPhases(order);
+            renderOrders(orders, { total: totalOrders, page: currentPage, totalPages: totalPages, limit: LIMIT });
             alert(`❌ Greška: ${data.error}`);
         }
     } catch (error) {
+        // Nema konekcije / greška - vrati na prethodno stanje
+        phaseData.status = previousStatus;
+        renderPhases(order);
+        renderOrders(orders, { total: totalOrders, page: currentPage, totalPages: totalPages, limit: LIMIT });
         alert('❌ Greška pri ažuriranju');
         console.error('Update phase error:', error);
     }
 }
 
-async function updatePhaseComment(orderId, phase, comment) {
+// Poziva se na SVAKI taster u textarea-i. NE šalje odmah zahtev serveru i
+// NE iscrtava ponovo textarea (to bi obrisalo ono što upravo kucaš i
+// pomerilo kursor) - samo ažurira lokalno stanje i prikazuje "Kucanje...".
+function handleCommentInput(orderId, phase, textareaEl) {
+    const comment = textareaEl.value;
+
+    const order = orders.find(o => o.id === orderId);
+    if (order) {
+        if (!order.progress) order.progress = [];
+        let phaseData = order.progress.find(p => p.phase === phase);
+        if (!phaseData) {
+            phaseData = { phase, status: 'pending', comment: '' };
+            order.progress.push(phaseData);
+        }
+        phaseData.comment = comment;
+    }
+
+    const statusEl = document.getElementById(`commentStatus-${orderId}-${phase}`);
+    if (statusEl) statusEl.textContent = '✏️ Kucanje...';
+
+    // Debounce: pravi zahtev serveru šalje se tek 600ms nakon što korisnik
+    // prestane da kuca, i to je JEDINI trenutak kad se ide na server.
+    const key = `${orderId}-${phase}`;
+    clearTimeout(commentTimers[key]);
+    commentTimers[key] = setTimeout(() => {
+        saveComment(orderId, phase, comment, statusEl);
+    }, 600);
+}
+
+async function saveComment(orderId, phase, comment, statusEl) {
     try {
         console.log(`💬 Čuvam komentar za fazu ${phase}: "${comment}"`);
-        
+        if (statusEl) statusEl.textContent = '⏳ Čuvam...';
+
         const response = await fetch('/api/update-phase', {
             method: 'POST',
             headers: {
@@ -472,35 +507,22 @@ async function updatePhaseComment(orderId, phase, comment) {
             },
             body: JSON.stringify({ orderId, phase, status: 'pending', comment })
         });
-        
+
         const data = await response.json();
-        
+
         if (response.ok) {
             console.log('✅ Komentar sačuvan');
-            
-            // Ažuriraj orders niz
-            const orderIndex = orders.findIndex(o => o.id === orderId);
-            if (orderIndex !== -1) {
-                const order = orders[orderIndex];
-                if (order.progress) {
-                    const phaseData = order.progress.find(p => p.phase === phase);
-                    if (phaseData) {
-                        phaseData.comment = comment;
-                    }
-                }
+            if (statusEl) {
+                statusEl.textContent = '✅ Sačuvano';
+                setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 1500);
             }
-            
-            // Osvježi prikaz faza (bez zatvaranja modala)
-            const updatedOrder = orders.find(o => o.id === orderId);
-            if (updatedOrder) {
-                renderPhases(updatedOrder);
-            }
-            
         } else {
             console.error('❌ Greška pri čuvanju komentara:', data.error);
+            if (statusEl) statusEl.textContent = '❌ Greška pri čuvanju';
         }
     } catch (error) {
         console.error('Update comment error:', error);
+        if (statusEl) statusEl.textContent = '❌ Greška pri čuvanju';
     }
 }
 
