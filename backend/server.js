@@ -196,12 +196,21 @@ app.post('/api/users', authenticate, async (req, res) => {
 
 // ============ UPLOAD ============
 app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
+    console.log('📥 Upload ruta pozvana!');
+    
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
     }
+    
     try {
+        if (!req.file) {
+            console.log('❌ Nema fajla u zahtevu');
+            return res.status(400).json({ error: 'Nije poslat fajl' });
+        }
+
         const filePath = req.file.path;
-        console.log('📂 Fajl:', req.file.originalname);
+        console.log('📂 Fajl primljen:', req.file.originalname);
+        console.log('📂 Veličina:', req.file.size, 'bajtova');
 
         const workbook = XLSX.readFile(filePath, { cellDates: true, cellNF: false, cellText: false });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -209,6 +218,10 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
 
         console.log('📊 Redova:', data.length);
         console.log('📋 Kolone:', Object.keys(data[0] || {}));
+
+        if (!data || data.length === 0) {
+            return res.status(400).json({ error: 'Excel fajl je prazan' });
+        }
 
         const findValue = (row, keys) => {
             for (let key of keys) {
@@ -232,7 +245,9 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
             const quantity = parseInt(findValue(row, ['pari', 'PARI', 'Kolicina', 'kolicina', 'QUANTITA', 'Quantity', 'quantity', 'Količina', 'KOLIČINA'])) || 0;
             const deliveryDate = findValue(row, ['datum isporuke', 'DATUM ISPORUKE', 'Datum', 'datum', 'Datum isporuke', 'Delivery Date', 'delivery', 'DATUM ISPORUKE', 'DATUM']);
 
-            if (!company && !code && !orderNumber) continue;
+            if (!company && !code && !orderNumber) {
+                continue;
+            }
 
             const existing = await pool.query('SELECT id FROM orders WHERE order_number = $1 AND company = $2', [orderNumber, company]);
             
@@ -520,22 +535,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         res.json({ message: '✅ Izveštaj poslat!', activeCount: activeOrders.length });
     } catch (e) {
         console.error('❌ Send report error:', e);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// ============ RESET BAZE ============
-app.post('/api/reset-db', authenticate, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Samo admin može' });
-    }
-    try {
-        await pool.query('DROP TABLE IF EXISTS progress');
-        await pool.query('DROP TABLE IF EXISTS orders');
-        await pool.query('DROP TABLE IF EXISTS users');
-        await initDb();
-        res.json({ message: '✅ Baza resetovana!' });
-    } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
