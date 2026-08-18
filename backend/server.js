@@ -8,6 +8,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const ExcelJS = require('exceljs');
+const { Pool } = require('pg');
 
 const dotenv = require('dotenv');
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -15,12 +16,74 @@ dotenv.config({ path: path.join(__dirname, '.env') });
 console.log('📧 EMAIL_USER:', process.env.EMAIL_USER ? '✅' : '❌');
 console.log('📧 EMAIL_PASS:', process.env.EMAIL_PASS ? '✅' : '❌');
 console.log('📧 ADMIN_EMAIL:', process.env.ADMIN_EMAIL ? '✅' : '❌');
+console.log('🗄️ DATABASE_URL:', process.env.DATABASE_URL ? '✅' : '❌');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-app.use(express.static(path.join(__dirname, '../frontend')));
+// ============ POSTGRESQL ============
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
 
+const initDb = async () => {
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(100) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL,
+                role VARCHAR(50) DEFAULT 'user',
+                company VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS orders (
+                id BIGINT PRIMARY KEY,
+                company VARCHAR(255),
+                code VARCHAR(100),
+                name VARCHAR(255),
+                order_number VARCHAR(100),
+                quantity INTEGER DEFAULT 0,
+                delivery_date VARCHAR(100),
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS progress (
+                id SERIAL PRIMARY KEY,
+                order_id BIGINT NOT NULL,
+                phase VARCHAR(10) NOT NULL,
+                status VARCHAR(20) DEFAULT 'pending',
+                comment TEXT DEFAULT '',
+                updated_at DATE DEFAULT CURRENT_DATE,
+                UNIQUE(order_id, phase)
+            )
+        `);
+
+        const adminCheck = await pool.query('SELECT * FROM users WHERE username = $1', ['admin']);
+        if (adminCheck.rows.length === 0) {
+            const hashedPassword = await bcrypt.hash('admin123', 10);
+            await pool.query(
+                'INSERT INTO users (username, password, role, company) VALUES ($1, $2, $3, $4)',
+                ['admin', hashedPassword, 'admin', 'Administrator']
+            );
+            console.log('✅ Admin korisnik kreiran: admin / admin123');
+        }
+
+        console.log('🗄️ PostgreSQL baza: ✅ Povezana');
+    } catch (e) {
+        console.error('❌ DB init error:', e.message);
+    }
+};
+
+initDb();
+
+// ============ MIDDLEWARE ============
 app.use(cors({
     origin: ['http://localhost:3000', 'https://production-tracker-wcy8.onrender.com', 'https://production-tracker.onrender.com'],
     credentials: true,
@@ -28,74 +91,15 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.static(path.join(__dirname, '../frontend')));
 
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, '../frontend/index.html'));
 });
 
-const dataDir = path.join(__dirname, 'data');
+// ============ MULTER ============
 const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-
-const USERS_FILE = path.join(dataDir, 'users.json');
-const ORDERS_FILE = path.join(dataDir, 'orders.json');
-const PROGRESS_FILE = path.join(dataDir, 'progress.json');
-
-if (!fs.existsSync(USERS_FILE)) fs.writeFileSync(USERS_FILE, JSON.stringify([]));
-if (!fs.existsSync(ORDERS_FILE)) fs.writeFileSync(ORDERS_FILE, JSON.stringify([]));
-if (!fs.existsSync(PROGRESS_FILE)) fs.writeFileSync(PROGRESS_FILE, JSON.stringify([]));
-
-const readData = (file) => {
-    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } 
-    catch (e) { return []; }
-};
-
-const writeData = (file, data) => {
-    fs.writeFileSync(file, JSON.stringify(data, null, 2));
-};
-
-let ordersCache = null;
-let progressCache = null;
-let lastCacheUpdate = 0;
-const CACHE_TTL = 3000;
-
-const getCachedData = () => {
-    const now = Date.now();
-    if (ordersCache && progressCache && (now - lastCacheUpdate) < CACHE_TTL) {
-        return { orders: ordersCache, progress: progressCache };
-    }
-    ordersCache = readData(ORDERS_FILE);
-    progressCache = readData(PROGRESS_FILE);
-    lastCacheUpdate = now;
-    return { orders: ordersCache, progress: progressCache };
-};
-
-const invalidateCache = () => {
-    ordersCache = null;
-    progressCache = null;
-    lastCacheUpdate = 0;
-};
-
-const ensureAdmin = () => {
-    try {
-        const users = readData(USERS_FILE);
-        if (!users.find(u => u.username === 'admin')) {
-            console.log('👤 Kreiram admin korisnika...');
-            users.push({
-                id: users.length + 1,
-                username: 'admin',
-                password: bcrypt.hashSync('admin123', 10),
-                role: 'admin',
-                company: 'Administrator'
-            });
-            writeData(USERS_FILE, users);
-            console.log('✅ Admin kreiran: admin / admin123');
-        }
-    } catch (e) { console.log('❌ Greška pri kreiranju admina:', e.message); }
-};
-ensureAdmin();
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadsDir),
@@ -114,6 +118,7 @@ const upload = multer({
     }
 });
 
+// ============ AUTH ============
 const authenticate = (req, res, next) => {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) return res.status(401).json({ error: 'No token' });
@@ -125,6 +130,7 @@ const authenticate = (req, res, next) => {
     }
 };
 
+// ============ EMAIL ============
 let transporter = null;
 try {
     if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
@@ -139,18 +145,17 @@ try {
             socketTimeout: 15000
         });
         console.log('📧 Email transporter: ✅');
-    } else {
-        console.log('📧 Email transporter: ❌');
     }
 } catch (e) { console.log('📧 Email: ❌', e.message); }
 
 // ============ ROUTES ============
 
+// LOGIN
 app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
-        const users = readData(USERS_FILE);
-        const user = users.find(u => u.username === username);
+        const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+        const user = result.rows[0];
         if (!user) return res.status(401).json({ error: 'Invalid credentials' });
         if (!await bcrypt.compare(password, user.password)) {
             return res.status(401).json({ error: 'Invalid credentials' });
@@ -166,49 +171,53 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-app.get('/api/users', authenticate, (req, res) => {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
-    const users = readData(USERS_FILE);
-    res.json(users.map(u => ({ ...u, password: undefined })));
-});
-
-app.post('/api/users', authenticate, async (req, res) => {
+// GET USERS
+app.get('/api/users', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
     try {
-        const { username, company } = req.body;
-        const users = readData(USERS_FILE);
-        if (users.find(u => u.username === username)) {
-            return res.status(400).json({ error: 'Username already exists' });
-        }
-        const newUser = {
-            id: users.length + 1,
-            username,
-            password: await bcrypt.hash('password123', 10),
-            role: 'user',
-            company
-        };
-        users.push(newUser);
-        writeData(USERS_FILE, users);
-        res.status(201).json({ message: 'User created', user: { ...newUser, password: undefined } });
+        const result = await pool.query('SELECT id, username, role, company FROM users');
+        res.json(result.rows);
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
 
-app.post('/api/upload', authenticate, upload.single('file'), (req, res) => {
+// CREATE USER
+app.post('/api/users', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
+    try {
+        const { username, company } = req.body;
+        const exists = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+        if (exists.rows.length > 0) {
+            return res.status(400).json({ error: 'Username already exists' });
+        }
+        const hashedPassword = await bcrypt.hash('password123', 10);
+        const result = await pool.query(
+            'INSERT INTO users (username, password, role, company) VALUES ($1, $2, $3, $4) RETURNING id, username, role, company',
+            [username, hashedPassword, 'user', company]
+        );
+        res.status(201).json({ message: 'User created', user: result.rows[0] });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ UPLOAD ============
+app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
     }
     try {
         const filePath = req.file.path;
-        console.log('📂 Fajl:', req.file.originalname, req.file.size, 'bajtova');
-        
+        console.log('📂 Fajl primljen:', req.file.originalname);
+        console.log('📂 Veličina:', req.file.size, 'bajtova');
+
         const workbook = XLSX.readFile(filePath, { cellDates: true, cellNF: false, cellText: false });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
         const data = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
-        
+
         console.log('📊 Redova:', data.length);
-        console.log('📋 Pronađene kolone:', Object.keys(data[0] || {}));
+        console.log('📋 Kolone:', Object.keys(data[0] || {}));
 
         const findValue = (row, keys) => {
             for (let key of keys) {
@@ -219,13 +228,12 @@ app.post('/api/upload', authenticate, upload.single('file'), (req, res) => {
             return '';
         };
 
-        let processed = 0;
-        const allOrders = [];
-        const allProgress = [];
+        let inserted = 0;
+        let updated = 0;
 
         for (let i = 0; i < data.length; i++) {
             const row = data[i];
-            
+
             const company = findValue(row, [
                 'ime firme', 'IME FIRME', 'Firma', 'firma', 'Ime firme', 
                 'FIRMA', 'Name', 'name', 'Company', 'company', 'Naziv firme'
@@ -255,90 +263,109 @@ app.post('/api/upload', authenticate, upload.single('file'), (req, res) => {
 
             if (!company && !code && !orderNumber) continue;
 
-            const order = {
-                id: Date.now() + i,
-                company: company,
-                code: code,
-                name: name,
-                orderNumber: orderNumber,
-                quantity: quantity,
-                deliveryDate: deliveryDate,
-                phases: [
-                    { phase: '100', status: 'pending', comment: '' },
-                    { phase: '200', status: 'pending', comment: '' },
-                    { phase: '300', status: 'pending', comment: '' },
-                    { phase: '400', status: 'pending', comment: '' },
-                    { phase: '500', status: 'pending', comment: '' }
-                ]
-            };
+            const existing = await pool.query('SELECT id FROM orders WHERE order_number = $1 AND company = $2', [orderNumber, company]);
             
-            allOrders.push(order);
-            allProgress.push({ orderId: order.id, phases: order.phases.map(p => ({ ...p })) });
-            processed++;
+            if (existing.rows.length > 0) {
+                await pool.query(
+                    `UPDATE orders SET 
+                        code = $1, name = $2, quantity = $3, delivery_date = $4
+                     WHERE order_number = $5 AND company = $6`,
+                    [code, name, quantity, deliveryDate, orderNumber, company]
+                );
+                updated++;
+            } else {
+                const newId = Date.now() + i;
+                await pool.query(
+                    `INSERT INTO orders (id, company, code, name, order_number, quantity, delivery_date)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                    [newId, company, code, name, orderNumber, quantity, deliveryDate]
+                );
+                
+                for (const phase of ['100', '200', '300', '400', '500']) {
+                    await pool.query(
+                        `INSERT INTO progress (order_id, phase, status, comment, updated_at)
+                         VALUES ($1, $2, 'pending', '', CURRENT_DATE)
+                         ON CONFLICT (order_id, phase) DO NOTHING`,
+                        [newId, phase]
+                    );
+                }
+                inserted++;
+            }
         }
-        
-        const existingOrders = readData(ORDERS_FILE);
-        const existingProgress = readData(PROGRESS_FILE);
-        const combinedOrders = [...existingOrders, ...allOrders];
-        const combinedProgress = [...existingProgress, ...allProgress];
-        writeData(ORDERS_FILE, combinedOrders);
-        writeData(PROGRESS_FILE, combinedProgress);
-        invalidateCache();
-        
-        console.log(`📦 UKUPNO: ${processed} naloga`);
-        res.json({ message: `✅ Učitano ${processed} naloga`, count: processed, totalRows: data.length });
+
+        console.log(`📦 Novih: ${inserted}, Ažuriranih: ${updated}`);
+        res.json({ 
+            message: `✅ Novih: ${inserted}, Ažuriranih: ${updated}`, 
+            inserted, 
+            updated,
+            totalRows: data.length 
+        });
+
     } catch (e) {
         console.error('❌ Upload error:', e);
         res.status(500).json({ error: e.message });
     }
 });
 
-app.get('/api/orders', authenticate, (req, res) => {
+// ============ ORDERS ============
+app.get('/api/orders', authenticate, async (req, res) => {
     try {
-        const { orders, progress } = getCachedData();
         const { search, page = 1, limit = 100 } = req.query;
+        const offset = (parseInt(page) - 1) * parseInt(limit);
 
-        let filteredOrders = orders;
+        let whereClause = '';
+        let params = [];
+        let paramIndex = 1;
 
-        if (req.user.role === 'admin') {
-            // admin vidi sve
-        } else {
+        if (req.user.role !== 'admin') {
             if (search) {
                 const s = search.toLowerCase();
-                filteredOrders = filteredOrders.filter(o =>
-                    (o.orderNumber || '').toLowerCase().includes(s) ||
-                    (o.name || '').toLowerCase().includes(s) ||
-                    (o.code || '').toLowerCase().includes(s)
-                );
+                whereClause = `WHERE LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex}`;
+                params.push(`%${s}%`);
+                paramIndex++;
             } else {
-                filteredOrders = filteredOrders.filter(o => o.company === req.user.company);
+                whereClause = `WHERE company = $${paramIndex}`;
+                params.push(req.user.company);
+                paramIndex++;
             }
         }
 
-        if (search) {
+        if (req.user.role === 'admin' && search) {
             const s = search.toLowerCase();
-            filteredOrders = filteredOrders.filter(o =>
-                (o.company || '').toLowerCase().includes(s) ||
-                (o.code || '').toLowerCase().includes(s) ||
-                (o.name || '').toLowerCase().includes(s) ||
-                (o.orderNumber || '').toLowerCase().includes(s)
-            );
+            if (whereClause) {
+                whereClause += ` AND (LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(company) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex})`;
+            } else {
+                whereClause = `WHERE LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(company) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex}`;
+            }
+            params.push(`%${s}%`);
+            paramIndex++;
         }
 
-        const p = parseInt(page), l = parseInt(limit);
-        const start = (p - 1) * l;
-        const paginated = filteredOrders.slice(start, start + l);
-        const result = paginated.map(o => {
-            const pr = progress.find(p => p.orderId === o.id);
-            return { ...o, progress: pr ? pr.phases : o.phases };
-        });
+        const countQuery = `SELECT COUNT(*) FROM orders ${whereClause}`;
+        const countResult = await pool.query(countQuery, params);
+        const total = parseInt(countResult.rows[0].count);
+
+        const dataQuery = `
+            SELECT o.*, 
+                   COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment, 'updated_at', p.updated_at) ORDER BY p.phase) 
+                   FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
+            FROM orders o
+            LEFT JOIN progress p ON o.id = p.order_id
+            ${whereClause}
+            GROUP BY o.id
+            ORDER BY o.id DESC
+            LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+        `;
+        params.push(parseInt(limit), offset);
+
+        const result = await pool.query(dataQuery, params);
 
         res.json({
-            data: result,
-            total: filteredOrders.length,
-            page: p,
-            limit: l,
-            totalPages: Math.ceil(filteredOrders.length / l)
+            data: result.rows,
+            total: total,
+            page: parseInt(page),
+            limit: parseInt(limit),
+            totalPages: Math.ceil(total / parseInt(limit))
         });
     } catch (e) {
         console.error('❌ Orders error:', e);
@@ -346,51 +373,31 @@ app.get('/api/orders', authenticate, (req, res) => {
     }
 });
 
-app.post('/api/update-phase', authenticate, (req, res) => {
+// ============ UPDATE PHASE ============
+app.post('/api/update-phase', authenticate, async (req, res) => {
     try {
         const { orderId, phase, status, comment } = req.body;
-        const progress = readData(PROGRESS_FILE);
-        let op = progress.find(p => p.orderId === orderId);
-        if (!op) {
-            op = { orderId, phases: [
-                { phase: '100', status: 'pending', comment: '' },
-                { phase: '200', status: 'pending', comment: '' },
-                { phase: '300', status: 'pending', comment: '' },
-                { phase: '400', status: 'pending', comment: '' },
-                { phase: '500', status: 'pending', comment: '' }
-            ]};
-            progress.push(op);
-        }
-        const pd = op.phases.find(p => p.phase === phase);
-        if (pd) {
-            pd.status = status;
-            if (comment !== undefined) pd.comment = comment;
-        }
-        writeData(PROGRESS_FILE, progress);
-        invalidateCache();
+        console.log(`🔄 Menjam fazu ${phase} na ${status} za nalog ${orderId}`);
+        
+        await pool.query(
+            `INSERT INTO progress (order_id, phase, status, comment, updated_at)
+             VALUES ($1, $2, $3, $4, CURRENT_DATE)
+             ON CONFLICT (order_id, phase) DO UPDATE SET
+             status = EXCLUDED.status, 
+             comment = EXCLUDED.comment, 
+             updated_at = CURRENT_DATE`,
+            [orderId, phase, status, comment || '']
+        );
+        
+        console.log('✅ Faza ažurirana u bazi');
         res.json({ message: 'Phase updated' });
     } catch (e) {
+        console.error('❌ Update phase error:', e);
         res.status(500).json({ error: e.message });
     }
 });
 
-app.get('/api/test-email', authenticate, async (req, res) => {
-    try {
-        if (!transporter) {
-            return res.status(400).json({ error: 'Email not configured' });
-        }
-        const result = await transporter.sendMail({
-            from: process.env.EMAIL_USER,
-            to: process.env.ADMIN_EMAIL || 'grupkovic@gmail.com',
-            subject: '🧪 Test email',
-            text: 'Test email'
-        });
-        res.json({ success: true, messageId: result.messageId });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
+// ============ SEND REPORT ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
         if (!transporter) {
@@ -399,10 +406,21 @@ app.post('/api/send-report', authenticate, async (req, res) => {
 
         const { email, date } = req.body;
         const today = date || new Date().toLocaleDateString('sr-RS');
-        const orders = readData(ORDERS_FILE);
-        const progress = readData(PROGRESS_FILE);
 
-        const userOrders = orders.filter(o => o.company === req.user.company);
+        const ordersResult = await pool.query(
+            `SELECT o.*, 
+                    COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment, 'updated_at', p.updated_at) ORDER BY p.phase) 
+                    FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
+             FROM orders o
+             LEFT JOIN progress p ON o.id = p.order_id
+             WHERE o.company = $1
+             GROUP BY o.id
+             ORDER BY o.id DESC`,
+            [req.user.company]
+        );
+
+        const userOrders = ordersResult.rows;
+
         if (userOrders.length === 0) {
             return res.status(400).json({ error: 'Nema naloga' });
         }
@@ -411,13 +429,12 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         let totalCompleted = 0, totalProblem = 0, totalPending = 0;
 
         userOrders.forEach(order => {
-            const op = progress.find(p => p.orderId === order.id);
-            const phases = op ? op.phases : order.phases;
+            const phases = order.progress || [];
             const hasCompleted = phases.some(p => p.status === 'completed');
             const hasProblem = phases.some(p => p.status === 'problem');
             const hasComment = phases.some(p => p.comment && p.comment.trim() !== '');
             if (hasCompleted || hasProblem || hasComment) {
-                activeOrders.push({ order, phases });
+                activeOrders.push(order);
                 phases.forEach(p => {
                     if (p.status === 'completed') totalCompleted++;
                     else if (p.status === 'problem') totalProblem++;
@@ -431,7 +448,7 @@ app.post('/api/send-report', authenticate, async (req, res) => {
                 from: process.env.EMAIL_USER,
                 to: email || process.env.ADMIN_EMAIL,
                 subject: `📊 Dnevni izveštaj - ${req.user.company} - ${today}`,
-                text: `Dana ${today} nema novih aktivnosti.`
+                text: `Poštovani,\n\nDana ${today} nema novih aktivnosti.\n\nS poštovanjem,\nProduction Tracker`
             });
             return res.json({ message: '✅ Nema aktivnosti, izveštaj poslat.' });
         }
@@ -470,7 +487,8 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         hr.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
         hr.alignment = { horizontal: 'center', vertical: 'middle' };
 
-        activeOrders.forEach(({ order, phases }) => {
+        activeOrders.forEach(order => {
+            const phases = order.progress || [];
             const map = {};
             const comments = [];
             phases.forEach(p => {
@@ -486,11 +504,11 @@ app.post('/api/send-report', authenticate, async (req, res) => {
                 return 'NA ČEKANJU';
             };
             const row = ws.addRow([
-                order.orderNumber || '',
+                order.order_number || '',
                 order.name || '',
                 order.code || '',
                 order.quantity || 0,
-                order.deliveryDate || '',
+                order.delivery_date || '',
                 getStatus('100'), getStatus('200'), getStatus('300'),
                 getStatus('400'), getStatus('500'),
                 comments.join('; ')
@@ -526,7 +544,7 @@ app.post('/api/send-report', authenticate, async (req, res) => {
             from: process.env.EMAIL_USER,
             to: email || process.env.ADMIN_EMAIL,
             subject: `📊 Dnevni izveštaj - ${req.user.company} - ${today}`,
-            text: `U prilogu je dnevni izveštaj (${activeOrders.length} aktivnih naloga).`,
+            text: `Poštovani,\n\nU prilogu je dnevni izveštaj (${activeOrders.length} aktivnih naloga).\n\nS poštovanjem,\nProduction Tracker`,
             attachments: [{
                 filename: `Izvestaj_${req.user.company}_${today.replace(/\./g, '-')}.xlsx`,
                 content: buffer
@@ -540,7 +558,9 @@ app.post('/api/send-report', authenticate, async (req, res) => {
     }
 });
 
+// ============ POKRENI SERVER ============
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📄 Data folder: ${dataDir}`);
+    console.log(`🗄️ PostgreSQL: ${process.env.DATABASE_URL ? '✅' : '❌'}`);
+    console.log(`📧 Email: ${transporter ? '✅' : '❌'}`);
 });
