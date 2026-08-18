@@ -423,8 +423,9 @@ app.get('/api/orders', authenticate, async (req, res) => {
 // ============ UPDATE PHASE SA ISTORIJOM ============
 app.post('/api/update-phase', authenticate, async (req, res) => {
     try {
-        const { orderId, phase, status, comment } = req.body;
-        console.log(`🔄 Menjam fazu ${phase} na ${status} za nalog ${orderId}`);
+        const { orderId, phase, comment } = req.body;
+        let { status } = req.body;
+        console.log(`🔄 Menjam fazu ${phase} za nalog ${orderId}`, status ? `na ${status}` : '(samo komentar)');
 
         // Pronađi trenutni status
         const current = await pool.query(
@@ -434,6 +435,10 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         const oldStatus = current.rows[0]?.status || 'pending';
         const oldComment = current.rows[0]?.comment || '';
 
+        // Ako status nije poslat (npr. samo se čuva komentar), zadrži postojeći status
+        if (!status) status = oldStatus;
+        const finalComment = comment !== undefined ? comment : oldComment;
+
         // Ažuriraj progres
         await pool.query(
             `INSERT INTO progress (order_id, phase, status, comment, updated_at)
@@ -442,29 +447,33 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
              status = EXCLUDED.status, 
              comment = EXCLUDED.comment, 
              updated_at = NOW()`,
-            [orderId, phase, status, comment || oldComment]
+            [orderId, phase, status, finalComment]
         );
 
-        // ============ SAČUVAJ U ISTORIJU ============
+        // ============ SAČUVAJ U ISTORIJU (samo ako se status stvarno promenio) ============
         // Pronađi order_number i company za istoriju
-        const orderInfo = await pool.query(
-            'SELECT order_number, company FROM orders WHERE id = $1',
-            [orderId]
-        );
-        if (orderInfo.rows.length > 0) {
-            const { order_number, company } = orderInfo.rows[0];
-            await pool.query(
-                `INSERT INTO order_history 
-                    (order_number, company, phase, old_status, new_status, comment, changed_by)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                [order_number, company, phase, oldStatus, status, comment || oldComment, req.user.username]
+        if (status !== oldStatus) {
+            const orderInfo = await pool.query(
+                'SELECT order_number, company FROM orders WHERE id = $1',
+                [orderId]
             );
-            console.log('📜 Istorija sačuvana');
+            if (orderInfo.rows.length > 0) {
+                const { order_number, company } = orderInfo.rows[0];
+                await pool.query(
+                    `INSERT INTO order_history 
+                        (order_number, company, phase, old_status, new_status, comment, changed_by)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                    [order_number, company, phase, oldStatus, status, finalComment, req.user.username]
+                );
+                console.log('📜 Istorija sačuvana');
+            }
         }
 
         console.log('✅ Faza ažurirana u bazi');
         res.json({ 
             message: 'Phase updated',
+            status,
+            comment: finalComment,
             updatedAt: new Date().toISOString()
         });
     } catch (e) {
