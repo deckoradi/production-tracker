@@ -424,11 +424,10 @@ async function updatePhase(orderId, phase, status) {
         if (response.ok) {
             console.log('✅ Faza ažurirana');
             
-            // Ažuriraj orders niz u memoriji
+            // ⭐ 1. Ažuriraj orders niz u memoriji
             const orderIndex = orders.findIndex(o => o.id === orderId);
             if (orderIndex !== -1) {
                 const order = orders[orderIndex];
-                
                 if (!order.progress) order.progress = [];
                 
                 const phaseData = order.progress.find(p => p.phase === phase);
@@ -439,13 +438,13 @@ async function updatePhase(orderId, phase, status) {
                 }
             }
             
-            // Ponovo prikaži faze (odmah)
-            const order = orders.find(o => o.id === orderId);
-            if (order) {
-                renderPhases(order);
+            // ⭐ 2. Ponovo prikaži faze (odmah, bez zatvaranja modala)
+            const updatedOrder = orders.find(o => o.id === orderId);
+            if (updatedOrder) {
+                renderPhases(updatedOrder);
             }
             
-            // Osvježi tabelu (status u tabeli)
+            // ⭐ 3. Osvježi tabelu (status u glavnoj tabeli)
             renderOrders(orders, {
                 total: totalOrders,
                 page: currentPage,
@@ -492,7 +491,7 @@ async function updatePhaseComment(orderId, phase, comment) {
                 }
             }
             
-            // Ponovo prikaži faze (da se vidi komentar)
+            // Ponovo prikaži faze
             const order = orders.find(o => o.id === orderId);
             if (order) {
                 renderPhases(order);
