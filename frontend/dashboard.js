@@ -43,7 +43,7 @@ function goToPage(p){if(p<1||p>totalPages)return;loadOrders(searchInput?.value||
 
 function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)return;selectedOrderId=id;renderModal(o);phaseModal.classList.remove('hidden')}
 
-// ============ NOVI RENDER MODAL – centriran status, datum ispod, bez "Istorija" ============
+// ============ RENDER MODAL – centriran status, datum ispod, bez "Istorija" ============
 function renderModal(o){
   modalOrderNumber.textContent=o.orderNumber||'N/A';
   modalOrderInfo.innerHTML=`<p><b>Firma:</b> ${esc(o.company)}</p><p><b>Artikal:</b> ${esc(o.name)}</p><p><b>Šifra:</b> ${esc(o.code)}</p><p><b>Količina:</b> ${o.quantity||0}</p><p><b>Datum isporuke:</b> ${esc(o.deliveryDate||'-')}</p>`;
@@ -70,7 +70,7 @@ function renderModal(o){
   phasesContainer.innerHTML=h||'Nema faza';
 }
 
-// ============ SAČUVAJ KOMENTAR (osvežava modal) ============
+// ============ SAVE COMMENT ============
 async function saveComment(id, phase, comment) {
   const o = orders.find(x => String(x.id) === String(id));
   const p = o?.progress.find(x => String(x.phase) === String(phase));
@@ -95,9 +95,7 @@ async function saveComment(id, phase, comment) {
 
 async function updatePhase(id,phase,status){const o=orders.find(x=>String(x.id)===String(id)),p=o?.progress.find(x=>String(x.phase)===String(phase));if(!p)return;const old={status:p.status,comment:p.comment,updatedAt:p.updatedAt};p.status=status;p.updatedAt=new Date().toISOString();renderOrders();renderModal(o);try{const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,status,comment:p.comment||''})});p.updatedAt=d.updatedAt;renderOrders();renderModal(o)}catch(e){Object.assign(p,old);renderOrders();renderModal(o);alert('❌ '+e.message)}}
 
-// ============ (OPCIONO) Ako želiš da zadržiš istoriju, ali bez dugmeta, ovo nije potrebno ============
-// showHistory funkcija može ostati, ali je ne pozivamo – možeš je i obrisati.
-
+// ============ DATE function (only date) ============
 function date(v) {
   const d = new Date(v);
   if (isNaN(d)) return String(v);

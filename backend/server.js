@@ -28,7 +28,6 @@ const pool = new Pool({
 
 const initDb = async () => {
     try {
-        // Tabela korisnika
         await pool.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -40,7 +39,6 @@ const initDb = async () => {
             )
         `);
 
-        // Tabela naloga (aktivni)
         await pool.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id BIGINT PRIMARY KEY,
@@ -54,7 +52,6 @@ const initDb = async () => {
             )
         `);
 
-        // Tabela progres (aktivne faze)
         await pool.query(`
             CREATE TABLE IF NOT EXISTS progress (
                 id SERIAL PRIMARY KEY,
@@ -67,7 +64,6 @@ const initDb = async () => {
             )
         `);
 
-        // ============ NOVA TABELA: ISTORIJA ============
         await pool.query(`
             CREATE TABLE IF NOT EXISTS order_history (
                 id SERIAL PRIMARY KEY,
@@ -277,7 +273,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
             const existing = await pool.query('SELECT id FROM orders WHERE order_number = $1 AND company = $2', [orderNumber, company]);
 
             if (existing.rows.length > 0) {
-                // Ažuriraj
+                // Ažuriraj (ne diraj progress)
                 await pool.query(
                     `UPDATE orders SET 
                         code = $1, name = $2, quantity = $3, delivery_date = $4
@@ -294,8 +290,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                     [newId, company, code, name, orderNumber, quantity, deliveryDate]
                 );
 
-                // ============ VRATI POSLEDNJE POZNATO STANJE IZ ISTORIJE ============
-                // Sada uzimamo i changed_at da bismo sačuvali originalni datum
+                // Vrati poslednje poznato stanje iz istorije (uključujući i datum)
                 let anyRestoredForThisOrder = false;
 
                 for (const phase of ['100', '200', '300', '400', '500']) {
@@ -426,7 +421,6 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         let { status } = req.body;
         console.log(`🔄 Menjam fazu ${phase} za nalog ${orderId}`, status ? `na ${status}` : '(samo komentar)');
 
-        // Pronađi trenutni status
         const current = await pool.query(
             'SELECT status, comment FROM progress WHERE order_id = $1 AND phase = $2',
             [orderId, phase]
@@ -434,11 +428,9 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         const oldStatus = current.rows[0]?.status || 'pending';
         const oldComment = current.rows[0]?.comment || '';
 
-        // Ako status nije poslat (npr. samo se čuva komentar), zadrži postojeći status
         if (!status) status = oldStatus;
         const finalComment = comment !== undefined ? comment : oldComment;
 
-        // Ažuriraj progres
         await pool.query(
             `INSERT INTO progress (order_id, phase, status, comment, updated_at)
              VALUES ($1, $2, $3, $4, NOW())
@@ -449,8 +441,6 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             [orderId, phase, status, finalComment]
         );
 
-        // ============ SAČUVAJ U ISTORIJU (samo ako se status stvarno promenio) ============
-        // Pronađi order_number i company za istoriju
         if (status !== oldStatus) {
             const orderInfo = await pool.query(
                 'SELECT order_number, company FROM orders WHERE id = $1',
@@ -468,12 +458,19 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
         }
 
+        // Vrati ažurirani updated_at
+        const updated = await pool.query(
+            'SELECT updated_at FROM progress WHERE order_id = $1 AND phase = $2',
+            [orderId, phase]
+        );
+        const updatedAt = updated.rows[0]?.updated_at || new Date();
+
         console.log('✅ Faza ažurirana u bazi');
         res.json({ 
             message: 'Phase updated',
             status,
             comment: finalComment,
-            updatedAt: new Date().toISOString()
+            updatedAt: updatedAt
         });
     } catch (e) {
         console.error('❌ Update phase error:', e);
@@ -487,7 +484,6 @@ app.post('/api/clear-orders', authenticate, async (req, res) => {
         return res.status(403).json({ error: 'Samo admin može' });
     }
     try {
-        // Samo brišemo aktivne naloge i progres, ISTORIJA OSTAJE!
         const deletedOrders = await pool.query('DELETE FROM orders RETURNING id');
         const deletedProgress = await pool.query('DELETE FROM progress RETURNING id');
         
@@ -524,22 +520,6 @@ app.post('/api/clear-all', authenticate, async (req, res) => {
     }
 });
 
-// ============ PRIKAZ ISTORIJE ZA FAZU ============
-app.get('/api/phase-history/:orderNumber/:phase', authenticate, async (req, res) => {
-    try {
-        const { orderNumber, phase } = req.params;
-        const result = await pool.query(
-            `SELECT * FROM order_history 
-             WHERE order_number = $1 AND phase = $2 
-             ORDER BY changed_at DESC`,
-            [orderNumber, phase]
-        );
-        res.json({ history: result.rows });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
 // ============ SEND REPORT ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
@@ -568,8 +548,8 @@ app.post('/api/send-report', authenticate, async (req, res) => {
             return res.status(400).json({ error: 'Nema naloga' });
         }
 
-        // ... (ostatak send-report koda ostaje isti)
-        // (Da ne dužimo, ali možeš dodati i istoriju u izveštaj)
+        // Ovde možeš dodati slanje emaila
+        // ...
 
         res.json({ message: '✅ Izveštaj poslat!' });
     } catch (e) {
