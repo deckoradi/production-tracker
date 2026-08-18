@@ -14,7 +14,6 @@ searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));se
 
 function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;const p=document.createElement('div');p.id='orderManagementPanel';p.style='margin:15px 0;padding:16px;border:1px solid #e2e8f0;border-radius:12px;background:#fff';p.innerHTML=`<b>Upravljanje nalozima</b><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="deleteActiveOrdersBtn" style="padding:10px 16px;background:#e53e3e;color:white;border:0;border-radius:8px;font-weight:700">🗑️ Obriši aktivne naloge</button><button id="deleteAllHistoryBtn" style="padding:10px 16px;background:#718096;color:white;border:0;border-radius:8px;font-weight:700">🧹 Obriši sve + istoriju</button></div><div id="orderManagementStatus" style="margin-top:10px"></div>`;adminPanel.appendChild(p);$('deleteActiveOrdersBtn').onclick=clearActive;$('deleteAllHistoryBtn').onclick=clearAll}
 
-// ============ ISPRAVLJENE FUNKCIJE ZA BRISANJE ============
 async function clearActive(){
   if(!confirm('Obrisati sve aktivne naloge? Istorija ostaje sačuvana.'))return;
   try{
@@ -43,9 +42,38 @@ function renderOrders(){if(!orders.length){ordersContainer.innerHTML='<p style="
 function goToPage(p){if(p<1||p>totalPages)return;loadOrders(searchInput?.value||'',p)}
 
 function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)return;selectedOrderId=id;renderModal(o);phaseModal.classList.remove('hidden')}
-function renderModal(o){modalOrderNumber.textContent=o.orderNumber||'N/A';modalOrderInfo.innerHTML=`<p><b>Firma:</b> ${esc(o.company)}</p><p><b>Artikal:</b> ${esc(o.name)}</p><p><b>Šifra:</b> ${esc(o.code)}</p><p><b>Količina:</b> ${o.quantity||0}</p><p><b>Datum isporuke:</b> ${esc(o.deliveryDate||'-')}</p>`;let h='';(o.progress||[]).forEach(p=>{const e=p.status==='completed'?'✅':p.status==='problem'?'⚠️':'⬜',lab=p.status==='completed'?'URAĐENO':p.status==='problem'?'PROBLEM':'NA ČEKANJU';h+=`<div class="phase-card"><h4>Faza ${esc(p.phase)}</h4><div class="phase-status"><span style="font-size:28px">${e}</span><div><b>${lab}</b>${p.updatedAt?`<div style="font-size:12px;color:#718096">📅 ${date(p.updatedAt)}</div>`:''}</div></div><div class="phase-buttons"><button onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button><button onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ Problem</button><button onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">⬜ Reset</button><button onclick="showHistory(${o.id},'${js(p.phase)}')">🕘 Istorija</button></div><textarea style="width:100%;min-height:70px" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea><div id="hist-${o.id}-${p.phase}" style="display:none"></div></div>`});phasesContainer.innerHTML=h||'Nema faza'}
 
-// ============ ISPRAVLJENA FUNKCIJA ZA ČUVANJE KOMENTARA ============
+// ============ ISPRAVLJEN RENDER MODAL – datum pored statusa ============
+function renderModal(o){
+  modalOrderNumber.textContent=o.orderNumber||'N/A';
+  modalOrderInfo.innerHTML=`<p><b>Firma:</b> ${esc(o.company)}</p><p><b>Artikal:</b> ${esc(o.name)}</p><p><b>Šifra:</b> ${esc(o.code)}</p><p><b>Količina:</b> ${o.quantity||0}</p><p><b>Datum isporuke:</b> ${esc(o.deliveryDate||'-')}</p>`;
+  let h='';
+  (o.progress||[]).forEach(p=>{
+    const e=p.status==='completed'?'✅':p.status==='problem'?'⚠️':'⬜';
+    const lab=p.status==='completed'?'URAĐENO':p.status==='problem'?'PROBLEM':'NA ČEKANJU';
+    // Prikazujemo status i datum u istom redu
+    h+=`<div class="phase-card"><h4>Faza ${esc(p.phase)}</h4>
+      <div class="phase-status" style="display:flex; align-items:center; gap:8px;">
+        <span style="font-size:28px">${e}</span>
+        <div>
+          <b>${lab}</b>
+          ${p.updatedAt ? `<span style="font-size:12px;color:#718096;margin-left:8px;">📅 ${date(p.updatedAt)}</span>` : ''}
+        </div>
+      </div>
+      <div class="phase-buttons">
+        <button onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button>
+        <button onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ Problem</button>
+        <button onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">⬜ Reset</button>
+        <button onclick="showHistory(${o.id},'${js(p.phase)}')">🕘 Istorija</button>
+      </div>
+      <textarea style="width:100%;min-height:70px" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea>
+      <div id="hist-${o.id}-${p.phase}" style="display:none"></div>
+    </div>`;
+  });
+  phasesContainer.innerHTML=h||'Nema faza';
+}
+
+// ============ SAVE COMMENT – osvežava modal i tabelu ============
 async function saveComment(id, phase, comment) {
   const o = orders.find(x => String(x.id) === String(id));
   const p = o?.progress.find(x => String(x.phase) === String(phase));
@@ -63,7 +91,8 @@ async function saveComment(id, phase, comment) {
       body: JSON.stringify({ orderId: id, phase, comment })
     });
     if (res.updatedAt) p.updatedAt = res.updatedAt;
-    renderModal(o);  // osveži prikaz
+    renderModal(o);  // osveži prikaz modala
+    renderOrders();  // osveži tabelu (ako želiš da se vidi da je nešto promenjeno)
   } catch (e) {
     p.comment = oldComment;
     p.updatedAt = oldUpdated;
@@ -75,7 +104,7 @@ async function updatePhase(id,phase,status){const o=orders.find(x=>String(x.id)=
 async function showHistory(id,phase){const b=$(`hist-${id}-${phase}`);if(!b)return;if(b.style.display==='block'){b.style.display='none';return}b.style.display='block';b.textContent='⏳ Učitavanje...';try{const d=await api(`/api/phase-history/${id}/${encodeURIComponent(phase)}`,{headers:headers()});b.innerHTML=d.history.length?'<b>Istorija:</b>'+d.history.map(x=>`<div style="padding:6px 0;border-bottom:1px solid #eee"><b>${label(x.status)}</b> — ${date(x.changedAt)}${x.comment?`<br>💬 ${esc(x.comment)}`:''}</div>`).join(''):'Nema istorije'}catch(e){b.textContent='❌ '+e.message}}
 function label(s){return s==='completed'?'✅ Urađeno':s==='problem'?'⚠️ Problem':'⬜ Reset'}
 
-// ============ ISPRAVLJENA FUNKCIJA ZA DATUM (samo datum, bez vremena) ============
+// ============ FUNKCIJA ZA DATUM (samo datum) ============
 function date(v) {
   const d = new Date(v);
   if (isNaN(d)) return String(v);
