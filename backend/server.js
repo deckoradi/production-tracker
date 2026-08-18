@@ -494,6 +494,28 @@ app.post('/api/clear-orders', authenticate, async (req, res) => {
     }
 });
 
+// ============ OBRISI AKTIVNE NALOGE + ISTORIJU (POTPUNO BRISANJE) ============
+app.post('/api/clear-all', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Samo admin može' });
+    }
+    try {
+        const deletedOrders = await pool.query('DELETE FROM orders RETURNING id');
+        const deletedProgress = await pool.query('DELETE FROM progress RETURNING id');
+        const deletedHistory = await pool.query('DELETE FROM order_history RETURNING id');
+
+        res.json({
+            message: '✅ Aktivni nalozi i istorija su potpuno obrisani!',
+            deletedOrders: deletedOrders.rowCount,
+            deletedProgress: deletedProgress.rowCount,
+            deletedHistory: deletedHistory.rowCount
+        });
+    } catch (e) {
+        console.error('❌ Clear all error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ============ PRIKAZ ISTORIJE ZA FAZU ============
 app.get('/api/phase-history/:orderNumber/:phase', authenticate, async (req, res) => {
     try {
