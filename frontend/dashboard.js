@@ -365,27 +365,30 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// ============ OPEN ORDER - SA SAKRIVANJEM FIRME ZA TUĐE NALOGE ============
+// ============ OPEN ORDER - POPRAVLJEN ============
 function openOrder(orderId) {
-    const order = orders.find(o => o.id === orderId);
+    console.log('🔍 openOrder pozvana sa ID:', orderId);
+    
+    // ⭐ POPRAVKA: Poredi kao string
+    const order = orders.find(o => String(o.id) === String(orderId));
+    
     if (!order) {
-        console.error('Order not found:', orderId);
+        console.error('❌ Order not found:', orderId);
         return;
     }
+    
+    console.log('✅ Order pronađen:', order);
     
     selectedOrderId = orderId;
     modalOrderNumber.textContent = order.orderNumber || order.nalog || 'N/A';
     
-    // Proveri da li je admin ILI je nalog korisnikov
     const isAdmin = currentUser && currentUser.role === 'admin';
     const isOwnOrder = order.company === currentUser.company;
     
     let companyHtml = '';
     if (isAdmin || isOwnOrder) {
-        // Admin i vlasnik naloga vide firmu
         companyHtml = `<p><strong>Firma:</strong> ${escapeHtml(order.company || order.firma || '')}</p>`;
     } else {
-        // Tuđi nalog - sakrivamo firmu
         companyHtml = `<p style="display:none;"><strong>Firma:</strong> ${escapeHtml(order.company || order.firma || '')}</p>`;
     }
     
