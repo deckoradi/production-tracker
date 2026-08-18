@@ -368,7 +368,9 @@ function openOrder(orderId) {
 }
 
 function renderPhases(order) {
+    console.log('🖥️ renderPhases pozvana');
     const phases = order.progress || order.phases || [];
+    console.log('🖥️ phases:', phases);
     
     if (phases.length === 0) {
         phasesContainer.innerHTML = '<p style="text-align:center;padding:20px;color:#a0aec0;">Nema faza</p>';
@@ -404,6 +406,7 @@ function renderPhases(order) {
     });
     
     phasesContainer.innerHTML = html;
+    console.log('✅ renderPhases završena');
 }
 
 async function updatePhase(orderId, phase, status) {
@@ -424,33 +427,18 @@ async function updatePhase(orderId, phase, status) {
         if (response.ok) {
             console.log('✅ Faza ažurirana');
             
-            // ⭐ Ažuriraj orders niz u memoriji
-            const orderIndex = orders.findIndex(o => o.id === orderId);
-            if (orderIndex !== -1) {
-                const order = orders[orderIndex];
-                if (!order.progress) order.progress = [];
-                
-                const phaseData = order.progress.find(p => p.phase === phase);
-                if (phaseData) {
-                    phaseData.status = status;
-                } else {
-                    order.progress.push({ phase, status, comment: '' });
-                }
-            }
+            // ⭐ PONOVO UČITAJ SVE NALOGE IZ BAZE
+            const search = document.getElementById('searchInput').value || '';
+            await loadOrders(search, currentPage);
             
-            // ⭐ OSVEŽI PRIKAZ FAZA (BEZ ZATVARANJA MODALA)
+            // ⭐ PONOVO OTVORI NALOG SA OSVEŽENIM PODACIMA
             const updatedOrder = orders.find(o => o.id === orderId);
             if (updatedOrder) {
-                renderPhases(updatedOrder);
+                phaseModal.classList.add('hidden');
+                setTimeout(() => {
+                    openOrder(orderId);
+                }, 150);
             }
-            
-            // ⭐ OSVEŽI TABELU
-            renderOrders(orders, {
-                total: totalOrders,
-                page: currentPage,
-                totalPages: totalPages,
-                limit: LIMIT
-            });
             
         } else {
             alert(`❌ Greška: ${data.error}`);
@@ -491,10 +479,13 @@ async function updatePhaseComment(orderId, phase, comment) {
                 }
             }
             
-            // OSVEŽI PRIKAZ FAZA
+            // Ponovo otvori nalog
             const order = orders.find(o => o.id === orderId);
             if (order) {
-                renderPhases(order);
+                phaseModal.classList.add('hidden');
+                setTimeout(() => {
+                    openOrder(orderId);
+                }, 100);
             }
             
         } else {
