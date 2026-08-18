@@ -1,587 +1,624 @@
-const express = require('express');
-const cors = require('cors');
-const multer = require('multer');
-const XLSX = require('xlsx');
-const fs = require('fs');
-const path = require('path');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
-const ExcelJS = require('exceljs');
-const { Pool } = require('pg');
+// State
+let currentUser = null;
+let orders = [];
+let selectedOrderId = null;
+let currentPage = 1;
+let totalPages = 1;
+let totalOrders = 0;
+const LIMIT = 100;
 
-const dotenv = require('dotenv');
-dotenv.config({ path: path.join(__dirname, '.env') });
+// DOM Elements
+const companyDisplay = document.getElementById('companyDisplay');
+const adminPanel = document.getElementById('adminPanel');
+const ordersContainer = document.getElementById('ordersContainer');
+const searchInput = document.getElementById('searchInput');
+const searchBtn = document.getElementById('searchBtn');
+const clearSearchBtn = document.getElementById('clearSearchBtn');
+const logoutBtn = document.getElementById('logoutBtn');
+const sendReportBtn = document.getElementById('sendReportBtn');
+const phaseModal = document.getElementById('phaseModal');
+const modalOrderNumber = document.getElementById('modalOrderNumber');
+const modalOrderInfo = document.getElementById('modalOrderInfo');
+const phasesContainer = document.getElementById('phasesContainer');
+const closeModal = document.querySelector('.close-modal');
+const orderCount = document.getElementById('orderCount');
 
-console.log('📧 EMAIL_USER:', process.env.EMAIL_USER ? '✅' : '❌');
-console.log('📧 EMAIL_PASS:', process.env.EMAIL_PASS ? '✅' : '❌');
-console.log('📧 ADMIN_EMAIL:', process.env.ADMIN_EMAIL ? '✅' : '❌');
-console.log('🗄️ DATABASE_URL:', process.env.DATABASE_URL ? '✅' : '❌');
+// Check authentication
+const token = localStorage.getItem('token');
+const userStr = localStorage.getItem('user');
 
-const app = express();
-const PORT = process.env.PORT || 5001;
+if (!token || !userStr) {
+    window.location.href = 'index.html';
+}
 
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
+currentUser = JSON.parse(userStr);
+companyDisplay.textContent = currentUser.company;
+
+// Show admin panel if admin
+if (currentUser.role === 'admin') {
+    adminPanel.classList.remove('hidden');
+    loadUsers();
+}
+
+// Event Listeners
+document.addEventListener('DOMContentLoaded', () => {
+    loadOrders();
 });
 
-const initDb = async () => {
+searchBtn.addEventListener('click', () => {
+    currentPage = 1;
+    loadOrders(searchInput.value, 1);
+});
+
+searchInput.addEventListener('keyup', (e) => {
+    if (e.key === 'Enter') {
+        currentPage = 1;
+        loadOrders(searchInput.value, 1);
+    }
+});
+
+clearSearchBtn.addEventListener('click', () => {
+    searchInput.value = '';
+    currentPage = 1;
+    loadOrders('', 1);
+});
+
+logoutBtn.addEventListener('click', () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    window.location.href = 'index.html';
+});
+
+closeModal.addEventListener('click', () => {
+    phaseModal.classList.add('hidden');
+});
+
+window.addEventListener('click', (e) => {
+    if (e.target === phaseModal) {
+        phaseModal.classList.add('hidden');
+    }
+});
+
+// Upload form
+document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fileInput = document.getElementById('fileInput');
+    const statusDiv = document.getElementById('uploadStatus');
+    
+    if (!fileInput.files[0]) {
+        statusDiv.textContent = 'Molimo izaberite fajl';
+        statusDiv.className = 'error';
+        return;
+    }
+    
+    statusDiv.textContent = '⏳ Učitavanje...';
+    statusDiv.className = '';
+    
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    
     try {
-        // Tabela korisnika
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                username VARCHAR(100) UNIQUE NOT NULL,
-                password VARCHAR(255) NOT NULL,
-                role VARCHAR(50) DEFAULT 'user',
-                company VARCHAR(255) NOT NULL,
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        `);
-
-        // Tabela naloga (aktivni)
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS orders (
-                id BIGINT PRIMARY KEY,
-                company VARCHAR(255),
-                code VARCHAR(100),
-                name VARCHAR(255),
-                order_number VARCHAR(100),
-                quantity INTEGER DEFAULT 0,
-                delivery_date VARCHAR(100),
-                created_at TIMESTAMP DEFAULT NOW()
-            )
-        `);
-
-        // Tabela progres (aktivne faze)
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS progress (
-                id SERIAL PRIMARY KEY,
-                order_id BIGINT NOT NULL,
-                phase VARCHAR(10) NOT NULL,
-                status VARCHAR(20) DEFAULT 'pending',
-                comment TEXT DEFAULT '',
-                updated_at TIMESTAMP DEFAULT NOW(),
-                UNIQUE(order_id, phase)
-            )
-        `);
-
-        // ============ NOVA TABELA: ISTORIJA ============
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS order_history (
-                id SERIAL PRIMARY KEY,
-                order_number VARCHAR(100) NOT NULL,
-                company VARCHAR(255) NOT NULL,
-                phase VARCHAR(10) NOT NULL,
-                old_status VARCHAR(20),
-                new_status VARCHAR(20) NOT NULL,
-                comment TEXT,
-                changed_by VARCHAR(100),
-                changed_at TIMESTAMP DEFAULT NOW()
-            )
-        `);
-
-        const adminCheck = await pool.query('SELECT * FROM users WHERE username = $1', ['admin']);
-        if (adminCheck.rows.length === 0) {
-            const hashedPassword = await bcrypt.hash('admin123', 10);
-            await pool.query(
-                'INSERT INTO users (username, password, role, company) VALUES ($1, $2, $3, $4)',
-                ['admin', hashedPassword, 'admin', 'Administrator']
-            );
-            console.log('✅ Admin korisnik kreiran: admin / admin123');
-        }
-
-        console.log('🗄️ PostgreSQL baza: ✅ Povezana');
-    } catch (e) {
-        console.error('❌ DB init error:', e.message);
-    }
-};
-
-initDb();
-
-app.use(cors({
-    origin: ['http://localhost:3000', 'https://production-tracker-wcy8.onrender.com', 'https://production-tracker.onrender.com'],
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.static(path.join(__dirname, '../frontend')));
-
-app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, '../frontend/index.html'));
-});
-
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, uploadsDir),
-    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
-});
-
-const upload = multer({
-    storage: storage,
-    limits: { fileSize: 100 * 1024 * 1024 },
-    fileFilter: (req, file, cb) => {
-        const ext = path.extname(file.originalname);
-        if (ext !== '.xlsx' && ext !== '.xls') {
-            return cb(new Error('Only Excel files'));
-        }
-        cb(null, true);
-    }
-});
-
-const authenticate = (req, res, next) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: 'No token' });
-    try {
-        req.user = jwt.verify(token, process.env.JWT_SECRET || 'secret');
-        next();
-    } catch (e) {
-        res.status(401).json({ error: 'Invalid token' });
-    }
-};
-
-let transporter = null;
-try {
-    if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-        transporter = nodemailer.createTransport({
-            service: 'gmail',
-            auth: {
-                user: process.env.EMAIL_USER,
-                pass: process.env.EMAIL_PASS
+        const startTime = Date.now();
+        const response = await fetch('/api/upload', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
             },
-            connectionTimeout: 10000,
-            greetingTimeout: 10000,
-            socketTimeout: 15000
+            body: formData
         });
-        console.log('📧 Email transporter: ✅');
-    }
-} catch (e) { console.log('📧 Email: ❌', e.message); }
-
-// ============ ROUTES ============
-
-app.post('/api/login', async (req, res) => {
-    try {
-        const { username, password } = req.body;
-        const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
-        const user = result.rows[0];
-        if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-        if (!await bcrypt.compare(password, user.password)) {
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
-        const token = jwt.sign(
-            { id: user.id, username: user.username, role: user.role, company: user.company },
-            process.env.JWT_SECRET || 'secret',
-            { expiresIn: '24h' }
-        );
-        res.json({ token, user: { id: user.id, username: user.username, role: user.role, company: user.company } });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-app.get('/api/users', authenticate, async (req, res) => {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
-    try {
-        const result = await pool.query('SELECT id, username, role, company FROM users');
-        res.json(result.rows);
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-app.post('/api/users', authenticate, async (req, res) => {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
-    try {
-        const { username, company } = req.body;
-        const exists = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
-        if (exists.rows.length > 0) {
-            return res.status(400).json({ error: 'Username already exists' });
-        }
-        const hashedPassword = await bcrypt.hash('password123', 10);
-        const result = await pool.query(
-            'INSERT INTO users (username, password, role, company) VALUES ($1, $2, $3, $4) RETURNING id, username, role, company',
-            [username, hashedPassword, 'user', company]
-        );
-        res.status(201).json({ message: 'User created', user: result.rows[0] });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// ============ UPLOAD ============
-app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
-    }
-    try {
-        const filePath = req.file.path;
-        console.log('📂 Fajl primljen:', req.file.originalname);
-
-        const workbook = XLSX.readFile(filePath, { cellDates: true, cellNF: false, cellText: false });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const data = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
-
-        console.log('📊 Redova:', data.length);
-        console.log('📋 Kolone:', Object.keys(data[0] || {}));
-
-        const findValue = (row, keys) => {
-            for (let key of keys) {
-                if (row[key] !== undefined && row[key] !== null && row[key] !== '') {
-                    return row[key];
-                }
-            }
-            return '';
-        };
-
-        let inserted = 0;
-        let updated = 0;
-        let restored = 0;
-
-        for (let i = 0; i < data.length; i++) {
-            const row = data[i];
-
-            const company = findValue(row, [
-                'ime firme', 'IME FIRME', 'Firma', 'firma', 'Ime firme',
-                'FIRMA', 'Name', 'name', 'Company', 'company', 'Naziv firme'
-            ]);
-            const code = findValue(row, [
-                'cod artikal', 'COD ARTIKAL', 'Sifra', 'sifra',
-                'Šifra artikla', 'Sifra artikla', 'ŠIFRA ARTIKLA',
-                'ŠIFRA', 'Code', 'code', 'Šifra', 'Sifra artikla'
-            ]);
-            const name = findValue(row, [
-                'naziv artikla', 'NAZIV ARTIKLA', 'Naziv', 'naziv',
-                'Naziv artikla', 'NAZIV', 'Name', 'name', 'Artikal', 'Proizvod'
-            ]);
-            const orderNumber = findValue(row, [
-                'broj nalog', 'BROJ NALOG', 'Nalog', 'nalog',
-                'Broj naloga', 'broj naloga', 'BROJ NALOGA', 'NALOG',
-                'NALOG', 'Order', 'order', 'Order Number'
-            ]);
-            const quantity = parseInt(findValue(row, [
-                'pari', 'PARI', 'Kolicina', 'kolicina',
-                'QUANTITA', 'Quantity', 'quantity', 'Količina', 'KOLIČINA'
-            ])) || 0;
-            const deliveryDate = findValue(row, [
-                'datum isporuke', 'DATUM ISPORUKE', 'Datum', 'datum',
-                'Datum isporuke', 'Delivery Date', 'delivery', 'DATUM ISPORUKE', 'DATUM'
-            ]);
-
-            if (!company && !code && !orderNumber) continue;
-
-            // Proveri da li nalog već postoji (aktivan)
-            const existing = await pool.query('SELECT id FROM orders WHERE order_number = $1 AND company = $2', [orderNumber, company]);
-
-            if (existing.rows.length > 0) {
-                // Ažuriraj
-                await pool.query(
-                    `UPDATE orders SET 
-                        code = $1, name = $2, quantity = $3, delivery_date = $4
-                     WHERE order_number = $5 AND company = $6`,
-                    [code, name, quantity, deliveryDate, orderNumber, company]
-                );
-                updated++;
-            } else {
-                // Dodaj novi nalog
-                const newId = Date.now() + i;
-                await pool.query(
-                    `INSERT INTO orders (id, company, code, name, order_number, quantity, delivery_date)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                    [newId, company, code, name, orderNumber, quantity, deliveryDate]
-                );
-
-                // ============ VRATI POSLEDNJE POZNATO STANJE IZ ISTORIJE ============
-                // Ako je ovaj nalog ranije postojao i bio obrisan (clear-orders),
-                // njegova istorija je i dalje u order_history. Povuci poslednji
-                // poznati status za svaku fazu umesto da sve postavljaš na 'pending'.
-                let anyRestoredForThisOrder = false;
-
-                for (const phase of ['100', '200', '300', '400', '500']) {
-                    const histResult = await pool.query(
-                        `SELECT new_status, comment FROM order_history
-                         WHERE order_number = $1 AND company = $2 AND phase = $3
-                         ORDER BY changed_at DESC LIMIT 1`,
-                        [orderNumber, company, phase]
-                    );
-
-                    const restoredStatus = histResult.rows[0]?.new_status || 'pending';
-                    const restoredComment = histResult.rows[0]?.comment || '';
-
-                    if (histResult.rows.length > 0) {
-                        anyRestoredForThisOrder = true;
-                    }
-
-                    await pool.query(
-                        `INSERT INTO progress (order_id, phase, status, comment, updated_at)
-                         VALUES ($1, $2, $3, $4, NOW())
-                         ON CONFLICT (order_id, phase) DO NOTHING`,
-                        [newId, phase, restoredStatus, restoredComment]
-                    );
-                }
-
-                if (anyRestoredForThisOrder) restored++;
-                inserted++;
-            }
-        }
-
-        console.log(`📦 Novih: ${inserted}, Ažuriranih: ${updated}, Vraćeno iz istorije: ${restored}`);
-        res.json({ 
-            message: `✅ Novih: ${inserted}, Ažuriranih: ${updated}, Vraćeno iz istorije: ${restored}`, 
-            inserted, 
-            updated,
-            restored,
-            totalRows: data.length 
-        });
-
-    } catch (e) {
-        console.error('❌ Upload error:', e);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// ============ ORDERS ============
-app.get('/api/orders', authenticate, async (req, res) => {
-    try {
-        const { search, page = 1, limit = 100 } = req.query;
-        const offset = (parseInt(page) - 1) * parseInt(limit);
-
-        let whereClause = '';
-        let params = [];
-        let paramIndex = 1;
-
-        if (req.user.role !== 'admin') {
-            if (search) {
-                const s = search.toLowerCase();
-                whereClause = `WHERE LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex}`;
-                params.push(`%${s}%`);
-                paramIndex++;
-            } else {
-                whereClause = `WHERE company = $${paramIndex}`;
-                params.push(req.user.company);
-                paramIndex++;
-            }
-        }
-
-        if (req.user.role === 'admin' && search) {
-            const s = search.toLowerCase();
-            if (whereClause) {
-                whereClause += ` AND (LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(company) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex})`;
-            } else {
-                whereClause = `WHERE LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(company) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex}`;
-            }
-            params.push(`%${s}%`);
-            paramIndex++;
-        }
-
-        const countQuery = `SELECT COUNT(*) FROM orders ${whereClause}`;
-        const countResult = await pool.query(countQuery, params);
-        const total = parseInt(countResult.rows[0].count);
-
-        const dataQuery = `
-            SELECT o.*, 
-                   COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment, 'updated_at', p.updated_at) ORDER BY p.phase) 
-                   FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
-            FROM orders o
-            LEFT JOIN progress p ON o.id = p.order_id
-            ${whereClause}
-            GROUP BY o.id
-            ORDER BY o.id DESC
-            LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
-        `;
-        params.push(parseInt(limit), offset);
-
-        const result = await pool.query(dataQuery, params);
-
-        const data = result.rows.map(row => ({
-            id: row.id,
-            company: row.company,
-            code: row.code,
-            name: row.name,
-            orderNumber: row.order_number,
-            quantity: row.quantity,
-            deliveryDate: row.delivery_date,
-            progress: row.progress || []
-        }));
-
-        res.json({
-            data: data,
-            total: total,
-            page: parseInt(page),
-            limit: parseInt(limit),
-            totalPages: Math.ceil(total / parseInt(limit))
-        });
-    } catch (e) {
-        console.error('❌ Orders error:', e);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// ============ UPDATE PHASE SA ISTORIJOM ============
-app.post('/api/update-phase', authenticate, async (req, res) => {
-    try {
-        const { orderId, phase, comment } = req.body;
-        let { status } = req.body;
-        console.log(`🔄 Menjam fazu ${phase} za nalog ${orderId}`, status ? `na ${status}` : '(samo komentar)');
-
-        // Pronađi trenutni status
-        const current = await pool.query(
-            'SELECT status, comment FROM progress WHERE order_id = $1 AND phase = $2',
-            [orderId, phase]
-        );
-        const oldStatus = current.rows[0]?.status || 'pending';
-        const oldComment = current.rows[0]?.comment || '';
-
-        // Ako status nije poslat (npr. samo se čuva komentar), zadrži postojeći status
-        if (!status) status = oldStatus;
-        const finalComment = comment !== undefined ? comment : oldComment;
-
-        // Ažuriraj progres
-        await pool.query(
-            `INSERT INTO progress (order_id, phase, status, comment, updated_at)
-             VALUES ($1, $2, $3, $4, NOW())
-             ON CONFLICT (order_id, phase) DO UPDATE SET
-             status = EXCLUDED.status, 
-             comment = EXCLUDED.comment, 
-             updated_at = NOW()`,
-            [orderId, phase, status, finalComment]
-        );
-
-        // ============ SAČUVAJ U ISTORIJU (samo ako se status stvarno promenio) ============
-        // Pronađi order_number i company za istoriju
-        if (status !== oldStatus) {
-            const orderInfo = await pool.query(
-                'SELECT order_number, company FROM orders WHERE id = $1',
-                [orderId]
-            );
-            if (orderInfo.rows.length > 0) {
-                const { order_number, company } = orderInfo.rows[0];
-                await pool.query(
-                    `INSERT INTO order_history 
-                        (order_number, company, phase, old_status, new_status, comment, changed_by)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                    [order_number, company, phase, oldStatus, status, finalComment, req.user.username]
-                );
-                console.log('📜 Istorija sačuvana');
-            }
-        }
-
-        console.log('✅ Faza ažurirana u bazi');
-        res.json({ 
-            message: 'Phase updated',
-            status,
-            comment: finalComment,
-            updatedAt: new Date().toISOString()
-        });
-    } catch (e) {
-        console.error('❌ Update phase error:', e);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// ============ OBRISI AKTIVNE NALOGE (ISTORIJA OSTAJE) ============
-app.post('/api/clear-orders', authenticate, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Samo admin može' });
-    }
-    try {
-        // Samo brišemo aktivne naloge i progres, ISTORIJA OSTAJE!
-        const deletedOrders = await pool.query('DELETE FROM orders RETURNING id');
-        const deletedProgress = await pool.query('DELETE FROM progress RETURNING id');
         
-        res.json({ 
-            message: '✅ Aktivni nalozi obrisani! Istorija je sačuvana.',
-            deletedOrders: deletedOrders.rowCount,
-            deletedProgress: deletedProgress.rowCount
+        const data = await response.json();
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        
+        if (response.ok) {
+            statusDiv.textContent = `✅ Učitano ${data.count} naloga za ${elapsed}s`;
+            statusDiv.className = 'success';
+            fileInput.value = '';
+            currentPage = 1;
+            setTimeout(() => loadOrders('', 1), 500);
+        } else {
+            statusDiv.textContent = `❌ Greška: ${data.error}`;
+            statusDiv.className = 'error';
+        }
+    } catch (error) {
+        statusDiv.textContent = '❌ Greška pri upload-u';
+        statusDiv.className = 'error';
+        console.error('Upload error:', error);
+    }
+});
+
+// Create user form
+document.getElementById('createUserForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = document.getElementById('newUsername').value;
+    const company = document.getElementById('newCompany').value;
+    const statusDiv = document.getElementById('userStatus');
+    
+    try {
+        const response = await fetch('/api/users', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ username, company })
         });
-    } catch (e) {
-        console.error('❌ Clear error:', e);
-        res.status(500).json({ error: e.message });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            statusDiv.textContent = `✅ Korisnik ${username} kreiran`;
+            statusDiv.className = 'success';
+            document.getElementById('newUsername').value = '';
+            document.getElementById('newCompany').value = '';
+            loadUsers();
+        } else {
+            statusDiv.textContent = `❌ Greška: ${data.error}`;
+            statusDiv.className = 'error';
+        }
+    } catch (error) {
+        statusDiv.textContent = '❌ Greška pri kreiranju';
+        statusDiv.className = 'error';
+        console.error('Create user error:', error);
     }
 });
 
-// ============ OBRISI AKTIVNE NALOGE + ISTORIJU (POTPUNO BRISANJE) ============
-app.post('/api/clear-all', authenticate, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Samo admin može' });
-    }
+// Send report
+sendReportBtn.addEventListener('click', async () => {
+    if (!confirm('📧 Pošalji dnevni izveštaj?')) return;
+    
     try {
-        const deletedOrders = await pool.query('DELETE FROM orders RETURNING id');
-        const deletedProgress = await pool.query('DELETE FROM progress RETURNING id');
-        const deletedHistory = await pool.query('DELETE FROM order_history RETURNING id');
-
-        res.json({
-            message: '✅ Aktivni nalozi i istorija su potpuno obrisani!',
-            deletedOrders: deletedOrders.rowCount,
-            deletedProgress: deletedProgress.rowCount,
-            deletedHistory: deletedHistory.rowCount
+        const response = await fetch('/api/send-report', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ 
+                date: new Date().toLocaleDateString('sr-RS')
+            })
         });
-    } catch (e) {
-        console.error('❌ Clear all error:', e);
-        res.status(500).json({ error: e.message });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            alert('✅ Izveštaj poslat!');
+        } else {
+            alert(`❌ Greška: ${data.error}`);
+        }
+    } catch (error) {
+        alert('❌ Greška pri slanju');
+        console.error('Send report error:', error);
     }
 });
 
-// ============ PRIKAZ ISTORIJE ZA FAZU ============
-app.get('/api/phase-history/:orderNumber/:phase', authenticate, async (req, res) => {
-    try {
-        const { orderNumber, phase } = req.params;
-        const result = await pool.query(
-            `SELECT * FROM order_history 
-             WHERE order_number = $1 AND phase = $2 
-             ORDER BY changed_at DESC`,
-            [orderNumber, phase]
-        );
-        res.json({ history: result.rows });
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
+// ============ GLAVNE FUNKCIJE ============
 
-// ============ SEND REPORT ============
-app.post('/api/send-report', authenticate, async (req, res) => {
+async function loadOrders(search = '', page = 1) {
     try {
-        if (!transporter) {
-            return res.status(400).json({ error: 'Email not configured' });
+        const url = search ? 
+            `/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}` :
+            `/api/orders?page=${page}&limit=${LIMIT}`;
+        
+        ordersContainer.innerHTML = '<div class="loading">⏳ Učitavanje...</div>';
+        
+        const response = await fetch(url, {
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        
+        if (!response.ok) {
+            if (response.status === 401) {
+                localStorage.removeItem('token');
+                localStorage.removeItem('user');
+                window.location.href = 'index.html';
+                return;
+            }
+            throw new Error('Failed to load orders');
+        }
+        
+        const result = await response.json();
+        orders = result.data || [];
+        totalOrders = result.total || 0;
+        currentPage = result.page || 1;
+        totalPages = result.totalPages || 1;
+        
+        if (orderCount) {
+            orderCount.textContent = `${totalOrders} naloga`;
+        }
+        
+        renderOrders(orders, {
+            total: totalOrders,
+            page: currentPage,
+            totalPages: totalPages,
+            limit: LIMIT
+        });
+        
+    } catch (error) {
+        console.error('❌ Load orders error:', error);
+        ordersContainer.innerHTML = '<div class="error">❌ Greška pri učitavanju</div>';
+    }
+}
+
+function renderOrders(ordersList, meta) {
+    if (!ordersList || ordersList.length === 0) {
+        ordersContainer.innerHTML = '<p style="text-align:center;padding:40px;color:#a0aec0;">📭 Nema naloga za prikaz</p>';
+        return;
+    }
+    
+    const isAdmin = currentUser && currentUser.role === 'admin';
+    
+    let html = `
+        <table>
+            <thead>
+                <tr>
+    `;
+    
+    if (isAdmin) {
+        html += `
+                    <th>Firma</th>
+                    <th>Šifra</th>
+                    <th>Naziv</th>
+                    <th>Nalog</th>
+                    <th style="text-align:center;">Količina</th>
+                    <th>Datum</th>
+                    <th style="text-align:center;">Status</th>
+        `;
+    } else {
+        html += `
+                    <th>Nalog</th>
+                    <th>Naziv</th>
+                    <th style="text-align:center;">Količina</th>
+                    <th style="text-align:center;">Status</th>
+        `;
+    }
+    
+    html += `
+                </tr>
+            </thead>
+            <tbody>
+    `;
+    
+    for (let i = 0; i < ordersList.length; i++) {
+        const order = ordersList[i];
+        
+        const phases = order.progress || order.phases || [];
+        const totalPhases = phases.length;
+        const completedPhases = phases.filter(p => p.status === 'completed').length || 0;
+        const problemPhases = phases.filter(p => p.status === 'problem').length || 0;
+        
+        let statusText = 'U toku';
+        let statusClass = 'status-pending';
+        
+        if (totalPhases > 0 && completedPhases === totalPhases) {
+            statusText = '✅ Završeno';
+            statusClass = 'status-completed';
+        } else if (problemPhases > 0) {
+            statusText = `⚠️ Problem`;
+            statusClass = 'status-problem';
+        } else if (completedPhases > 0) {
+            statusText = `${completedPhases}/${totalPhases}`;
+        }
+        
+        html += `<tr style="border-bottom:1px solid #e2e8f0;${i % 2 === 0 ? 'background:#fafafa;' : ''}">`;
+        
+        if (isAdmin) {
+            html += `
+                        <td style="padding:10px;font-size:13px;">${escapeHtml(order.company || '')}</td>
+                        <td style="padding:10px;font-size:12px;">${escapeHtml(order.code || '')}</td>
+                        <td style="padding:10px;">${escapeHtml(order.name || '')}</td>
+                        <td style="padding:10px;color:#667eea;font-weight:600;cursor:pointer;" onclick="openOrder(${order.id})">${escapeHtml(order.orderNumber || '')}</td>
+                        <td style="padding:10px;text-align:center;font-weight:600;">${order.quantity || 0}</td>
+                        <td style="padding:10px;font-size:12px;">${order.deliveryDate || '-'}</td>
+                        <td style="padding:10px;text-align:center;"><span class="status-badge ${statusClass}">${statusText}</span></td>
+            `;
+        } else {
+            html += `
+                        <td style="padding:12px 8px;color:#667eea;font-weight:600;cursor:pointer;font-size:16px;" onclick="openOrder(${order.id})">${escapeHtml(order.orderNumber || '')}</td>
+                        <td style="padding:12px 8px;font-size:15px;">${escapeHtml(order.name || '')}</td>
+                        <td style="padding:12px 8px;text-align:center;font-size:17px;font-weight:700;">${order.quantity || 0}</td>
+                        <td style="padding:12px 8px;text-align:center;"><span class="status-badge ${statusClass}" style="font-size:13px;padding:4px 12px;">${statusText}</span></td>
+            `;
+        }
+        
+        html += `</tr>`;
+    }
+    
+    html += `
+            </tbody>
+        </table>
+    `;
+    
+    if (meta && meta.totalPages > 1) {
+        html += `
+            <div style="display:flex;justify-content:center;align-items:center;gap:12px;padding:14px;border-top:1px solid #e2e8f0;flex-wrap:wrap;">
+                <button onclick="goToPage(${meta.page - 1})" 
+                        style="padding:8px 20px;background:${meta.page <= 1 ? '#e2e8f0' : '#667eea'};color:${meta.page <= 1 ? '#a0aec0' : 'white'};border:none;border-radius:8px;font-weight:600;cursor:${meta.page <= 1 ? 'not-allowed' : 'pointer'};font-size:14px;" 
+                        ${meta.page <= 1 ? 'disabled' : ''}>
+                    ◀
+                </button>
+                <span style="color:#4a5568;font-weight:500;font-size:14px;">${meta.page} / ${meta.totalPages}</span>
+                <button onclick="goToPage(${meta.page + 1})" 
+                        style="padding:8px 20px;background:${meta.page >= meta.totalPages ? '#e2e8f0' : '#667eea'};color:${meta.page >= meta.totalPages ? '#a0aec0' : 'white'};border:none;border-radius:8px;font-weight:600;cursor:${meta.page >= meta.totalPages ? 'not-allowed' : 'pointer'};font-size:14px;" 
+                        ${meta.page >= meta.totalPages ? 'disabled' : ''}>
+                    ▶
+                </button>
+            </div>
+        `;
+    }
+    
+    ordersContainer.innerHTML = html;
+}
+
+function goToPage(page) {
+    if (page < 1 || page > totalPages) return;
+    const search = document.getElementById('searchInput').value || '';
+    loadOrders(search, page);
+    document.querySelector('.panel:last-child')?.scrollIntoView({ behavior: 'smooth' });
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = String(text);
+    return div.innerHTML;
+}
+
+function openOrder(orderId) {
+    const order = orders.find(o => String(o.id) === String(orderId));
+    if (!order) {
+        console.error('Order not found:', orderId);
+        return;
+    }
+    
+    selectedOrderId = orderId;
+    modalOrderNumber.textContent = order.orderNumber || order.nalog || 'N/A';
+    
+    const isAdmin = currentUser && currentUser.role === 'admin';
+    const isOwnOrder = order.company === currentUser.company;
+    
+    let companyHtml = '';
+    if (isAdmin || isOwnOrder) {
+        companyHtml = `<p><strong>Firma:</strong> ${escapeHtml(order.company || order.firma || '')}</p>`;
+    } else {
+        companyHtml = `<p style="display:none;"><strong>Firma:</strong> ${escapeHtml(order.company || order.firma || '')}</p>`;
+    }
+    
+    modalOrderInfo.innerHTML = `
+        ${companyHtml}
+        <p><strong>Artikal:</strong> ${escapeHtml(order.name || order.naziv || '')}</p>
+        <p><strong>Šifra:</strong> ${escapeHtml(order.code || order.sifra || '')}</p>
+        <p><strong>Količina:</strong> ${order.quantity || order.pari || 0}</p>
+        <p><strong>Datum isporuke:</strong> ${order.deliveryDate || order.datum_isporuke || '-'}</p>
+    `;
+    
+    renderPhases(order);
+    phaseModal.classList.remove('hidden');
+}
+
+// ============================================================
+// REAL-TIME AŽURIRANJE NALOGA / FAZA
+// ============================================================
+
+function getPhaseData(order, phase) {
+    const phases = order ? (order.progress || order.phases || []) : [];
+    return phases.find(p => String(p.phase) === String(phase));
+}
+
+function refreshMainOrderList() {
+    renderOrders(orders, {
+        total: totalOrders,
+        page: currentPage,
+        totalPages: totalPages,
+        limit: LIMIT
+    });
+}
+
+function updateLocalPhase(orderId, phase, changes) {
+    const order = orders.find(o => String(o.id) === String(orderId));
+    if (!order) return null;
+
+    const phaseData = getPhaseData(order, phase);
+    if (!phaseData) return null;
+
+    Object.assign(phaseData, changes);
+    return order;
+}
+
+function renderPhases(order) {
+    const phases = order.progress || order.phases || [];
+
+    if (phases.length === 0) {
+        phasesContainer.innerHTML = '<p style="text-align:center;padding:20px;color:#a0aec0;">Nema faza</p>';
+        return;
+    }
+
+    let html = '';
+    phases.forEach(phase => {
+        const statusEmoji = phase.status === 'completed' ? '✅' : 
+                           phase.status === 'problem' ? '⚠️' : '⬜';
+
+        const phaseValue = escapeHtml(String(phase.phase ?? ''));
+        const commentValue = escapeHtml(String(phase.comment ?? ''));
+
+        html += `
+            <div class="phase-card">
+                <h4>Faza ${phaseValue}</h4>
+                <div class="phase-status">
+                    <span style="font-size:28px;">${statusEmoji}</span>
+                    <div>${escapeHtml(phase.status || 'pending')}</div>
+                </div>
+                <div class="phase-buttons">
+                    <button onclick="updatePhase(${order.id}, '${phaseValue}', 'completed')">✅ Završi</button>
+                    <button onclick="updatePhase(${order.id}, '${phaseValue}', 'problem')">⚠️ Problem</button>
+                    <button onclick="updatePhase(${order.id}, '${phaseValue}', 'pending')">⬜ Reset</button>
+                </div>
+                <div class="phase-comment">
+                    <textarea
+                        placeholder="Komentar..."
+                        oninput="updatePhaseComment(${order.id}, '${phaseValue}', this.value)"
+                    >${commentValue}</textarea>
+                </div>
+            </div>
+        `;
+    });
+
+    phasesContainer.innerHTML = html;
+}
+
+// Komentar se prikazuje odmah, a snimanje na server ide 300 ms
+// nakon poslednjeg unosa, da ne šaljemo zahtev za svaki karakter.
+const commentTimers = {};
+
+async function updatePhase(orderId, phase, status) {
+    const order = orders.find(o => String(o.id) === String(orderId));
+    const phaseData = getPhaseData(order, phase);
+
+    if (!order || !phaseData) {
+        console.error('Faza nije pronađena:', orderId, phase);
+        return;
+    }
+
+    const previousStatus = phaseData.status;
+    const previousComment = phaseData.comment || '';
+
+    // 1. ODMAH promeni status lokalno.
+    updateLocalPhase(orderId, phase, { status });
+
+    // 2. ODMAH osveži glavnu stranu.
+    refreshMainOrderList();
+
+    // 3. ODMAH osveži otvoreni modul.
+    renderPhases(order);
+
+    try {
+        const response = await fetch('/api/update-phase', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({
+                orderId,
+                phase,
+                status,
+                // Ne brišemo postojeći komentar kada menjamo status.
+                comment: previousComment
+            })
+        });
+
+        let data = {};
+        try {
+            data = await response.json();
+        } catch (_) {}
+
+        if (!response.ok) {
+            updateLocalPhase(orderId, phase, {
+                status: previousStatus,
+                comment: previousComment
+            });
+            refreshMainOrderList();
+            renderPhases(order);
+            alert(`❌ Greška: ${data.error || 'Nije moguće sačuvati status'}`);
+            return;
         }
 
-        const { email, date } = req.body;
-        const today = date || new Date().toLocaleDateString('sr-RS');
-
-        const ordersResult = await pool.query(
-            `SELECT o.*, 
-                    COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment, 'updated_at', p.updated_at) ORDER BY p.phase) 
-                    FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
-             FROM orders o
-             LEFT JOIN progress p ON o.id = p.order_id
-             WHERE o.company = $1
-             GROUP BY o.id
-             ORDER BY o.id DESC`,
-            [req.user.company]
-        );
-
-        const userOrders = ordersResult.rows;
-
-        if (userOrders.length === 0) {
-            return res.status(400).json({ error: 'Nema naloga' });
+        // Ako API vrati ažurirane podatke, prihvatamo ih.
+        if (data.phase) {
+            Object.assign(phaseData, data.phase);
+        } else if (data.progress) {
+            order.progress = data.progress;
+        } else if (data.phases) {
+            order.phases = data.phases;
         }
 
-        // ... (ostatak send-report koda ostaje isti)
-        // (Da ne dužimo, ali možeš dodati i istoriju u izveštaj)
+        refreshMainOrderList();
+        renderPhases(order);
 
-        res.json({ message: '✅ Izveštaj poslat!' });
-    } catch (e) {
-        console.error('❌ Send report error:', e);
-        res.status(500).json({ error: e.message });
+    } catch (error) {
+        updateLocalPhase(orderId, phase, {
+            status: previousStatus,
+            comment: previousComment
+        });
+        refreshMainOrderList();
+        renderPhases(order);
+
+        alert('❌ Greška pri ažuriranju');
+        console.error('Update phase error:', error);
     }
-});
+}
 
-// ============ POKRENI SERVER ============
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`🗄️ PostgreSQL: ${process.env.DATABASE_URL ? '✅' : '❌'}`);
-    console.log(`📧 Email: ${transporter ? '✅' : '❌'}`);
-});
+async function updatePhaseComment(orderId, phase, comment) {
+    const order = orders.find(o => String(o.id) === String(orderId));
+    const phaseData = getPhaseData(order, phase);
+
+    if (!order || !phaseData) return;
+
+    // Tekst se vidi ODMAH.
+    phaseData.comment = comment;
+    refreshMainOrderList();
+
+    const timerKey = `${orderId}_${phase}`;
+    clearTimeout(commentTimers[timerKey]);
+
+    commentTimers[timerKey] = setTimeout(async () => {
+        try {
+            const response = await fetch('/api/update-phase', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                // VAŽNO: više ne šaljemo status: 'pending'.
+                // Komentar zato neće slučajno vratiti fazu na "pending".
+                body: JSON.stringify({
+                    orderId,
+                    phase,
+                    status: phaseData.status || 'pending',
+                    comment
+                })
+            });
+
+            if (!response.ok) {
+                let data = {};
+                try {
+                    data = await response.json();
+                } catch (_) {}
+                console.error('Update comment error:', data.error || response.status);
+            }
+        } catch (error) {
+            console.error('Update comment error:', error);
+        }
+    }, 300);
+}
+
+async function loadUsers() {
+    try {
+        const response = await fetch('/api/users', {
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        
+        if (!response.ok) return;
+        
+        const users = await response.json();
+        const usersList = document.getElementById('usersList');
+        
+        let html = '';
+        users.forEach(user => {
+            html += `
+                <div class="user-item">
+                    <span>${escapeHtml(user.username)}</span>
+                    <span style="color:#718096;">${escapeHtml(user.company)}</span>
+                    <span style="color:#718096;font-size:12px;">${user.role}</span>
+                </div>
+            `;
+        });
+        
+        usersList.innerHTML = html || '<p style="color:#a0aec0;text-align:center;padding:16px;">Nema korisnika</p>';
+    } catch (error) {
+        console.error('Load users error:', error);
+    }
+}
