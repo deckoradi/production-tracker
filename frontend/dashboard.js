@@ -13,8 +13,24 @@ document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'
 searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>phaseModal?.classList.add('hidden'));window.addEventListener('click',e=>{if(e.target===phaseModal)phaseModal.classList.add('hidden')});
 
 function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;const p=document.createElement('div');p.id='orderManagementPanel';p.style='margin:15px 0;padding:16px;border:1px solid #e2e8f0;border-radius:12px;background:#fff';p.innerHTML=`<b>Upravljanje nalozima</b><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="deleteActiveOrdersBtn" style="padding:10px 16px;background:#e53e3e;color:white;border:0;border-radius:8px;font-weight:700">🗑️ Obriši aktivne naloge</button><button id="deleteAllHistoryBtn" style="padding:10px 16px;background:#718096;color:white;border:0;border-radius:8px;font-weight:700">🧹 Obriši sve + istoriju</button></div><div id="orderManagementStatus" style="margin-top:10px"></div>`;adminPanel.appendChild(p);$('deleteActiveOrdersBtn').onclick=clearActive;$('deleteAllHistoryBtn').onclick=clearAll}
-async function clearActive(){if(!confirm('Obrisati sve aktivne naloge? Istorija ostaje sačuvana.'))return;try{const d=await api('/api/orders/clear',{method:'DELETE',headers:headers()});$('orderManagementStatus').textContent=`✅ Obrisano ${d.deleted} aktivnih naloga. Istorija je sačuvana.`;loadOrders('',1)}catch(e){$('orderManagementStatus').textContent='❌ '+e.message}}
-async function clearAll(){if(!confirm('PAŽNJA: brišu se aktivni nalozi I SVA istorija. Nastaviti?'))return;try{const d=await api('/api/orders/clear-all',{method:'DELETE',headers:headers()});$('orderManagementStatus').textContent=`✅ Obrisano ${d.deletedOrders} naloga i ${d.deletedHistory} istorijskih zapisa.`;loadOrders('',1)}catch(e){$('orderManagementStatus').textContent='❌ '+e.message}}
+
+// ============ ISPRAVLJENE FUNKCIJE ZA BRISANJE ============
+async function clearActive(){
+  if(!confirm('Obrisati sve aktivne naloge? Istorija ostaje sačuvana.'))return;
+  try{
+    const d=await api('/api/clear-orders',{method:'POST',headers:headers()});
+    document.getElementById('orderManagementStatus').textContent=`✅ Obrisano ${d.deletedOrders} aktivnih naloga. Istorija je sačuvana.`;
+    loadOrders('',1);
+  }catch(e){document.getElementById('orderManagementStatus').textContent='❌ '+e.message}
+}
+async function clearAll(){
+  if(!confirm('PAŽNJA: brišu se aktivni nalozi I SVA istorija. Nastaviti?'))return;
+  try{
+    const d=await api('/api/clear-all',{method:'POST',headers:headers()});
+    document.getElementById('orderManagementStatus').textContent=`✅ Obrisano ${d.deletedOrders} naloga i ${d.deletedHistory} istorijskih zapisa.`;
+    loadOrders('',1);
+  }catch(e){document.getElementById('orderManagementStatus').textContent='❌ '+e.message}
+}
 
 $('uploadForm')?.addEventListener('submit',async e=>{e.preventDefault();const f=$('fileInput'),s=$('uploadStatus');if(!f?.files?.[0]){s.textContent='Molimo izaberite Excel fajl';s.className='error';return}s.textContent='⏳ Analiziram Excel i sinhronizujem...';s.className='';const fd=new FormData();fd.append('file',f.files[0]);try{const r=await fetch('/api/upload',{method:'POST',headers:headers(),body:fd});const d=await r.json();if(!r.ok)throw Error(d.error);s.className='success';s.innerHTML=`✅ Sinhronizovano: 🟢 ${d.updated} postojećih, 🔵 ${d.inserted} novih, 🔴 ${d.removed} uklonjeno. Istorija sačuvana.`;f.value='';await loadOrders('',1)}catch(e){s.textContent='❌ '+e.message;s.className='error'}});
 
@@ -28,8 +44,48 @@ function goToPage(p){if(p<1||p>totalPages)return;loadOrders(searchInput?.value||
 
 function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)return;selectedOrderId=id;renderModal(o);phaseModal.classList.remove('hidden')}
 function renderModal(o){modalOrderNumber.textContent=o.orderNumber||'N/A';modalOrderInfo.innerHTML=`<p><b>Firma:</b> ${esc(o.company)}</p><p><b>Artikal:</b> ${esc(o.name)}</p><p><b>Šifra:</b> ${esc(o.code)}</p><p><b>Količina:</b> ${o.quantity||0}</p><p><b>Datum isporuke:</b> ${esc(o.deliveryDate||'-')}</p>`;let h='';(o.progress||[]).forEach(p=>{const e=p.status==='completed'?'✅':p.status==='problem'?'⚠️':'⬜',lab=p.status==='completed'?'URAĐENO':p.status==='problem'?'PROBLEM':'NA ČEKANJU';h+=`<div class="phase-card"><h4>Faza ${esc(p.phase)}</h4><div class="phase-status"><span style="font-size:28px">${e}</span><div><b>${lab}</b>${p.updatedAt?`<div style="font-size:12px;color:#718096">📅 ${date(p.updatedAt)}</div>`:''}</div></div><div class="phase-buttons"><button onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button><button onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ Problem</button><button onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">⬜ Reset</button><button onclick="showHistory(${o.id},'${js(p.phase)}')">🕘 Istorija</button></div><textarea style="width:100%;min-height:70px" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea><div id="hist-${o.id}-${p.phase}" style="display:none"></div></div>`});phasesContainer.innerHTML=h||'Nema faza'}
+
+// ============ ISPRAVLJENA FUNKCIJA ZA ČUVANJE KOMENTARA ============
+async function saveComment(id, phase, comment) {
+  const o = orders.find(x => String(x.id) === String(id));
+  const p = o?.progress.find(x => String(x.phase) === String(phase));
+  if (!p) return;
+
+  const oldComment = p.comment;
+  const oldUpdated = p.updatedAt;
+  p.comment = comment;
+  p.updatedAt = new Date().toISOString(); // privremeno
+
+  try {
+    const res = await api('/api/update-phase', {
+      method: 'POST',
+      headers: headers(true),
+      body: JSON.stringify({ orderId: id, phase, comment })
+    });
+    if (res.updatedAt) p.updatedAt = res.updatedAt;
+    renderModal(o);  // osveži prikaz
+  } catch (e) {
+    p.comment = oldComment;
+    p.updatedAt = oldUpdated;
+    console.error(e);
+  }
+}
+
 async function updatePhase(id,phase,status){const o=orders.find(x=>String(x.id)===String(id)),p=o?.progress.find(x=>String(x.phase)===String(phase));if(!p)return;const old={status:p.status,comment:p.comment,updatedAt:p.updatedAt};p.status=status;p.updatedAt=new Date().toISOString();renderOrders();renderModal(o);try{const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,status,comment:p.comment||''})});p.updatedAt=d.updatedAt;renderOrders();renderModal(o)}catch(e){Object.assign(p,old);renderOrders();renderModal(o);alert('❌ '+e.message)}}
-async function saveComment(id,phase,comment){const o=orders.find(x=>String(x.id)===String(id)),p=o?.progress.find(x=>String(x.phase)===String(phase));if(p)p.comment=comment;try{await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,comment})})}catch(e){console.error(e)}}
 async function showHistory(id,phase){const b=$(`hist-${id}-${phase}`);if(!b)return;if(b.style.display==='block'){b.style.display='none';return}b.style.display='block';b.textContent='⏳ Učitavanje...';try{const d=await api(`/api/phase-history/${id}/${encodeURIComponent(phase)}`,{headers:headers()});b.innerHTML=d.history.length?'<b>Istorija:</b>'+d.history.map(x=>`<div style="padding:6px 0;border-bottom:1px solid #eee"><b>${label(x.status)}</b> — ${date(x.changedAt)}${x.comment?`<br>💬 ${esc(x.comment)}`:''}</div>`).join(''):'Nema istorije'}catch(e){b.textContent='❌ '+e.message}}
-function label(s){return s==='completed'?'✅ Urađeno':s==='problem'?'⚠️ Problem':'⬜ Reset'}function date(v){const d=new Date(v);return isNaN(d)?String(v):d.toLocaleString('sr-RS',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
+function label(s){return s==='completed'?'✅ Urađeno':s==='problem'?'⚠️ Problem':'⬜ Reset'}
+
+// ============ ISPRAVLJENA FUNKCIJA ZA DATUM (samo datum, bez vremena) ============
+function date(v) {
+  const d = new Date(v);
+  if (isNaN(d)) return String(v);
+  return d.toLocaleDateString('sr-RS', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric'
+  });
+}
+
+function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
+function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
 window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.showHistory=showHistory;
