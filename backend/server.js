@@ -239,6 +239,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
 
         let inserted = 0;
         let updated = 0;
+        let restored = 0;
 
         for (let i = 0; i < data.length; i++) {
             const row = data[i];
@@ -272,9 +273,9 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
 
             if (!company && !code && !orderNumber) continue;
 
-            // Proveri da li nalog već postoji
+            // Proveri da li nalog već postoji (aktivan)
             const existing = await pool.query('SELECT id FROM orders WHERE order_number = $1 AND company = $2', [orderNumber, company]);
-            
+
             if (existing.rows.length > 0) {
                 // Ažuriraj
                 await pool.query(
@@ -285,32 +286,54 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                 );
                 updated++;
             } else {
-                // Dodaj novi
+                // Dodaj novi nalog
                 const newId = Date.now() + i;
                 await pool.query(
                     `INSERT INTO orders (id, company, code, name, order_number, quantity, delivery_date)
                      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
                     [newId, company, code, name, orderNumber, quantity, deliveryDate]
                 );
-                
-                // Dodaj faze (pending) za novi nalog
+
+                // ============ VRATI POSLEDNJE POZNATO STANJE IZ ISTORIJE ============
+                // Ako je ovaj nalog ranije postojao i bio obrisan (clear-orders),
+                // njegova istorija je i dalje u order_history. Povuci poslednji
+                // poznati status za svaku fazu umesto da sve postavljaš na 'pending'.
+                let anyRestoredForThisOrder = false;
+
                 for (const phase of ['100', '200', '300', '400', '500']) {
+                    const histResult = await pool.query(
+                        `SELECT new_status, comment FROM order_history
+                         WHERE order_number = $1 AND company = $2 AND phase = $3
+                         ORDER BY changed_at DESC LIMIT 1`,
+                        [orderNumber, company, phase]
+                    );
+
+                    const restoredStatus = histResult.rows[0]?.new_status || 'pending';
+                    const restoredComment = histResult.rows[0]?.comment || '';
+
+                    if (histResult.rows.length > 0) {
+                        anyRestoredForThisOrder = true;
+                    }
+
                     await pool.query(
                         `INSERT INTO progress (order_id, phase, status, comment, updated_at)
-                         VALUES ($1, $2, 'pending', '', NOW())
+                         VALUES ($1, $2, $3, $4, NOW())
                          ON CONFLICT (order_id, phase) DO NOTHING`,
-                        [newId, phase]
+                        [newId, phase, restoredStatus, restoredComment]
                     );
                 }
+
+                if (anyRestoredForThisOrder) restored++;
                 inserted++;
             }
         }
 
-        console.log(`📦 Novih: ${inserted}, Ažuriranih: ${updated}`);
+        console.log(`📦 Novih: ${inserted}, Ažuriranih: ${updated}, Vraćeno iz istorije: ${restored}`);
         res.json({ 
-            message: `✅ Novih: ${inserted}, Ažuriranih: ${updated}`, 
+            message: `✅ Novih: ${inserted}, Ažuriranih: ${updated}, Vraćeno iz istorije: ${restored}`, 
             inserted, 
             updated,
+            restored,
             totalRows: data.length 
         });
 
