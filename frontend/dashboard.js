@@ -469,15 +469,21 @@ async function updatePhase(orderId, phase, status) {
         if (response.ok) {
             console.log('✅ Faza ažurirana');
             
-            // ⭐ OVO JE TVOJ ORIGINALNI NAČIN (KOJI JE RADIO)
-            // Samo zamenjujemo putanju sa relativnom i dodajemo page
+            // ⭐ SAČUVAJ TRENUTNI SEARCH I PAGE
             const search = searchInput.value || '';
+            
+            // ⭐ PONOVO UČITAJ NALOGE IZ BAZE
             await loadOrders(search, currentPage);
             
-            // ⭐ Pronađi ažurirani nalog i prikaži faze
-            const order = orders.find(o => o.id === orderId);
-            if (order) {
-                renderPhases(order);
+            // ⭐ PRONAĐI AŽURIRANI NALOG
+            const updatedOrder = orders.find(o => o.id === orderId);
+            if (updatedOrder) {
+                // ⭐ OSVEŽI FAZE (BEZ ZATVARANJA MODALA)
+                // Zatvori i ponovo otvori modal sa svežim podacima
+                phaseModal.classList.add('hidden');
+                setTimeout(() => {
+                    openOrder(orderId);
+                }, 50);
             }
             
         } else {
@@ -519,7 +525,7 @@ async function updatePhaseComment(orderId, phase, comment) {
                 }
             }
             
-            // Ponovo prikaži faze
+            // Osveži prikaz faza
             const order = orders.find(o => o.id === orderId);
             if (order) {
                 renderPhases(order);
