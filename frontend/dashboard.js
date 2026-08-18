@@ -397,45 +397,101 @@ function openOrder(orderId) {
     phaseModal.classList.remove('hidden');
 }
 
+// ============================================================
+// REAL-TIME AŽURIRANJE NALOGA / FAZA
+// ============================================================
+
+function getPhaseData(order, phase) {
+    const phases = order ? (order.progress || order.phases || []) : [];
+    return phases.find(p => String(p.phase) === String(phase));
+}
+
+function refreshMainOrderList() {
+    renderOrders(orders, {
+        total: totalOrders,
+        page: currentPage,
+        totalPages: totalPages,
+        limit: LIMIT
+    });
+}
+
+function updateLocalPhase(orderId, phase, changes) {
+    const order = orders.find(o => String(o.id) === String(orderId));
+    if (!order) return null;
+
+    const phaseData = getPhaseData(order, phase);
+    if (!phaseData) return null;
+
+    Object.assign(phaseData, changes);
+    return order;
+}
+
 function renderPhases(order) {
     const phases = order.progress || order.phases || [];
-    
+
     if (phases.length === 0) {
         phasesContainer.innerHTML = '<p style="text-align:center;padding:20px;color:#a0aec0;">Nema faza</p>';
         return;
     }
-    
+
     let html = '';
     phases.forEach(phase => {
         const statusEmoji = phase.status === 'completed' ? '✅' : 
                            phase.status === 'problem' ? '⚠️' : '⬜';
-        
+
+        const phaseValue = escapeHtml(String(phase.phase ?? ''));
+        const commentValue = escapeHtml(String(phase.comment ?? ''));
+
         html += `
             <div class="phase-card">
-                <h4>Faza ${phase.phase}</h4>
+                <h4>Faza ${phaseValue}</h4>
                 <div class="phase-status">
                     <span style="font-size:28px;">${statusEmoji}</span>
-                    <div>${phase.status}</div>
+                    <div>${escapeHtml(phase.status || 'pending')}</div>
                 </div>
                 <div class="phase-buttons">
-                    <button onclick="updatePhase(${order.id}, '${phase.phase}', 'completed')">✅ Završi</button>
-                    <button onclick="updatePhase(${order.id}, '${phase.phase}', 'problem')">⚠️ Problem</button>
-                    <button onclick="updatePhase(${order.id}, '${phase.phase}', 'pending')">⬜ Reset</button>
+                    <button onclick="updatePhase(${order.id}, '${phaseValue}', 'completed')">✅ Završi</button>
+                    <button onclick="updatePhase(${order.id}, '${phaseValue}', 'problem')">⚠️ Problem</button>
+                    <button onclick="updatePhase(${order.id}, '${phaseValue}', 'pending')">⬜ Reset</button>
                 </div>
                 <div class="phase-comment">
-                    <textarea 
-                        placeholder="Komentar..." 
-                        onchange="updatePhaseComment(${order.id}, '${phase.phase}', this.value)"
-                    >${phase.comment || ''}</textarea>
+                    <textarea
+                        placeholder="Komentar..."
+                        oninput="updatePhaseComment(${order.id}, '${phaseValue}', this.value)"
+                    >${commentValue}</textarea>
                 </div>
             </div>
         `;
     });
-    
+
     phasesContainer.innerHTML = html;
 }
 
+// Komentar se prikazuje odmah, a snimanje na server ide 300 ms
+// nakon poslednjeg unosa, da ne šaljemo zahtev za svaki karakter.
+const commentTimers = {};
+
 async function updatePhase(orderId, phase, status) {
+    const order = orders.find(o => String(o.id) === String(orderId));
+    const phaseData = getPhaseData(order, phase);
+
+    if (!order || !phaseData) {
+        console.error('Faza nije pronađena:', orderId, phase);
+        return;
+    }
+
+    const previousStatus = phaseData.status;
+    const previousComment = phaseData.comment || '';
+
+    // 1. ODMAH promeni status lokalno.
+    updateLocalPhase(orderId, phase, { status });
+
+    // 2. ODMAH osveži glavnu stranu.
+    refreshMainOrderList();
+
+    // 3. ODMAH osveži otvoreni modul.
+    renderPhases(order);
+
     try {
         const response = await fetch('/api/update-phase', {
             method: 'POST',
@@ -443,60 +499,98 @@ async function updatePhase(orderId, phase, status) {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${token}`
             },
-            body: JSON.stringify({ orderId, phase, status })
+            body: JSON.stringify({
+                orderId,
+                phase,
+                status,
+                // Ne brišemo postojeći komentar kada menjamo status.
+                comment: previousComment
+            })
         });
-        
-        const data = await response.json();
-        
-        if (response.ok) {
-            // ⭐ Ažuriraj orders niz u memoriji
-            const orderIndex = orders.findIndex(o => o.id === orderId);
-            if (orderIndex !== -1) {
-                const order = orders[orderIndex];
-                if (order.progress) {
-                    const phaseData = order.progress.find(p => p.phase === phase);
-                    if (phaseData) {
-                        phaseData.status = status;
-                    }
-                }
-            }
-            
-            // ⭐ Osveži tabelu odmah
-            renderOrders(orders, {
-                total: totalOrders,
-                page: currentPage,
-                totalPages: totalPages,
-                limit: LIMIT
+
+        let data = {};
+        try {
+            data = await response.json();
+        } catch (_) {}
+
+        if (!response.ok) {
+            updateLocalPhase(orderId, phase, {
+                status: previousStatus,
+                comment: previousComment
             });
-            
-            // ⭐ Osveži i modal
-            const order = orders.find(o => o.id === orderId);
-            if (order) {
-                renderPhases(order);
-            }
-            
-        } else {
-            alert(`❌ Greška: ${data.error}`);
+            refreshMainOrderList();
+            renderPhases(order);
+            alert(`❌ Greška: ${data.error || 'Nije moguće sačuvati status'}`);
+            return;
         }
+
+        // Ako API vrati ažurirane podatke, prihvatamo ih.
+        if (data.phase) {
+            Object.assign(phaseData, data.phase);
+        } else if (data.progress) {
+            order.progress = data.progress;
+        } else if (data.phases) {
+            order.phases = data.phases;
+        }
+
+        refreshMainOrderList();
+        renderPhases(order);
+
     } catch (error) {
+        updateLocalPhase(orderId, phase, {
+            status: previousStatus,
+            comment: previousComment
+        });
+        refreshMainOrderList();
+        renderPhases(order);
+
         alert('❌ Greška pri ažuriranju');
         console.error('Update phase error:', error);
     }
 }
 
 async function updatePhaseComment(orderId, phase, comment) {
-    try {
-        await fetch('/api/update-phase', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({ orderId, phase, status: 'pending', comment })
-        });
-    } catch (error) {
-        console.error('Update comment error:', error);
-    }
+    const order = orders.find(o => String(o.id) === String(orderId));
+    const phaseData = getPhaseData(order, phase);
+
+    if (!order || !phaseData) return;
+
+    // Tekst se vidi ODMAH.
+    phaseData.comment = comment;
+    refreshMainOrderList();
+
+    const timerKey = `${orderId}_${phase}`;
+    clearTimeout(commentTimers[timerKey]);
+
+    commentTimers[timerKey] = setTimeout(async () => {
+        try {
+            const response = await fetch('/api/update-phase', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                // VAŽNO: više ne šaljemo status: 'pending'.
+                // Komentar zato neće slučajno vratiti fazu na "pending".
+                body: JSON.stringify({
+                    orderId,
+                    phase,
+                    status: phaseData.status || 'pending',
+                    comment
+                })
+            });
+
+            if (!response.ok) {
+                let data = {};
+                try {
+                    data = await response.json();
+                } catch (_) {}
+                console.error('Update comment error:', data.error || response.status);
+            }
+        } catch (error) {
+            console.error('Update comment error:', error);
+        }
+    }, 300);
 }
 
 async function loadUsers() {
