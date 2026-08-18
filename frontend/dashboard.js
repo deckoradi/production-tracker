@@ -79,6 +79,48 @@ window.addEventListener('click', (e) => {
     }
 });
 
+// Upload form
+document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fileInput = document.getElementById('fileInput');
+    const statusDiv = document.getElementById('uploadStatus');
+    
+    if (!fileInput.files[0]) {
+        statusDiv.textContent = 'Molimo izaberite fajl';
+        statusDiv.className = 'error';
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    
+    try {
+        const response = await fetch('/api/upload', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            },
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            statusDiv.textContent = `✅ Uspešno učitano ${data.count} naloga`;
+            statusDiv.className = 'success';
+            loadOrders();
+            fileInput.value = '';
+        } else {
+            statusDiv.textContent = `❌ Greška: ${data.error}`;
+            statusDiv.className = 'error';
+        }
+    } catch (error) {
+        statusDiv.textContent = '❌ Greška pri upload-u';
+        statusDiv.className = 'error';
+        console.error('Upload error:', error);
+    }
+});
+
 // Create user form
 document.getElementById('createUserForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -117,7 +159,7 @@ document.getElementById('createUserForm').addEventListener('submit', async (e) =
 
 // Send report
 sendReportBtn.addEventListener('click', async () => {
-    if (!confirm('📧 Pošalji dnevni izveštaj?')) return;
+    if (!confirm('Da li želite da pošaljete dnevni izveštaj?')) return;
     
     try {
         const response = await fetch('/api/send-report', {
@@ -134,12 +176,12 @@ sendReportBtn.addEventListener('click', async () => {
         const data = await response.json();
         
         if (response.ok) {
-            alert('✅ Izveštaj poslat!');
+            alert('✅ Izveštaj je uspešno poslat!');
         } else {
             alert(`❌ Greška: ${data.error}`);
         }
     } catch (error) {
-        alert('❌ Greška pri slanju');
+        alert('❌ Greška pri slanju izveštaja');
         console.error('Send report error:', error);
     }
 });
@@ -427,24 +469,22 @@ async function updatePhase(orderId, phase, status) {
         if (response.ok) {
             console.log('✅ Faza ažurirana');
             
-            // ⭐ PONOVO UČITAJ SVE NALOGE IZ BAZE
-            const search = document.getElementById('searchInput').value || '';
+            // ⭐ OVO JE TVOJ ORIGINALNI NAČIN (KOJI JE RADIO)
+            // Samo zamenjujemo putanju sa relativnom i dodajemo page
+            const search = searchInput.value || '';
             await loadOrders(search, currentPage);
             
-            // ⭐ PONOVO OTVORI NALOG SA OSVEŽENIM PODACIMA
-            const updatedOrder = orders.find(o => o.id === orderId);
-            if (updatedOrder) {
-                phaseModal.classList.add('hidden');
-                setTimeout(() => {
-                    openOrder(orderId);
-                }, 150);
+            // ⭐ Pronađi ažurirani nalog i prikaži faze
+            const order = orders.find(o => o.id === orderId);
+            if (order) {
+                renderPhases(order);
             }
             
         } else {
             alert(`❌ Greška: ${data.error}`);
         }
     } catch (error) {
-        alert('❌ Greška pri ažuriranju');
+        alert('❌ Greška pri ažuriranju faze');
         console.error('Update phase error:', error);
     }
 }
@@ -479,13 +519,10 @@ async function updatePhaseComment(orderId, phase, comment) {
                 }
             }
             
-            // Ponovo otvori nalog
+            // Ponovo prikaži faze
             const order = orders.find(o => o.id === orderId);
             if (order) {
-                phaseModal.classList.add('hidden');
-                setTimeout(() => {
-                    openOrder(orderId);
-                }, 100);
+                renderPhases(order);
             }
             
         } else {
