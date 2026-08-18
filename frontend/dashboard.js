@@ -43,47 +43,41 @@ function goToPage(p){if(p<1||p>totalPages)return;loadOrders(searchInput?.value||
 
 function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)return;selectedOrderId=id;renderModal(o);phaseModal.classList.remove('hidden')}
 
-// ============ ISPRAVLJEN RENDER MODAL – datum pored statusa ============
+// ============ NOVI RENDER MODAL – centriran status, datum ispod, bez "Istorija" ============
 function renderModal(o){
   modalOrderNumber.textContent=o.orderNumber||'N/A';
   modalOrderInfo.innerHTML=`<p><b>Firma:</b> ${esc(o.company)}</p><p><b>Artikal:</b> ${esc(o.name)}</p><p><b>Šifra:</b> ${esc(o.code)}</p><p><b>Količina:</b> ${o.quantity||0}</p><p><b>Datum isporuke:</b> ${esc(o.deliveryDate||'-')}</p>`;
   let h='';
   (o.progress||[]).forEach(p=>{
-    const e=p.status==='completed'?'✅':p.status==='problem'?'⚠️':'⬜';
-    const lab=p.status==='completed'?'URAĐENO':p.status==='problem'?'PROBLEM':'NA ČEKANJU';
-    // Prikazujemo status i datum u istom redu
-    h+=`<div class="phase-card"><h4>Faza ${esc(p.phase)}</h4>
-      <div class="phase-status" style="display:flex; align-items:center; gap:8px;">
-        <span style="font-size:28px">${e}</span>
-        <div>
-          <b>${lab}</b>
-          ${p.updatedAt ? `<span style="font-size:12px;color:#718096;margin-left:8px;">📅 ${date(p.updatedAt)}</span>` : ''}
-        </div>
+    const emoji = p.status==='completed' ? '✅' : p.status==='problem' ? '⚠️' : '⬜';
+    const label = p.status==='completed' ? 'URAĐENO' : p.status==='problem' ? 'PROBLEM' : 'NA ČEKANJU';
+    const dateStr = p.updatedAt ? date(p.updatedAt) : '';
+    h+=`<div class="phase-card">
+      <h4>Faza ${esc(p.phase)}</h4>
+      <div style="text-align:center; padding:6px 0;">
+        <div style="font-size:32px;">${emoji}</div>
+        <div style="font-weight:bold; font-size:16px; margin-top:2px;">${label}</div>
+        ${dateStr ? `<div style="font-size:13px; color:#718096; margin-top:2px;">📅 ${dateStr}</div>` : ''}
       </div>
-      <div class="phase-buttons">
+      <div class="phase-buttons" style="justify-content:center; gap:8px; display:flex; flex-wrap:wrap; margin:8px 0;">
         <button onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button>
         <button onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ Problem</button>
         <button onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">⬜ Reset</button>
-        <button onclick="showHistory(${o.id},'${js(p.phase)}')">🕘 Istorija</button>
       </div>
-      <textarea style="width:100%;min-height:70px" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea>
-      <div id="hist-${o.id}-${p.phase}" style="display:none"></div>
+      <textarea style="width:100%; min-height:60px; margin-top:4px;" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea>
     </div>`;
   });
   phasesContainer.innerHTML=h||'Nema faza';
 }
 
-// ============ SAVE COMMENT – osvežava modal i tabelu ============
+// ============ SAČUVAJ KOMENTAR (osvežava modal) ============
 async function saveComment(id, phase, comment) {
   const o = orders.find(x => String(x.id) === String(id));
   const p = o?.progress.find(x => String(x.phase) === String(phase));
   if (!p) return;
-
-  const oldComment = p.comment;
-  const oldUpdated = p.updatedAt;
+  const oldComment = p.comment, oldUpdated = p.updatedAt;
   p.comment = comment;
-  p.updatedAt = new Date().toISOString(); // privremeno
-
+  p.updatedAt = new Date().toISOString();
   try {
     const res = await api('/api/update-phase', {
       method: 'POST',
@@ -91,8 +85,7 @@ async function saveComment(id, phase, comment) {
       body: JSON.stringify({ orderId: id, phase, comment })
     });
     if (res.updatedAt) p.updatedAt = res.updatedAt;
-    renderModal(o);  // osveži prikaz modala
-    renderOrders();  // osveži tabelu (ako želiš da se vidi da je nešto promenjeno)
+    renderModal(o);
   } catch (e) {
     p.comment = oldComment;
     p.updatedAt = oldUpdated;
@@ -101,20 +94,16 @@ async function saveComment(id, phase, comment) {
 }
 
 async function updatePhase(id,phase,status){const o=orders.find(x=>String(x.id)===String(id)),p=o?.progress.find(x=>String(x.phase)===String(phase));if(!p)return;const old={status:p.status,comment:p.comment,updatedAt:p.updatedAt};p.status=status;p.updatedAt=new Date().toISOString();renderOrders();renderModal(o);try{const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,status,comment:p.comment||''})});p.updatedAt=d.updatedAt;renderOrders();renderModal(o)}catch(e){Object.assign(p,old);renderOrders();renderModal(o);alert('❌ '+e.message)}}
-async function showHistory(id,phase){const b=$(`hist-${id}-${phase}`);if(!b)return;if(b.style.display==='block'){b.style.display='none';return}b.style.display='block';b.textContent='⏳ Učitavanje...';try{const d=await api(`/api/phase-history/${id}/${encodeURIComponent(phase)}`,{headers:headers()});b.innerHTML=d.history.length?'<b>Istorija:</b>'+d.history.map(x=>`<div style="padding:6px 0;border-bottom:1px solid #eee"><b>${label(x.status)}</b> — ${date(x.changedAt)}${x.comment?`<br>💬 ${esc(x.comment)}`:''}</div>`).join(''):'Nema istorije'}catch(e){b.textContent='❌ '+e.message}}
-function label(s){return s==='completed'?'✅ Urađeno':s==='problem'?'⚠️ Problem':'⬜ Reset'}
 
-// ============ FUNKCIJA ZA DATUM (samo datum) ============
+// ============ (OPCIONO) Ako želiš da zadržiš istoriju, ali bez dugmeta, ovo nije potrebno ============
+// showHistory funkcija može ostati, ali je ne pozivamo – možeš je i obrisati.
+
 function date(v) {
   const d = new Date(v);
   if (isNaN(d)) return String(v);
-  return d.toLocaleDateString('sr-RS', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric'
-  });
+  return d.toLocaleDateString('sr-RS', { day:'2-digit', month:'2-digit', year:'numeric' });
 }
 
 function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
 function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
-window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.showHistory=showHistory;
+window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;
