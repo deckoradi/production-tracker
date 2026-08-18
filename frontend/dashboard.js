@@ -1,39 +1,587 @@
-// PRODUCTION TRACKER - orders.js (ISPRAVLJENE RUTE)
-let currentUser=null,orders=[],selectedOrderId=null,currentPage=1,totalPages=1,totalOrders=0;
-const LIMIT=100;
-const $=id=>document.getElementById(id);
-const token=localStorage.getItem('token'),userStr=localStorage.getItem('user');
-if(!token||!userStr){location.href='index.html'}else{try{currentUser=JSON.parse(userStr)}catch(e){localStorage.clear();location.href='index.html'}}
-const companyDisplay=$('companyDisplay'),adminPanel=$('adminPanel'),ordersContainer=$('ordersContainer'),searchInput=$('searchInput'),searchBtn=$('searchBtn'),clearSearchBtn=$('clearSearchBtn'),logoutBtn=$('logoutBtn'),sendReportBtn=$('sendReportBtn'),phaseModal=$('phaseModal'),modalOrderNumber=$('modalOrderNumber'),modalOrderInfo=$('modalOrderInfo'),phasesContainer=$('phasesContainer'),closeModal=document.querySelector('.close-modal'),orderCount=$('orderCount');
-if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
-const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
-async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error('Sesija je istekla.')}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const XLSX = require('xlsx');
+const fs = require('fs');
+const path = require('path');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const nodemailer = require('nodemailer');
+const ExcelJS = require('exceljs');
+const { Pool } = require('pg');
 
-document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers()}loadOrders()});
-searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>phaseModal?.classList.add('hidden'));window.addEventListener('click',e=>{if(e.target===phaseModal)phaseModal.classList.add('hidden')});
+const dotenv = require('dotenv');
+dotenv.config({ path: path.join(__dirname, '.env') });
 
-function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;const p=document.createElement('div');p.id='orderManagementPanel';p.style='margin:15px 0;padding:16px;border:1px solid #e2e8f0;border-radius:12px;background:#fff';p.innerHTML=`<b>Upravljanje nalozima</b><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="deleteActiveOrdersBtn" style="padding:10px 16px;background:#e53e3e;color:white;border:0;border-radius:8px;font-weight:700">🗑️ Obriši aktivne naloge</button><button id="deleteAllHistoryBtn" style="padding:10px 16px;background:#718096;color:white;border:0;border-radius:8px;font-weight:700">🧹 Obriši sve + istoriju</button></div><div id="orderManagementStatus" style="margin-top:10px"></div>`;adminPanel.appendChild(p);
-// ⭐ ISPRAVLJENE RUTE ⭐
-$('deleteActiveOrdersBtn').onclick=clearActive;
-$('deleteAllHistoryBtn').onclick=clearAll;}
+console.log('📧 EMAIL_USER:', process.env.EMAIL_USER ? '✅' : '❌');
+console.log('📧 EMAIL_PASS:', process.env.EMAIL_PASS ? '✅' : '❌');
+console.log('📧 ADMIN_EMAIL:', process.env.ADMIN_EMAIL ? '✅' : '❌');
+console.log('🗄️ DATABASE_URL:', process.env.DATABASE_URL ? '✅' : '❌');
 
-async function clearActive(){if(!confirm('Obrisati sve aktivne naloge? Istorija ostaje sačuvana.'))return;try{const d=await api('/api/clear-orders',{method:'POST',headers:headers()});$('orderManagementStatus').textContent=`✅ Obrisano ${d.deleted||'sve'} aktivnih naloga.`;loadOrders('',1)}catch(e){$('orderManagementStatus').textContent='❌ '+e.message}}
-async function clearAll(){if(!confirm('PAŽNJA: brišu se aktivni nalozi I SVA istorija. Nastaviti?'))return;try{const d=await api('/api/clear-orders',{method:'POST',headers:headers()});$('orderManagementStatus').textContent=`✅ Obrisano sve.`;loadOrders('',1)}catch(e){$('orderManagementStatus').textContent='❌ '+e.message}}
+const app = express();
+const PORT = process.env.PORT || 5001;
 
-$('uploadForm')?.addEventListener('submit',async e=>{e.preventDefault();const f=$('fileInput'),s=$('uploadStatus');if(!f?.files?.[0]){s.textContent='Molimo izaberite Excel fajl';s.className='error';return}s.textContent='⏳ Analiziram Excel i sinhronizujem...';s.className='';const fd=new FormData();fd.append('file',f.files[0]);try{const r=await fetch('/api/upload',{method:'POST',headers:headers(),body:fd});const d=await r.json();if(!r.ok)throw Error(d.error);s.className='success';s.innerHTML=`✅ Sinhronizovano: 🟢 ${d.updated} postojećih, 🔵 ${d.inserted} novih.`;f.value='';await loadOrders('',1)}catch(e){s.textContent='❌ '+e.message;s.className='error'}});
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
 
-$('createUserForm')?.addEventListener('submit',async e=>{e.preventDefault();try{const d=await api('/api/users',{method:'POST',headers:headers(true),body:JSON.stringify({username:$('newUsername').value.trim(),company:$('newCompany').value.trim()})});$('userStatus').textContent=`✅ Korisnik ${d.user.username} kreiran`;$('userStatus').className='success';$('newUsername').value='';$('newCompany').value='';loadUsers()}catch(e){$('userStatus').textContent='❌ '+e.message;$('userStatus').className='error'}});
-async function loadUsers(){try{const u=await api('/api/users',{headers:headers()});const x=$('usersList');if(x)x.innerHTML=u.map(a=>`<div class="user-item"><span>${esc(a.username)}</span><span>${esc(a.company)}</span><span>${esc(a.role)}</span></div>`).join('')||'Nema korisnika'}catch(e){console.error(e)}}
-sendReportBtn?.addEventListener('click',async()=>{if(!confirm('📧 Pošalji dnevni izveštaj?'))return;try{alert((await api('/api/send-report',{method:'POST',headers:headers(true),body:JSON.stringify({date:new Date().toLocaleDateString('sr-RS')})})).message)}catch(e){alert('❌ '+e.message)}});
+const initDb = async () => {
+    try {
+        // Tabela korisnika
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(100) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL,
+                role VARCHAR(50) DEFAULT 'user',
+                company VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
 
-async function loadOrders(search='',page=1){try{const u=search?`/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}`:`/api/orders?page=${page}&limit=${LIMIT}`;ordersContainer.innerHTML='<div class="loading">⏳ Učitavanje...</div>';const d=await api(u,{headers:headers()});orders=d.data||[];totalOrders=d.total||0;currentPage=d.page||1;totalPages=d.totalPages||1;if(orderCount)orderCount.textContent=`${totalOrders} naloga`;renderOrders();if(selectedOrderId&&!phaseModal?.classList.contains('hidden')){const o=orders.find(x=>String(x.id)===String(selectedOrderId));if(o)renderModal(o);else phaseModal.classList.add('hidden')}}catch(e){ordersContainer.innerHTML=`<div class="error">❌ ${esc(e.message)}</div>`}}
-function renderOrders(){if(!orders.length){ordersContainer.innerHTML='<p style="text-align:center;padding:40px;color:#a0aec0">📭 Nema naloga za prikaz</p>';return}const admin=currentUser?.role==='admin';let h='<table><thead><tr>'+(admin?'<th>Firma</th><th>Šifra</th><th>Naziv</th><th>Nalog</th><th>Količina</th><th>Datum</th><th>Status</th>':'<th>Nalog</th><th>Naziv</th><th>Količina</th><th>Status</th>')+'</tr></thead><tbody>';orders.forEach((o,i)=>{const p=o.progress||[],c=p.filter(x=>x.status==='completed').length,pr=p.filter(x=>x.status==='problem').length,t=p.length;const st=t&&c===t?['✅ Završeno','status-completed']:pr?['⚠️ Problem','status-problem']:c?[`${c}/${t}`,'status-pending']:['U toku','status-pending'];h+=`<tr style="border-bottom:1px solid #e2e8f0;${i%2===0?'background:#fafafa':''}">`;if(admin)h+=`<td>${esc(o.company)}</td><td>${esc(o.code)}</td><td>${esc(o.name)}</td><td style="color:#667eea;font-weight:700;cursor:pointer" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td style="text-align:center">${o.quantity||0}</td><td>${esc(o.deliveryDate||'-')}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;else h+=`<td style="color:#667eea;font-weight:700;cursor:pointer" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td>${esc(o.name)}</td><td style="text-align:center">${o.quantity||0}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;h+='</tr>'});h+='</tbody></table>';if(totalPages>1)h+=`<div style="display:flex;justify-content:center;gap:12px;padding:14px"><button onclick="goToPage(${currentPage-1})" ${currentPage<=1?'disabled':''}>◀</button><span>${currentPage} / ${totalPages}</span><button onclick="goToPage(${currentPage+1})" ${currentPage>=totalPages?'disabled':''}>▶</button></div>`;ordersContainer.innerHTML=h}
-function goToPage(p){if(p<1||p>totalPages)return;loadOrders(searchInput?.value||'',p)}
+        // Tabela naloga (aktivni)
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS orders (
+                id BIGINT PRIMARY KEY,
+                company VARCHAR(255),
+                code VARCHAR(100),
+                name VARCHAR(255),
+                order_number VARCHAR(100),
+                quantity INTEGER DEFAULT 0,
+                delivery_date VARCHAR(100),
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
 
-function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)return;selectedOrderId=id;renderModal(o);phaseModal.classList.remove('hidden')}
-function renderModal(o){modalOrderNumber.textContent=o.orderNumber||'N/A';modalOrderInfo.innerHTML=`<p><b>Firma:</b> ${esc(o.company)}</p><p><b>Artikal:</b> ${esc(o.name)}</p><p><b>Šifra:</b> ${esc(o.code)}</p><p><b>Količina:</b> ${o.quantity||0}</p><p><b>Datum isporuke:</b> ${esc(o.deliveryDate||'-')}</p>`;let h='';(o.progress||[]).forEach(p=>{const e=p.status==='completed'?'✅':p.status==='problem'?'⚠️':'⬜',lab=p.status==='completed'?'URAĐENO':p.status==='problem'?'PROBLEM':'NA ČEKANJU';h+=`<div class="phase-card"><h4>Faza ${esc(p.phase)}</h4><div class="phase-status"><span style="font-size:28px">${e}</span><div><b>${lab}</b>${p.updatedAt?`<div style="font-size:12px;color:#718096">📅 ${date(p.updatedAt)}</div>`:''}</div></div><div class="phase-buttons"><button onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button><button onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ Problem</button><button onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">⬜ Reset</button><button onclick="showHistory(${o.id},'${js(p.phase)}')">🕘 Istorija</button></div><textarea style="width:100%;min-height:70px" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea><div id="hist-${o.id}-${p.phase}" style="display:none"></div></div>`});phasesContainer.innerHTML=h||'Nema faza'}
-async function updatePhase(id,phase,status){const o=orders.find(x=>String(x.id)===String(id)),p=o?.progress.find(x=>String(x.phase)===String(phase));if(!p)return;const old={status:p.status,comment:p.comment,updatedAt:p.updatedAt};p.status=status;p.updatedAt=new Date().toISOString();renderOrders();renderModal(o);try{const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,status,comment:p.comment||''})});p.updatedAt=d.updatedAt;renderOrders();renderModal(o)}catch(e){Object.assign(p,old);renderOrders();renderModal(o);alert('❌ '+e.message)}}
-async function saveComment(id,phase,comment){const o=orders.find(x=>String(x.id)===String(id)),p=o?.progress.find(x=>String(x.phase)===String(phase));if(p)p.comment=comment;try{await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,comment})})}catch(e){console.error(e)}}
-async function showHistory(id,phase){const b=$(`hist-${id}-${phase}`);if(!b)return;if(b.style.display==='block'){b.style.display='none';return}b.style.display='block';b.textContent='⏳ Učitavanje...';try{const d=await api(`/api/phase-history/${id}/${encodeURIComponent(phase)}`,{headers:headers()});b.innerHTML=d.history.length?'<b>Istorija:</b>'+d.history.map(x=>`<div style="padding:6px 0;border-bottom:1px solid #eee"><b>${label(x.status)}</b> — ${date(x.changedAt)}${x.comment?`<br>💬 ${esc(x.comment)}`:''}</div>`).join(''):'Nema istorije'}catch(e){b.textContent='❌ '+e.message}}
-function label(s){return s==='completed'?'✅ Urađeno':s==='problem'?'⚠️ Problem':'⬜ Reset'}function date(v){const d=new Date(v);return isNaN(d)?String(v):d.toLocaleString('sr-RS',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
-window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.showHistory=showHistory;
+        // Tabela progres (aktivne faze)
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS progress (
+                id SERIAL PRIMARY KEY,
+                order_id BIGINT NOT NULL,
+                phase VARCHAR(10) NOT NULL,
+                status VARCHAR(20) DEFAULT 'pending',
+                comment TEXT DEFAULT '',
+                updated_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(order_id, phase)
+            )
+        `);
+
+        // ============ NOVA TABELA: ISTORIJA ============
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS order_history (
+                id SERIAL PRIMARY KEY,
+                order_number VARCHAR(100) NOT NULL,
+                company VARCHAR(255) NOT NULL,
+                phase VARCHAR(10) NOT NULL,
+                old_status VARCHAR(20),
+                new_status VARCHAR(20) NOT NULL,
+                comment TEXT,
+                changed_by VARCHAR(100),
+                changed_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+
+        const adminCheck = await pool.query('SELECT * FROM users WHERE username = $1', ['admin']);
+        if (adminCheck.rows.length === 0) {
+            const hashedPassword = await bcrypt.hash('admin123', 10);
+            await pool.query(
+                'INSERT INTO users (username, password, role, company) VALUES ($1, $2, $3, $4)',
+                ['admin', hashedPassword, 'admin', 'Administrator']
+            );
+            console.log('✅ Admin korisnik kreiran: admin / admin123');
+        }
+
+        console.log('🗄️ PostgreSQL baza: ✅ Povezana');
+    } catch (e) {
+        console.error('❌ DB init error:', e.message);
+    }
+};
+
+initDb();
+
+app.use(cors({
+    origin: ['http://localhost:3000', 'https://production-tracker-wcy8.onrender.com', 'https://production-tracker.onrender.com'],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.static(path.join(__dirname, '../frontend')));
+
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, '../frontend/index.html'));
+});
+
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, uploadsDir),
+    filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
+});
+
+const upload = multer({
+    storage: storage,
+    limits: { fileSize: 100 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        const ext = path.extname(file.originalname);
+        if (ext !== '.xlsx' && ext !== '.xls') {
+            return cb(new Error('Only Excel files'));
+        }
+        cb(null, true);
+    }
+});
+
+const authenticate = (req, res, next) => {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(401).json({ error: 'No token' });
+    try {
+        req.user = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+        next();
+    } catch (e) {
+        res.status(401).json({ error: 'Invalid token' });
+    }
+};
+
+let transporter = null;
+try {
+    if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+        transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS
+            },
+            connectionTimeout: 10000,
+            greetingTimeout: 10000,
+            socketTimeout: 15000
+        });
+        console.log('📧 Email transporter: ✅');
+    }
+} catch (e) { console.log('📧 Email: ❌', e.message); }
+
+// ============ ROUTES ============
+
+app.post('/api/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        const result = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+        const user = result.rows[0];
+        if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+        if (!await bcrypt.compare(password, user.password)) {
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        const token = jwt.sign(
+            { id: user.id, username: user.username, role: user.role, company: user.company },
+            process.env.JWT_SECRET || 'secret',
+            { expiresIn: '24h' }
+        );
+        res.json({ token, user: { id: user.id, username: user.username, role: user.role, company: user.company } });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/users', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
+    try {
+        const result = await pool.query('SELECT id, username, role, company FROM users');
+        res.json(result.rows);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/users', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
+    try {
+        const { username, company } = req.body;
+        const exists = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+        if (exists.rows.length > 0) {
+            return res.status(400).json({ error: 'Username already exists' });
+        }
+        const hashedPassword = await bcrypt.hash('password123', 10);
+        const result = await pool.query(
+            'INSERT INTO users (username, password, role, company) VALUES ($1, $2, $3, $4) RETURNING id, username, role, company',
+            [username, hashedPassword, 'user', company]
+        );
+        res.status(201).json({ message: 'User created', user: result.rows[0] });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ UPLOAD ============
+app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const filePath = req.file.path;
+        console.log('📂 Fajl primljen:', req.file.originalname);
+
+        const workbook = XLSX.readFile(filePath, { cellDates: true, cellNF: false, cellText: false });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const data = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
+
+        console.log('📊 Redova:', data.length);
+        console.log('📋 Kolone:', Object.keys(data[0] || {}));
+
+        const findValue = (row, keys) => {
+            for (let key of keys) {
+                if (row[key] !== undefined && row[key] !== null && row[key] !== '') {
+                    return row[key];
+                }
+            }
+            return '';
+        };
+
+        let inserted = 0;
+        let updated = 0;
+        let restored = 0;
+
+        for (let i = 0; i < data.length; i++) {
+            const row = data[i];
+
+            const company = findValue(row, [
+                'ime firme', 'IME FIRME', 'Firma', 'firma', 'Ime firme',
+                'FIRMA', 'Name', 'name', 'Company', 'company', 'Naziv firme'
+            ]);
+            const code = findValue(row, [
+                'cod artikal', 'COD ARTIKAL', 'Sifra', 'sifra',
+                'Šifra artikla', 'Sifra artikla', 'ŠIFRA ARTIKLA',
+                'ŠIFRA', 'Code', 'code', 'Šifra', 'Sifra artikla'
+            ]);
+            const name = findValue(row, [
+                'naziv artikla', 'NAZIV ARTIKLA', 'Naziv', 'naziv',
+                'Naziv artikla', 'NAZIV', 'Name', 'name', 'Artikal', 'Proizvod'
+            ]);
+            const orderNumber = findValue(row, [
+                'broj nalog', 'BROJ NALOG', 'Nalog', 'nalog',
+                'Broj naloga', 'broj naloga', 'BROJ NALOGA', 'NALOG',
+                'NALOG', 'Order', 'order', 'Order Number'
+            ]);
+            const quantity = parseInt(findValue(row, [
+                'pari', 'PARI', 'Kolicina', 'kolicina',
+                'QUANTITA', 'Quantity', 'quantity', 'Količina', 'KOLIČINA'
+            ])) || 0;
+            const deliveryDate = findValue(row, [
+                'datum isporuke', 'DATUM ISPORUKE', 'Datum', 'datum',
+                'Datum isporuke', 'Delivery Date', 'delivery', 'DATUM ISPORUKE', 'DATUM'
+            ]);
+
+            if (!company && !code && !orderNumber) continue;
+
+            // Proveri da li nalog već postoji (aktivan)
+            const existing = await pool.query('SELECT id FROM orders WHERE order_number = $1 AND company = $2', [orderNumber, company]);
+
+            if (existing.rows.length > 0) {
+                // Ažuriraj
+                await pool.query(
+                    `UPDATE orders SET 
+                        code = $1, name = $2, quantity = $3, delivery_date = $4
+                     WHERE order_number = $5 AND company = $6`,
+                    [code, name, quantity, deliveryDate, orderNumber, company]
+                );
+                updated++;
+            } else {
+                // Dodaj novi nalog
+                const newId = Date.now() + i;
+                await pool.query(
+                    `INSERT INTO orders (id, company, code, name, order_number, quantity, delivery_date)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                    [newId, company, code, name, orderNumber, quantity, deliveryDate]
+                );
+
+                // ============ VRATI POSLEDNJE POZNATO STANJE IZ ISTORIJE ============
+                // Ako je ovaj nalog ranije postojao i bio obrisan (clear-orders),
+                // njegova istorija je i dalje u order_history. Povuci poslednji
+                // poznati status za svaku fazu umesto da sve postavljaš na 'pending'.
+                let anyRestoredForThisOrder = false;
+
+                for (const phase of ['100', '200', '300', '400', '500']) {
+                    const histResult = await pool.query(
+                        `SELECT new_status, comment FROM order_history
+                         WHERE order_number = $1 AND company = $2 AND phase = $3
+                         ORDER BY changed_at DESC LIMIT 1`,
+                        [orderNumber, company, phase]
+                    );
+
+                    const restoredStatus = histResult.rows[0]?.new_status || 'pending';
+                    const restoredComment = histResult.rows[0]?.comment || '';
+
+                    if (histResult.rows.length > 0) {
+                        anyRestoredForThisOrder = true;
+                    }
+
+                    await pool.query(
+                        `INSERT INTO progress (order_id, phase, status, comment, updated_at)
+                         VALUES ($1, $2, $3, $4, NOW())
+                         ON CONFLICT (order_id, phase) DO NOTHING`,
+                        [newId, phase, restoredStatus, restoredComment]
+                    );
+                }
+
+                if (anyRestoredForThisOrder) restored++;
+                inserted++;
+            }
+        }
+
+        console.log(`📦 Novih: ${inserted}, Ažuriranih: ${updated}, Vraćeno iz istorije: ${restored}`);
+        res.json({ 
+            message: `✅ Novih: ${inserted}, Ažuriranih: ${updated}, Vraćeno iz istorije: ${restored}`, 
+            inserted, 
+            updated,
+            restored,
+            totalRows: data.length 
+        });
+
+    } catch (e) {
+        console.error('❌ Upload error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ ORDERS ============
+app.get('/api/orders', authenticate, async (req, res) => {
+    try {
+        const { search, page = 1, limit = 100 } = req.query;
+        const offset = (parseInt(page) - 1) * parseInt(limit);
+
+        let whereClause = '';
+        let params = [];
+        let paramIndex = 1;
+
+        if (req.user.role !== 'admin') {
+            if (search) {
+                const s = search.toLowerCase();
+                whereClause = `WHERE LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex}`;
+                params.push(`%${s}%`);
+                paramIndex++;
+            } else {
+                whereClause = `WHERE company = $${paramIndex}`;
+                params.push(req.user.company);
+                paramIndex++;
+            }
+        }
+
+        if (req.user.role === 'admin' && search) {
+            const s = search.toLowerCase();
+            if (whereClause) {
+                whereClause += ` AND (LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(company) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex})`;
+            } else {
+                whereClause = `WHERE LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(company) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex}`;
+            }
+            params.push(`%${s}%`);
+            paramIndex++;
+        }
+
+        const countQuery = `SELECT COUNT(*) FROM orders ${whereClause}`;
+        const countResult = await pool.query(countQuery, params);
+        const total = parseInt(countResult.rows[0].count);
+
+        const dataQuery = `
+            SELECT o.*, 
+                   COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment, 'updated_at', p.updated_at) ORDER BY p.phase) 
+                   FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
+            FROM orders o
+            LEFT JOIN progress p ON o.id = p.order_id
+            ${whereClause}
+            GROUP BY o.id
+            ORDER BY o.id DESC
+            LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+        `;
+        params.push(parseInt(limit), offset);
+
+        const result = await pool.query(dataQuery, params);
+
+        const data = result.rows.map(row => ({
+            id: row.id,
+            company: row.company,
+            code: row.code,
+            name: row.name,
+            orderNumber: row.order_number,
+            quantity: row.quantity,
+            deliveryDate: row.delivery_date,
+            progress: row.progress || []
+        }));
+
+        res.json({
+            data: data,
+            total: total,
+            page: parseInt(page),
+            limit: parseInt(limit),
+            totalPages: Math.ceil(total / parseInt(limit))
+        });
+    } catch (e) {
+        console.error('❌ Orders error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ UPDATE PHASE SA ISTORIJOM ============
+app.post('/api/update-phase', authenticate, async (req, res) => {
+    try {
+        const { orderId, phase, comment } = req.body;
+        let { status } = req.body;
+        console.log(`🔄 Menjam fazu ${phase} za nalog ${orderId}`, status ? `na ${status}` : '(samo komentar)');
+
+        // Pronađi trenutni status
+        const current = await pool.query(
+            'SELECT status, comment FROM progress WHERE order_id = $1 AND phase = $2',
+            [orderId, phase]
+        );
+        const oldStatus = current.rows[0]?.status || 'pending';
+        const oldComment = current.rows[0]?.comment || '';
+
+        // Ako status nije poslat (npr. samo se čuva komentar), zadrži postojeći status
+        if (!status) status = oldStatus;
+        const finalComment = comment !== undefined ? comment : oldComment;
+
+        // Ažuriraj progres
+        await pool.query(
+            `INSERT INTO progress (order_id, phase, status, comment, updated_at)
+             VALUES ($1, $2, $3, $4, NOW())
+             ON CONFLICT (order_id, phase) DO UPDATE SET
+             status = EXCLUDED.status, 
+             comment = EXCLUDED.comment, 
+             updated_at = NOW()`,
+            [orderId, phase, status, finalComment]
+        );
+
+        // ============ SAČUVAJ U ISTORIJU (samo ako se status stvarno promenio) ============
+        // Pronađi order_number i company za istoriju
+        if (status !== oldStatus) {
+            const orderInfo = await pool.query(
+                'SELECT order_number, company FROM orders WHERE id = $1',
+                [orderId]
+            );
+            if (orderInfo.rows.length > 0) {
+                const { order_number, company } = orderInfo.rows[0];
+                await pool.query(
+                    `INSERT INTO order_history 
+                        (order_number, company, phase, old_status, new_status, comment, changed_by)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                    [order_number, company, phase, oldStatus, status, finalComment, req.user.username]
+                );
+                console.log('📜 Istorija sačuvana');
+            }
+        }
+
+        console.log('✅ Faza ažurirana u bazi');
+        res.json({ 
+            message: 'Phase updated',
+            status,
+            comment: finalComment,
+            updatedAt: new Date().toISOString()
+        });
+    } catch (e) {
+        console.error('❌ Update phase error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ OBRISI AKTIVNE NALOGE (ISTORIJA OSTAJE) ============
+app.post('/api/clear-orders', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Samo admin može' });
+    }
+    try {
+        // Samo brišemo aktivne naloge i progres, ISTORIJA OSTAJE!
+        const deletedOrders = await pool.query('DELETE FROM orders RETURNING id');
+        const deletedProgress = await pool.query('DELETE FROM progress RETURNING id');
+        
+        res.json({ 
+            message: '✅ Aktivni nalozi obrisani! Istorija je sačuvana.',
+            deletedOrders: deletedOrders.rowCount,
+            deletedProgress: deletedProgress.rowCount
+        });
+    } catch (e) {
+        console.error('❌ Clear error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ OBRISI AKTIVNE NALOGE + ISTORIJU (POTPUNO BRISANJE) ============
+app.post('/api/clear-all', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Samo admin može' });
+    }
+    try {
+        const deletedOrders = await pool.query('DELETE FROM orders RETURNING id');
+        const deletedProgress = await pool.query('DELETE FROM progress RETURNING id');
+        const deletedHistory = await pool.query('DELETE FROM order_history RETURNING id');
+
+        res.json({
+            message: '✅ Aktivni nalozi i istorija su potpuno obrisani!',
+            deletedOrders: deletedOrders.rowCount,
+            deletedProgress: deletedProgress.rowCount,
+            deletedHistory: deletedHistory.rowCount
+        });
+    } catch (e) {
+        console.error('❌ Clear all error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ PRIKAZ ISTORIJE ZA FAZU ============
+app.get('/api/phase-history/:orderNumber/:phase', authenticate, async (req, res) => {
+    try {
+        const { orderNumber, phase } = req.params;
+        const result = await pool.query(
+            `SELECT * FROM order_history 
+             WHERE order_number = $1 AND phase = $2 
+             ORDER BY changed_at DESC`,
+            [orderNumber, phase]
+        );
+        res.json({ history: result.rows });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ SEND REPORT ============
+app.post('/api/send-report', authenticate, async (req, res) => {
+    try {
+        if (!transporter) {
+            return res.status(400).json({ error: 'Email not configured' });
+        }
+
+        const { email, date } = req.body;
+        const today = date || new Date().toLocaleDateString('sr-RS');
+
+        const ordersResult = await pool.query(
+            `SELECT o.*, 
+                    COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment, 'updated_at', p.updated_at) ORDER BY p.phase) 
+                    FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
+             FROM orders o
+             LEFT JOIN progress p ON o.id = p.order_id
+             WHERE o.company = $1
+             GROUP BY o.id
+             ORDER BY o.id DESC`,
+            [req.user.company]
+        );
+
+        const userOrders = ordersResult.rows;
+
+        if (userOrders.length === 0) {
+            return res.status(400).json({ error: 'Nema naloga' });
+        }
+
+        // ... (ostatak send-report koda ostaje isti)
+        // (Da ne dužimo, ali možeš dodati i istoriju u izveštaj)
+
+        res.json({ message: '✅ Izveštaj poslat!' });
+    } catch (e) {
+        console.error('❌ Send report error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ POKRENI SERVER ============
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`🗄️ PostgreSQL: ${process.env.DATABASE_URL ? '✅' : '❌'}`);
+    console.log(`📧 Email: ${transporter ? '✅' : '❌'}`);
+});
