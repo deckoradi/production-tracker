@@ -91,10 +91,14 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
         return;
     }
     
+    statusDiv.textContent = '⏳ Učitavanje...';
+    statusDiv.className = '';
+    
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
     
     try {
+        const startTime = Date.now();
         const response = await fetch('/api/upload', {
             method: 'POST',
             headers: {
@@ -104,12 +108,14 @@ document.getElementById('uploadForm').addEventListener('submit', async (e) => {
         });
         
         const data = await response.json();
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
         
         if (response.ok) {
-            statusDiv.textContent = `✅ Uspešno učitano ${data.count} naloga`;
+            statusDiv.textContent = `✅ Učitano ${data.count} naloga za ${elapsed}s`;
             statusDiv.className = 'success';
-            loadOrders();
             fileInput.value = '';
+            currentPage = 1;
+            setTimeout(() => loadOrders('', 1), 500);
         } else {
             statusDiv.textContent = `❌ Greška: ${data.error}`;
             statusDiv.className = 'error';
@@ -159,7 +165,7 @@ document.getElementById('createUserForm').addEventListener('submit', async (e) =
 
 // Send report
 sendReportBtn.addEventListener('click', async () => {
-    if (!confirm('Da li želite da pošaljete dnevni izveštaj?')) return;
+    if (!confirm('📧 Pošalji dnevni izveštaj?')) return;
     
     try {
         const response = await fetch('/api/send-report', {
@@ -176,12 +182,12 @@ sendReportBtn.addEventListener('click', async () => {
         const data = await response.json();
         
         if (response.ok) {
-            alert('✅ Izveštaj je uspešno poslat!');
+            alert('✅ Izveštaj poslat!');
         } else {
             alert(`❌ Greška: ${data.error}`);
         }
     } catch (error) {
-        alert('❌ Greška pri slanju izveštaja');
+        alert('❌ Greška pri slanju');
         console.error('Send report error:', error);
     }
 });
@@ -194,7 +200,6 @@ async function loadOrders(search = '', page = 1) {
             `/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}` :
             `/api/orders?page=${page}&limit=${LIMIT}`;
         
-        console.log('📡 Učitavam naloge sa:', url);
         ordersContainer.innerHTML = '<div class="loading">⏳ Učitavanje...</div>';
         
         const response = await fetch(url, {
@@ -214,14 +219,10 @@ async function loadOrders(search = '', page = 1) {
         }
         
         const result = await response.json();
-        console.log('📦 Odgovor od servera:', result);
-        
         orders = result.data || [];
         totalOrders = result.total || 0;
         currentPage = result.page || 1;
         totalPages = result.totalPages || 1;
-        
-        console.log(`📦 Učitano ${orders.length} naloga od ${totalOrders} ukupno`);
         
         if (orderCount) {
             orderCount.textContent = `${totalOrders} naloga`;
@@ -241,9 +242,6 @@ async function loadOrders(search = '', page = 1) {
 }
 
 function renderOrders(ordersList, meta) {
-    console.log('🖥️ renderOrders pozvana, broj naloga:', ordersList?.length);
-    console.log('🖥️ Prvi nalog:', ordersList?.[0]);
-    
     if (!ordersList || ordersList.length === 0) {
         ordersContainer.innerHTML = '<p style="text-align:center;padding:40px;color:#a0aec0;">📭 Nema naloga za prikaz</p>';
         return;
@@ -252,28 +250,27 @@ function renderOrders(ordersList, meta) {
     const isAdmin = currentUser && currentUser.role === 'admin';
     
     let html = `
-        <div style="overflow-x:auto;padding:5px;">
-        <table style="width:100%;border-collapse:collapse;font-size:14px;">
+        <table>
             <thead>
-                <tr style="background:#f7fafc;border-bottom:2px solid #e2e8f0;">
+                <tr>
     `;
     
     if (isAdmin) {
         html += `
-                    <th style="padding:10px;text-align:left;">Firma</th>
-                    <th style="padding:10px;text-align:left;">Šifra</th>
-                    <th style="padding:10px;text-align:left;">Naziv</th>
-                    <th style="padding:10px;text-align:left;">Nalog</th>
-                    <th style="padding:10px;text-align:center;">Količina</th>
-                    <th style="padding:10px;text-align:left;">Datum</th>
-                    <th style="padding:10px;text-align:center;">Status</th>
+                    <th>Firma</th>
+                    <th>Šifra</th>
+                    <th>Naziv</th>
+                    <th>Nalog</th>
+                    <th style="text-align:center;">Količina</th>
+                    <th>Datum</th>
+                    <th style="text-align:center;">Status</th>
         `;
     } else {
         html += `
-                    <th style="padding:10px;text-align:left;">Nalog</th>
-                    <th style="padding:10px;text-align:left;">Naziv</th>
-                    <th style="padding:10px;text-align:center;">Količina</th>
-                    <th style="padding:10px;text-align:center;">Status</th>
+                    <th>Nalog</th>
+                    <th>Naziv</th>
+                    <th style="text-align:center;">Količina</th>
+                    <th style="text-align:center;">Status</th>
         `;
     }
     
@@ -304,23 +301,21 @@ function renderOrders(ordersList, meta) {
             statusText = `${completedPhases}/${totalPhases}`;
         }
         
-        const rowBg = i % 2 === 0 ? 'background:#fafafa;' : '';
-        
-        html += `<tr style="border-bottom:1px solid #e2e8f0;${rowBg}">`;
+        html += `<tr style="border-bottom:1px solid #e2e8f0;${i % 2 === 0 ? 'background:#fafafa;' : ''}">`;
         
         if (isAdmin) {
             html += `
                         <td style="padding:10px;font-size:13px;">${escapeHtml(order.company || '')}</td>
                         <td style="padding:10px;font-size:12px;">${escapeHtml(order.code || '')}</td>
                         <td style="padding:10px;">${escapeHtml(order.name || '')}</td>
-                        <td style="padding:10px;color:#667eea;font-weight:600;cursor:pointer;" onclick="openOrder(${order.id})">${escapeHtml(order.order_number || order.orderNumber || '')}</td>
+                        <td style="padding:10px;color:#667eea;font-weight:600;cursor:pointer;" onclick="openOrder(${order.id})">${escapeHtml(order.orderNumber || '')}</td>
                         <td style="padding:10px;text-align:center;font-weight:600;">${order.quantity || 0}</td>
-                        <td style="padding:10px;font-size:12px;">${order.delivery_date || order.deliveryDate || '-'}</td>
+                        <td style="padding:10px;font-size:12px;">${order.deliveryDate || '-'}</td>
                         <td style="padding:10px;text-align:center;"><span class="status-badge ${statusClass}">${statusText}</span></td>
             `;
         } else {
             html += `
-                        <td style="padding:12px 8px;color:#667eea;font-weight:600;cursor:pointer;font-size:16px;" onclick="openOrder(${order.id})">${escapeHtml(order.order_number || order.orderNumber || '')}</td>
+                        <td style="padding:12px 8px;color:#667eea;font-weight:600;cursor:pointer;font-size:16px;" onclick="openOrder(${order.id})">${escapeHtml(order.orderNumber || '')}</td>
                         <td style="padding:12px 8px;font-size:15px;">${escapeHtml(order.name || '')}</td>
                         <td style="padding:12px 8px;text-align:center;font-size:17px;font-weight:700;">${order.quantity || 0}</td>
                         <td style="padding:12px 8px;text-align:center;"><span class="status-badge ${statusClass}" style="font-size:13px;padding:4px 12px;">${statusText}</span></td>
@@ -333,20 +328,19 @@ function renderOrders(ordersList, meta) {
     html += `
             </tbody>
         </table>
-        </div>
     `;
     
     if (meta && meta.totalPages > 1) {
         html += `
             <div style="display:flex;justify-content:center;align-items:center;gap:12px;padding:14px;border-top:1px solid #e2e8f0;flex-wrap:wrap;">
                 <button onclick="goToPage(${meta.page - 1})" 
-                        style="padding:8px 20px;background:${meta.page <= 1 ? '#e2e8f0' : '#667eea'};color:${meta.page <= 1 ? '#a0aec0' : 'white'};border:none;border-radius:8px;font-weight:600;font-size:14px;" 
+                        style="padding:8px 20px;background:${meta.page <= 1 ? '#e2e8f0' : '#667eea'};color:${meta.page <= 1 ? '#a0aec0' : 'white'};border:none;border-radius:8px;font-weight:600;cursor:${meta.page <= 1 ? 'not-allowed' : 'pointer'};font-size:14px;" 
                         ${meta.page <= 1 ? 'disabled' : ''}>
                     ◀
                 </button>
                 <span style="color:#4a5568;font-weight:500;font-size:14px;">${meta.page} / ${meta.totalPages}</span>
                 <button onclick="goToPage(${meta.page + 1})" 
-                        style="padding:8px 20px;background:${meta.page >= meta.totalPages ? '#e2e8f0' : '#667eea'};color:${meta.page >= meta.totalPages ? '#a0aec0' : 'white'};border:none;border-radius:8px;font-weight:600;font-size:14px;" 
+                        style="padding:8px 20px;background:${meta.page >= meta.totalPages ? '#e2e8f0' : '#667eea'};color:${meta.page >= meta.totalPages ? '#a0aec0' : 'white'};border:none;border-radius:8px;font-weight:600;cursor:${meta.page >= meta.totalPages ? 'not-allowed' : 'pointer'};font-size:14px;" 
                         ${meta.page >= meta.totalPages ? 'disabled' : ''}>
                     ▶
                 </button>
@@ -355,7 +349,6 @@ function renderOrders(ordersList, meta) {
     }
     
     ordersContainer.innerHTML = html;
-    console.log('✅ renderOrders završena');
 }
 
 function goToPage(page) {
@@ -372,28 +365,27 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// ============ OPEN ORDER - SA SAKRIVANJEM FIRME ZA TUĐE NALOGE ============
 function openOrder(orderId) {
-    console.log('🔍 openOrder pozvana sa ID:', orderId);
-    
-    const order = orders.find(o => String(o.id) === String(orderId));
-    
+    const order = orders.find(o => o.id === orderId);
     if (!order) {
-        console.error('❌ Order not found:', orderId);
+        console.error('Order not found:', orderId);
         return;
     }
     
-    console.log('✅ Order pronađen:', order);
-    
     selectedOrderId = orderId;
-    modalOrderNumber.textContent = order.order_number || order.orderNumber || 'N/A';
+    modalOrderNumber.textContent = order.orderNumber || order.nalog || 'N/A';
     
+    // Proveri da li je admin ILI je nalog korisnikov
     const isAdmin = currentUser && currentUser.role === 'admin';
     const isOwnOrder = order.company === currentUser.company;
     
     let companyHtml = '';
     if (isAdmin || isOwnOrder) {
+        // Admin i vlasnik naloga vide firmu
         companyHtml = `<p><strong>Firma:</strong> ${escapeHtml(order.company || order.firma || '')}</p>`;
     } else {
+        // Tuđi nalog - sakrivamo firmu
         companyHtml = `<p style="display:none;"><strong>Firma:</strong> ${escapeHtml(order.company || order.firma || '')}</p>`;
     }
     
@@ -402,7 +394,7 @@ function openOrder(orderId) {
         <p><strong>Artikal:</strong> ${escapeHtml(order.name || order.naziv || '')}</p>
         <p><strong>Šifra:</strong> ${escapeHtml(order.code || order.sifra || '')}</p>
         <p><strong>Količina:</strong> ${order.quantity || order.pari || 0}</p>
-        <p><strong>Datum isporuke:</strong> ${order.delivery_date || order.deliveryDate || '-'}</p>
+        <p><strong>Datum isporuke:</strong> ${order.deliveryDate || order.datum_isporuke || '-'}</p>
     `;
     
     renderPhases(order);
@@ -410,9 +402,7 @@ function openOrder(orderId) {
 }
 
 function renderPhases(order) {
-    console.log('🖥️ renderPhases pozvana');
     const phases = order.progress || order.phases || [];
-    console.log('🖥️ phases:', phases);
     
     if (phases.length === 0) {
         phasesContainer.innerHTML = '<p style="text-align:center;padding:20px;color:#a0aec0;">Nema faza</p>';
@@ -423,7 +413,6 @@ function renderPhases(order) {
     phases.forEach(phase => {
         const statusEmoji = phase.status === 'completed' ? '✅' : 
                            phase.status === 'problem' ? '⚠️' : '⬜';
-        const commentValue = phase.comment || '';
         
         html += `
             <div class="phase-card">
@@ -441,20 +430,17 @@ function renderPhases(order) {
                     <textarea 
                         placeholder="Komentar..." 
                         onchange="updatePhaseComment(${order.id}, '${phase.phase}', this.value)"
-                    >${commentValue}</textarea>
+                    >${phase.comment || ''}</textarea>
                 </div>
             </div>
         `;
     });
     
     phasesContainer.innerHTML = html;
-    console.log('✅ renderPhases završena');
 }
 
 async function updatePhase(orderId, phase, status) {
     try {
-        console.log(`🔄 Menjam fazu ${phase} na status ${status} za nalog ${orderId}`);
-        
         const response = await fetch('/api/update-phase', {
             method: 'POST',
             headers: {
@@ -467,39 +453,24 @@ async function updatePhase(orderId, phase, status) {
         const data = await response.json();
         
         if (response.ok) {
-            console.log('✅ Faza ažurirana');
-            
-            // ⭐ SAČUVAJ TRENUTNI SEARCH I PAGE
-            const search = searchInput.value || '';
-            
-            // ⭐ PONOVO UČITAJ NALOGE IZ BAZE
+            const search = document.getElementById('searchInput').value || '';
             await loadOrders(search, currentPage);
-            
-            // ⭐ PRONAĐI AŽURIRANI NALOG
-            const updatedOrder = orders.find(o => o.id === orderId);
-            if (updatedOrder) {
-                // ⭐ OSVEŽI FAZE (BEZ ZATVARANJA MODALA)
-                // Zatvori i ponovo otvori modal sa svežim podacima
-                phaseModal.classList.add('hidden');
-                setTimeout(() => {
-                    openOrder(orderId);
-                }, 50);
+            const order = orders.find(o => o.id === orderId);
+            if (order) {
+                renderPhases(order);
             }
-            
         } else {
             alert(`❌ Greška: ${data.error}`);
         }
     } catch (error) {
-        alert('❌ Greška pri ažuriranju faze');
+        alert('❌ Greška pri ažuriranju');
         console.error('Update phase error:', error);
     }
 }
 
 async function updatePhaseComment(orderId, phase, comment) {
     try {
-        console.log(`💬 Čuvam komentar za fazu ${phase}: "${comment}"`);
-        
-        const response = await fetch('/api/update-phase', {
+        await fetch('/api/update-phase', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -507,33 +478,6 @@ async function updatePhaseComment(orderId, phase, comment) {
             },
             body: JSON.stringify({ orderId, phase, status: 'pending', comment })
         });
-        
-        const data = await response.json();
-        
-        if (response.ok) {
-            console.log('✅ Komentar sačuvan');
-            
-            // Ažuriraj orders niz
-            const orderIndex = orders.findIndex(o => o.id === orderId);
-            if (orderIndex !== -1) {
-                const order = orders[orderIndex];
-                if (order.progress) {
-                    const phaseData = order.progress.find(p => p.phase === phase);
-                    if (phaseData) {
-                        phaseData.comment = comment;
-                    }
-                }
-            }
-            
-            // Osveži prikaz faza
-            const order = orders.find(o => o.id === orderId);
-            if (order) {
-                renderPhases(order);
-            }
-            
-        } else {
-            console.error('❌ Greška pri čuvanju komentara:', data.error);
-        }
     } catch (error) {
         console.error('Update comment error:', error);
     }
@@ -567,82 +511,4 @@ async function loadUsers() {
     } catch (error) {
         console.error('Load users error:', error);
     }
-}
-
-// ============ UPLOAD ============
-const uploadForm = document.getElementById('uploadForm');
-const fileInput = document.getElementById('fileInput');
-const uploadStatus = document.getElementById('uploadStatus');
-
-if (uploadForm) {
-    console.log('✅ Upload form pronađen');
-    
-    const newUploadForm = uploadForm.cloneNode(true);
-    uploadForm.parentNode.replaceChild(newUploadForm, uploadForm);
-    
-    const newFileInput = document.getElementById('fileInput');
-    const newUploadStatus = document.getElementById('uploadStatus');
-    
-    newUploadForm.addEventListener('submit', async function(e) {
-        e.preventDefault();
-        e.stopPropagation();
-        
-        console.log('📤 Upload dugme kliknuto!');
-        
-        if (!newFileInput || !newFileInput.files || newFileInput.files.length === 0) {
-            if (newUploadStatus) {
-                newUploadStatus.textContent = '⚠️ Izaberite fajl!';
-                newUploadStatus.className = 'error';
-            }
-            return;
-        }
-        
-        const file = newFileInput.files[0];
-        console.log('📂 Fajl:', file.name, file.size, 'bajtova');
-        
-        if (newUploadStatus) {
-            newUploadStatus.textContent = '⏳ Učitavanje...';
-            newUploadStatus.className = '';
-        }
-        
-        const formData = new FormData();
-        formData.append('file', file);
-        
-        try {
-            const response = await fetch('/api/upload', {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                },
-                body: formData
-            });
-            
-            const data = await response.json();
-            console.log('📦 Odgovor:', data);
-            
-            if (response.ok) {
-                if (newUploadStatus) {
-                    newUploadStatus.textContent = `✅ ${data.message}`;
-                    newUploadStatus.className = 'success';
-                }
-                newFileInput.value = '';
-                setTimeout(() => loadOrders('', 1), 1000);
-            } else {
-                if (newUploadStatus) {
-                    newUploadStatus.textContent = `❌ Greška: ${data.error}`;
-                    newUploadStatus.className = 'error';
-                }
-            }
-        } catch (error) {
-            console.error('❌ Upload error:', error);
-            if (newUploadStatus) {
-                newUploadStatus.textContent = '❌ Greška pri upload-u';
-                newUploadStatus.className = 'error';
-            }
-        }
-    });
-    
-    console.log('✅ Upload event listener dodat');
-} else {
-    console.error('❌ Upload form nije pronađen');
 }
