@@ -365,19 +365,12 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// ============ OPEN ORDER - POPRAVLJEN ============
 function openOrder(orderId) {
-    console.log('🔍 openOrder pozvana sa ID:', orderId);
-    
-    // ⭐ POPRAVKA: Poredi kao string
     const order = orders.find(o => String(o.id) === String(orderId));
-    
     if (!order) {
-        console.error('❌ Order not found:', orderId);
+        console.error('Order not found:', orderId);
         return;
     }
-    
-    console.log('✅ Order pronađen:', order);
     
     selectedOrderId = orderId;
     modalOrderNumber.textContent = order.orderNumber || order.nalog || 'N/A';
@@ -456,12 +449,32 @@ async function updatePhase(orderId, phase, status) {
         const data = await response.json();
         
         if (response.ok) {
-            const search = document.getElementById('searchInput').value || '';
-            await loadOrders(search, currentPage);
+            // ⭐ Ažuriraj orders niz u memoriji
+            const orderIndex = orders.findIndex(o => o.id === orderId);
+            if (orderIndex !== -1) {
+                const order = orders[orderIndex];
+                if (order.progress) {
+                    const phaseData = order.progress.find(p => p.phase === phase);
+                    if (phaseData) {
+                        phaseData.status = status;
+                    }
+                }
+            }
+            
+            // ⭐ Osveži tabelu odmah
+            renderOrders(orders, {
+                total: totalOrders,
+                page: currentPage,
+                totalPages: totalPages,
+                limit: LIMIT
+            });
+            
+            // ⭐ Osveži i modal
             const order = orders.find(o => o.id === orderId);
             if (order) {
                 renderPhases(order);
             }
+            
         } else {
             alert(`❌ Greška: ${data.error}`);
         }
