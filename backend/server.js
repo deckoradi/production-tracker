@@ -28,7 +28,6 @@ const pool = new Pool({
 
 const initDb = async () => {
     try {
-        // Users table
         await pool.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -40,7 +39,6 @@ const initDb = async () => {
             )
         `);
 
-        // Orders table
         await pool.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id BIGINT PRIMARY KEY,
@@ -54,7 +52,7 @@ const initDb = async () => {
             )
         `);
 
-        // Progress table - initial create with VARCHAR(50) for phase
+        // ⭐ PROŠIRENA KOLONA NA VARCHAR(50)
         await pool.query(`
             CREATE TABLE IF NOT EXISTS progress (
                 id SERIAL PRIMARY KEY,
@@ -67,7 +65,7 @@ const initDb = async () => {
             )
         `);
 
-        // Order history table - also VARCHAR(50)
+        // ⭐ PROŠIRENA KOLONA I U ISTORIJI
         await pool.query(`
             CREATE TABLE IF NOT EXISTS order_history (
                 id SERIAL PRIMARY KEY,
@@ -82,7 +80,7 @@ const initDb = async () => {
             )
         `);
 
-        // ============ PROŠIRI KOLONU AKO JE JOŠ UVEK VARCHAR(10) ============
+        // ⭐ Ako je kolona još uvek VARCHAR(10), proširi je (za postojeće baze)
         await pool.query(`
             DO $$
             BEGIN
@@ -109,7 +107,6 @@ const initDb = async () => {
             END $$;
         `);
 
-        // Admin user
         const adminCheck = await pool.query('SELECT * FROM users WHERE username = $1', ['admin']);
         if (adminCheck.rows.length === 0) {
             const hashedPassword = await bcrypt.hash('admin123', 10);
@@ -322,7 +319,6 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                     [newId, company, code, name, orderNumber, quantity, deliveryDate]
                 );
 
-                // Kreiraj faze za novi nalog (koristi PHASES)
                 let anyRestoredForThisOrder = false;
                 for (const phase of PHASES) {
                     const histResult = await pool.query(
@@ -524,7 +520,7 @@ app.post('/api/clear-orders', authenticate, async (req, res) => {
     }
 });
 
-// ============ OBRISI SVE (AKTIVNO + ISTORIJA) ============
+// ============ OBRISI SVE ============
 app.post('/api/clear-all', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Samo admin može' });
@@ -541,6 +537,174 @@ app.post('/api/clear-all', authenticate, async (req, res) => {
         });
     } catch (e) {
         console.error('❌ Clear all error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ EXPORT ISTORIJE ============
+app.get('/api/history/export', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Samo admin može' });
+    }
+    try {
+        const { company, dateFrom, dateTo } = req.query;
+        let where = [];
+        let params = [];
+        let idx = 1;
+
+        if (company) {
+            where.push(`company = $${idx}`);
+            params.push(company);
+            idx++;
+        }
+        if (dateFrom) {
+            where.push(`changed_at >= $${idx}`);
+            params.push(dateFrom + ' 00:00:00');
+            idx++;
+        }
+        if (dateTo) {
+            where.push(`changed_at <= $${idx}`);
+            params.push(dateTo + ' 23:59:59');
+            idx++;
+        }
+        const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+        const lastActivityResult = await pool.query(
+            `SELECT DISTINCT ON (order_number, company) order_number, company, comment, changed_by, changed_at
+             FROM order_history
+             ${whereClause}
+             ORDER BY order_number, company, changed_at DESC`,
+            params
+        );
+
+        if (lastActivityResult.rows.length === 0) {
+            const workbook = new ExcelJS.Workbook();
+            const sheet = workbook.addWorksheet('Istorija');
+            sheet.mergeCells('A1:C1');
+            const emptyCell = sheet.getCell('A1');
+            emptyCell.value = 'Nema podataka za izabrani filter.';
+            emptyCell.font = { name: 'Arial', italic: true, color: { argb: 'FFA0AEC0' } };
+            const fileName = `istorija_${company || 'sve-firme'}_${dateFrom || 'x'}_${dateTo || 'x'}.xlsx`;
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+            await workbook.xlsx.write(res);
+            return res.end();
+        }
+
+        const phaseStatusResult = await pool.query(
+            `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, new_status, comment
+             FROM order_history
+             ORDER BY order_number, company, phase, changed_at DESC`
+        );
+
+        const phaseMap = new Map();
+        const phaseSet = new Set();
+        phaseStatusResult.rows.forEach(r => {
+            const key = `${r.order_number}||${r.company}`;
+            if (!phaseMap.has(key)) phaseMap.set(key, {});
+            phaseMap.get(key)[r.phase] = { status: r.new_status, comment: r.comment || '' };
+            phaseSet.add(r.phase);
+        });
+        const phases = [...phaseSet].sort((a, b) => parseInt(a) - parseInt(b));
+        const finalPhases = phases.length ? phases : ['Krojenje', 'Serigrafija', 'Vez', 'Šivenje', 'Poslato'];
+
+        const statusFill = s => s === 'completed' ? 'FFC6F6D5' : s === 'problem' ? 'FFFED7D7' : null;
+        const statusFont = s => s === 'completed' ? 'FF276749' : s === 'problem' ? 'FF9B2C2C' : 'FF4A5568';
+        const statusIcon = s => s === 'completed' ? '✅ Urađeno' : s === 'problem' ? '⚠️ Problem' : '';
+        const phaseCellText = (entry) => {
+            if (!entry) return '';
+            const label = statusIcon(entry.status);
+            const comment = (entry.comment || '').trim();
+            if (label && comment) return `${label}\n${comment}`;
+            if (label) return label;
+            if (comment) return `💬 ${comment}`;
+            return '';
+        };
+
+        const workbook = new ExcelJS.Workbook();
+        workbook.creator = 'Production Tracker';
+        workbook.created = new Date();
+        const sheet = workbook.addWorksheet('Istorija', {
+            views: [{ state: 'frozen', ySplit: 3 }],
+            pageSetup: { orientation: 'landscape', fitToPage: true }
+        });
+
+        const fixedCols = [
+            { key: 'changed_at', width: 20 },
+            { key: 'company', width: 22 },
+            { key: 'order_number', width: 15 }
+        ];
+        const phaseCols = finalPhases.map(p => ({ key: 'phase_' + p, width: 26 }));
+        const tailCols = [
+            { key: 'changed_by', width: 16 }
+        ];
+        sheet.columns = [...fixedCols, ...phaseCols, ...tailCols];
+
+        const totalCols = sheet.columns.length;
+        const lastColLetter = sheet.getColumn(totalCols).letter;
+
+        sheet.mergeCells(`A1:${lastColLetter}1`);
+        const titleCell = sheet.getCell('A1');
+        titleCell.value = `Istorija aktivnosti — Firma: ${company || 'sve firme'} — Period: ${dateFrom || 'početak'} do ${dateTo || 'danas'} — Generisano: ${new Date().toLocaleString('sr-RS')}`;
+        titleCell.font = { name: 'Arial', size: 11, bold: true, italic: true, color: { argb: 'FF4A5568' } };
+        titleCell.alignment = { vertical: 'middle' };
+        sheet.getRow(1).height = 22;
+        sheet.mergeCells(`A2:${lastColLetter}2`);
+
+        const headerRow = sheet.getRow(3);
+        headerRow.values = [
+            'Datum i vreme', 'Firma', 'Nalog',
+            ...finalPhases.map(p => `Faza ${p}`),
+            'Izmenio'
+        ];
+        headerRow.eachCell(cell => {
+            cell.font = { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF667EEA' } };
+            cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+            cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+        });
+        headerRow.height = 26;
+        sheet.autoFilter = { from: `A3`, to: `${lastColLetter}3` };
+
+        lastActivityResult.rows.forEach((r, i) => {
+            const key = `${r.order_number}||${r.company}`;
+            const phaseData = phaseMap.get(key) || {};
+            const rowData = {
+                changed_at: new Date(r.changed_at).toLocaleString('sr-RS'),
+                company: r.company,
+                order_number: r.order_number,
+                changed_by: r.changed_by || ''
+            };
+            finalPhases.forEach(p => { rowData['phase_' + p] = phaseCellText(phaseData[p]); });
+
+            const row = sheet.addRow(rowData);
+            row.font = { name: 'Arial', size: 10 };
+            row.alignment = { vertical: 'middle', wrapText: true };
+            row.eachCell(cell => {
+                cell.border = { top: { style: 'thin', color: { argb: 'FFE2E8F0' } }, bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } }, left: { style: 'thin', color: { argb: 'FFE2E8F0' } }, right: { style: 'thin', color: { argb: 'FFE2E8F0' } } };
+                if (i % 2 === 1) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFAFA' } };
+            });
+
+            let hasComment = false;
+            finalPhases.forEach((p, idx) => {
+                const entry = phaseData[p];
+                const cell = row.getCell(4 + idx);
+                const fill = entry ? statusFill(entry.status) : null;
+                cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+                cell.font = { name: 'Arial', size: 10, bold: !!(entry && entry.status && entry.status !== 'pending'), color: { argb: entry ? statusFont(entry.status) : 'FF4A5568' } };
+                if (fill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
+                if (entry && (entry.comment || '').trim()) hasComment = true;
+            });
+            row.height = hasComment ? 34 : 18;
+        });
+
+        const fileName = `istorija_${company || 'sve-firme'}_${dateFrom || 'x'}_${dateTo || 'x'}.xlsx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (e) {
+        console.error('❌ History export error:', e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -628,6 +792,7 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         d.font = { size: 12, bold: true };
         d.alignment = { horizontal: 'center' };
 
+        // ⭐ NOVI NAZIVI FAZA U IZVEŠTAJU
         const headers = ['Nalog', 'Artikal', 'Šifra', 'Količina', 'Datum isporuke',
             'Krojenje', 'Serigrafija', 'Vez', 'Šivenje', 'Poslato', 'Komentar'];
         const hr = ws.addRow(headers);
