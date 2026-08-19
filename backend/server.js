@@ -538,7 +538,7 @@ app.post('/api/clear-all', authenticate, async (req, res) => {
     }
 });
 
-// ============ EXPORT ISTORIJE ============
+// ============ EXPORT ISTORIJE – SA KORIGOVANIM ZAGLAVLJEM I SADRŽAJEM ============
 app.get('/api/history/export', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Samo admin može' });
@@ -566,6 +566,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         }
         const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
+        // 1) Poslednja aktivnost po nalogu UNUTAR izabranog perioda (za datum/komentar/izmenio)
         const lastActivityResult = await pool.query(
             `SELECT DISTINCT ON (order_number, company) order_number, company, comment, changed_by, changed_at
              FROM order_history
@@ -588,7 +589,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             return res.end();
         }
 
-        // Trenutni statusi faza (poslednja promena)
+        // 2) Trenutni (najnoviji) status I komentar svake faze - iz cele istorije
         const phaseStatusResult = await pool.query(
             `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, new_status, comment, changed_at
              FROM order_history
@@ -600,17 +601,18 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         phaseStatusResult.rows.forEach(r => {
             const key = `${r.order_number}||${r.company}`;
             if (!phaseMap.has(key)) phaseMap.set(key, {});
-            phaseMap.get(key)[r.phase] = { 
-                status: r.new_status, 
+            phaseMap.get(key)[r.phase] = {
+                status: r.new_status,
                 comment: r.comment || '',
                 changed_at: r.changed_at
             };
             phaseSet.add(r.phase);
         });
         const phases = [...phaseSet].sort((a, b) => parseInt(a) - parseInt(b));
+        // Ako nema faza, koristi podrazumevane
         const finalPhases = phases.length ? phases : ['Krojenje', 'Serigrafija', 'Vez', 'Šivenje', 'Poslato'];
 
-        // ⭐ NOVA FUNKCIJA ZA ĆELIJU (samo ✅/⚠️ + datum)
+        // ⭐ Funkcija za prikaz faze: ✅/⚠️ + datum (bez vremena)
         const phaseCellText = (entry) => {
             if (!entry) return '';
             const status = entry.status || 'pending';
@@ -640,6 +642,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         ];
         const phaseCols = finalPhases.map(p => ({ key: 'phase_' + p, width: 22 }));
         const tailCols = [
+            { key: 'comment', width: 30 },  // Kolona za komentar iz poslednje aktivnosti
             { key: 'changed_by', width: 16 }
         ];
         sheet.columns = [...fixedCols, ...phaseCols, ...tailCols];
@@ -655,12 +658,12 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         sheet.getRow(1).height = 22;
         sheet.mergeCells(`A2:${lastColLetter}2`);
 
-        // ⭐ ZAGLAVLJE BEZ "FAZA" PREFIKSA
+        // ⭐ ZAGLAVLJE – BEZ "FAZA" PREFIKSA
         const headerRow = sheet.getRow(3);
         headerRow.values = [
             'Datum i vreme', 'Firma', 'Nalog',
             ...finalPhases.map(p => `${p}`),
-            'Izmenio'
+            'Komentar', 'Izmenio'
         ];
         headerRow.eachCell(cell => {
             cell.font = { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
@@ -671,6 +674,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         headerRow.height = 26;
         sheet.autoFilter = { from: `A3`, to: `${lastColLetter}3` };
 
+        // Popunjavanje redova
         lastActivityResult.rows.forEach((r, i) => {
             const key = `${r.order_number}||${r.company}`;
             const phaseData = phaseMap.get(key) || {};
@@ -678,9 +682,12 @@ app.get('/api/history/export', authenticate, async (req, res) => {
                 changed_at: new Date(r.changed_at).toLocaleString('sr-RS'),
                 company: r.company,
                 order_number: r.order_number,
+                comment: r.comment || '',
                 changed_by: r.changed_by || ''
             };
-            finalPhases.forEach(p => { rowData['phase_' + p] = phaseCellText(phaseData[p]); });
+            finalPhases.forEach(p => {
+                rowData['phase_' + p] = phaseCellText(phaseData[p]);
+            });
 
             const row = sheet.addRow(rowData);
             row.font = { name: 'Arial', size: 10 };
@@ -690,23 +697,24 @@ app.get('/api/history/export', authenticate, async (req, res) => {
                 if (i % 2 === 1) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFAFA' } };
             });
 
-            let hasComment = false;
+            // Bojenje ćelija faza
             finalPhases.forEach((p, idx) => {
                 const entry = phaseData[p];
                 const cell = row.getCell(4 + idx);
                 const val = cell.value || '';
-                if (val.includes('✅') || val.includes('⚠️')) {
-                    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-                    cell.font = { name: 'Arial', size: 10, bold: true };
-                    if (val.includes('✅')) {
-                        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6F6D5' } };
-                        cell.font = { color: { argb: 'FF276749' } };
-                    } else if (val.includes('⚠️')) {
-                        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFED7D7' } };
-                        cell.font = { color: { argb: 'FF9B2C2C' } };
-                    }
+                if (val.includes('✅')) {
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6F6D5' } };
+                    cell.font = { color: { argb: 'FF276749' } };
+                    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+                } else if (val.includes('⚠️')) {
+                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFED7D7' } };
+                    cell.font = { color: { argb: 'FF9B2C2C' } };
+                    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
                 }
             });
+
+            // Visina reda ako ima komentara
+            const hasComment = (r.comment && r.comment.trim() !== '');
             row.height = hasComment ? 34 : 18;
         });
 
@@ -804,7 +812,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         d.font = { size: 12, bold: true };
         d.alignment = { horizontal: 'center' };
 
-        // ⭐ ZAGLAVLJE BEZ "FAZA" PREFIKSA
         const headers = ['Nalog', 'Artikal', 'Šifra', 'Količina', 'Datum isporuke',
             'Krojenje', 'Serigrafija', 'Vez', 'Šivenje', 'Poslato', 'Komentar'];
         const hr = ws.addRow(headers);
@@ -812,7 +819,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         hr.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
         hr.alignment = { horizontal: 'center', vertical: 'middle' };
 
-        // ⭐ FUNKCIJA ZA STATUS (samo ✅ ili ⚠️ + datum)
         const getPhaseCell = (phaseObj) => {
             if (!phaseObj) return '';
             const status = phaseObj.status || 'pending';
@@ -833,7 +839,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
                 phasesMap[p.phase] = p;
             });
 
-            // ⭐ KOMENTARI BEZ PREFIKSA "Faza X:"
             const allComments = (order.progress || [])
                 .filter(p => p.comment && p.comment.trim() !== '')
                 .map(p => p.comment.trim())
@@ -853,7 +858,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
                 allComments
             ]);
 
-            // Bojenje
             const phaseCols = [6, 7, 8, 9, 10];
             const phaseNames = ['Krojenje', 'Serigrafija', 'Vez', 'Šivenje', 'Poslato'];
             phaseCols.forEach((colIdx, idx) => {
