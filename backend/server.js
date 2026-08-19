@@ -28,6 +28,7 @@ const pool = new Pool({
 
 const initDb = async () => {
     try {
+        // Users table
         await pool.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -39,6 +40,7 @@ const initDb = async () => {
             )
         `);
 
+        // Orders table
         await pool.query(`
             CREATE TABLE IF NOT EXISTS orders (
                 id BIGINT PRIMARY KEY,
@@ -52,7 +54,7 @@ const initDb = async () => {
             )
         `);
 
-        // ⭐ PROŠIRENO NA VARCHAR(50) ZBOG DUŽIH NAZIVA FAZA
+        // Progress table - initial create with VARCHAR(50) for phase
         await pool.query(`
             CREATE TABLE IF NOT EXISTS progress (
                 id SERIAL PRIMARY KEY,
@@ -65,7 +67,7 @@ const initDb = async () => {
             )
         `);
 
-        // ⭐ ISTORIJA TAKOĐE PROŠIRENA
+        // Order history table - also VARCHAR(50)
         await pool.query(`
             CREATE TABLE IF NOT EXISTS order_history (
                 id SERIAL PRIMARY KEY,
@@ -80,6 +82,34 @@ const initDb = async () => {
             )
         `);
 
+        // ============ PROŠIRI KOLONU AKO JE JOŠ UVEK VARCHAR(10) ============
+        await pool.query(`
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name='progress' AND column_name='phase' 
+                    AND data_type='character varying' AND character_maximum_length=10
+                ) THEN
+                    ALTER TABLE progress ALTER COLUMN phase TYPE VARCHAR(50);
+                END IF;
+            END $$;
+        `);
+
+        await pool.query(`
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name='order_history' AND column_name='phase' 
+                    AND data_type='character varying' AND character_maximum_length=10
+                ) THEN
+                    ALTER TABLE order_history ALTER COLUMN phase TYPE VARCHAR(50);
+                END IF;
+            END $$;
+        `);
+
+        // Admin user
         const adminCheck = await pool.query('SELECT * FROM users WHERE username = $1', ['admin']);
         if (adminCheck.rows.length === 0) {
             const hashedPassword = await bcrypt.hash('admin123', 10);
@@ -235,7 +265,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
             return '';
         };
 
-        // ⭐ NOVE FAZE (umesto 100, 200, 300, 400, 500)
+        // ⭐ NOVE FAZE
         const PHASES = ['Krojenje', 'Serigrafija', 'Vez', 'Šivenje', 'Poslato'];
 
         let inserted = 0;
@@ -292,7 +322,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                     [newId, company, code, name, orderNumber, quantity, deliveryDate]
                 );
 
-                // ⭐ KORISTIMO NOVE FAZE
+                // Kreiraj faze za novi nalog (koristi PHASES)
                 let anyRestoredForThisOrder = false;
                 for (const phase of PHASES) {
                     const histResult = await pool.query(
