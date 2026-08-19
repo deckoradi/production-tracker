@@ -377,7 +377,7 @@ app.get('/api/orders', authenticate, async (req, res) => {
 
         const dataQuery = `
             SELECT o.*, 
-                   COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment, 'updated_at', p.updated_at) ORDER BY p.phase) 
+                   COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment, 'updatedAt', p.updated_at) ORDER BY p.phase) 
                    FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
             FROM orders o
             LEFT JOIN progress p ON o.id = p.order_id
@@ -535,7 +535,7 @@ app.post('/api/send-report', authenticate, async (req, res) => {
 
         const ordersResult = await pool.query(
             `SELECT o.*, 
-                    COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment, 'updated_at', p.updated_at) ORDER BY p.phase) 
+                    COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment, 'updatedAt', p.updated_at) ORDER BY p.phase) 
                     FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
              FROM orders o
              LEFT JOIN progress p ON o.id = p.order_id
