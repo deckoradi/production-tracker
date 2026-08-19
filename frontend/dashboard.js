@@ -12,7 +12,46 @@ async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await
 document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers()}loadOrders()});
 searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>phaseModal?.classList.add('hidden'));window.addEventListener('click',e=>{if(e.target===phaseModal)phaseModal.classList.add('hidden')});
 
-function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;const p=document.createElement('div');p.id='orderManagementPanel';p.style='margin:15px 0;padding:16px;border:1px solid #e2e8f0;border-radius:12px;background:#fff';p.innerHTML=`<b>Upravljanje nalozima</b><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="deleteActiveOrdersBtn" style="padding:10px 16px;background:#e53e3e;color:white;border:0;border-radius:8px;font-weight:700">🗑️ Obriši aktivne naloge</button><button id="deleteAllHistoryBtn" style="padding:10px 16px;background:#718096;color:white;border:0;border-radius:8px;font-weight:700">🧹 Obriši sve + istoriju</button></div><div id="orderManagementStatus" style="margin-top:10px"></div>`;adminPanel.appendChild(p);$('deleteActiveOrdersBtn').onclick=clearActive;$('deleteAllHistoryBtn').onclick=clearAll}
+function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;const p=document.createElement('div');p.id='orderManagementPanel';p.style='margin:15px 0;padding:16px;border:1px solid #e2e8f0;border-radius:12px;background:#fff';p.innerHTML=`<b>Upravljanje nalozima</b><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="deleteActiveOrdersBtn" style="padding:10px 16px;background:#e53e3e;color:white;border:0;border-radius:8px;font-weight:700">🗑️ Obriši aktivne naloge</button><button id="deleteAllHistoryBtn" style="padding:10px 16px;background:#718096;color:white;border:0;border-radius:8px;font-weight:700">🧹 Obriši sve + istoriju</button></div><div id="orderManagementStatus" style="margin-top:10px"></div>`;adminPanel.appendChild(p);$('deleteActiveOrdersBtn').onclick=clearActive;$('deleteAllHistoryBtn').onclick=clearAll;
+
+  const h=document.createElement('div');h.id='historyExportPanel';h.style='margin:15px 0;padding:16px;border:1px solid #e2e8f0;border-radius:12px;background:#fff';
+  h.innerHTML=`<b>📊 Istorija aktivnosti (Excel izveštaj)</b>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      <select id="historyCompany" style="padding:10px;border:2px solid #e2e8f0;border-radius:8px;flex:1;min-width:150px">
+        <option value="">Sve firme</option>
+      </select>
+      <input type="date" id="historyDateFrom" style="padding:10px;border:2px solid #e2e8f0;border-radius:8px">
+      <input type="date" id="historyDateTo" style="padding:10px;border:2px solid #e2e8f0;border-radius:8px">
+      <button id="exportHistoryBtn" style="padding:10px 16px;background:#48bb78;color:white;border:0;border-radius:8px;font-weight:700">📥 Preuzmi Excel</button>
+    </div>
+    <div id="historyExportStatus" style="margin-top:10px"></div>`;
+  adminPanel.appendChild(h);
+  $('exportHistoryBtn').onclick=exportHistory;
+}
+
+async function exportHistory(){
+  const status=$('historyExportStatus');
+  const company=$('historyCompany')?.value||'';
+  const dateFrom=$('historyDateFrom')?.value||'';
+  const dateTo=$('historyDateTo')?.value||'';
+  status.textContent='⏳ Generišem Excel...';status.className='';
+  try{
+    const params=new URLSearchParams();
+    if(company)params.append('company',company);
+    if(dateFrom)params.append('dateFrom',dateFrom);
+    if(dateTo)params.append('dateTo',dateTo);
+    const r=await fetch(`/api/history/export?${params.toString()}`,{headers:headers()});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw Error(d.error||`HTTP ${r.status}`)}
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=`istorija_${company||'sve-firme'}_${dateFrom||'x'}_${dateTo||'x'}.xlsx`;
+    document.body.appendChild(a);a.click();a.remove();
+    URL.revokeObjectURL(url);
+    status.textContent='✅ Fajl preuzet';status.className='success';
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
 
 async function clearActive(){
   if(!confirm('Obrisati sve aktivne naloge? Istorija ostaje sačuvana.'))return;
@@ -34,7 +73,7 @@ async function clearAll(){
 $('uploadForm')?.addEventListener('submit',async e=>{e.preventDefault();const f=$('fileInput'),s=$('uploadStatus');if(!f?.files?.[0]){s.textContent='Molimo izaberite Excel fajl';s.className='error';return}s.textContent='⏳ Analiziram Excel i sinhronizujem...';s.className='';const fd=new FormData();fd.append('file',f.files[0]);try{const r=await fetch('/api/upload',{method:'POST',headers:headers(),body:fd});const d=await r.json();if(!r.ok)throw Error(d.error);s.className='success';s.innerHTML=`✅ Sinhronizovano: 🟢 ${d.updated} postojećih, 🔵 ${d.inserted} novih, 🔴 ${d.removed} uklonjeno. Istorija sačuvana.`;f.value='';await loadOrders('',1)}catch(e){s.textContent='❌ '+e.message;s.className='error'}});
 
 $('createUserForm')?.addEventListener('submit',async e=>{e.preventDefault();try{const d=await api('/api/users',{method:'POST',headers:headers(true),body:JSON.stringify({username:$('newUsername').value.trim(),company:$('newCompany').value.trim()})});$('userStatus').textContent=`✅ Korisnik ${d.user.username} kreiran`;$('userStatus').className='success';$('newUsername').value='';$('newCompany').value='';loadUsers()}catch(e){$('userStatus').textContent='❌ '+e.message;$('userStatus').className='error'}});
-async function loadUsers(){try{const u=await api('/api/users',{headers:headers()});const x=$('usersList');if(x)x.innerHTML=u.map(a=>`<div class="user-item"><span>${esc(a.username)}</span><span>${esc(a.company)}</span><span>${esc(a.role)}</span></div>`).join('')||'Nema korisnika'}catch(e){console.error(e)}}
+async function loadUsers(){try{const u=await api('/api/users',{headers:headers()});const x=$('usersList');if(x)x.innerHTML=u.map(a=>`<div class="user-item"><span>${esc(a.username)}</span><span>${esc(a.company)}</span><span>${esc(a.role)}</span></div>`).join('')||'Nema korisnika';const sel=$('historyCompany');if(sel){const companies=[...new Set(u.map(a=>a.company).filter(Boolean))].sort();sel.innerHTML='<option value="">Sve firme</option>'+companies.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}}catch(e){console.error(e)}}
 sendReportBtn?.addEventListener('click',async()=>{if(!confirm('📧 Pošalji dnevni izveštaj?'))return;try{alert((await api('/api/send-report',{method:'POST',headers:headers(true),body:JSON.stringify({date:new Date().toLocaleDateString('sr-RS')})})).message)}catch(e){alert('❌ '+e.message)}});
 
 async function loadOrders(search='',page=1){try{const u=search?`/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}`:`/api/orders?page=${page}&limit=${LIMIT}`;ordersContainer.innerHTML='<div class="loading">⏳ Učitavanje...</div>';const d=await api(u,{headers:headers()});orders=d.data||[];totalOrders=d.total||0;currentPage=d.page||1;totalPages=d.totalPages||1;if(orderCount)orderCount.textContent=`${totalOrders} naloga`;renderOrders();if(selectedOrderId&&!phaseModal?.classList.contains('hidden')){const o=orders.find(x=>String(x.id)===String(selectedOrderId));if(o)renderModal(o);else phaseModal.classList.add('hidden')}}catch(e){ordersContainer.innerHTML=`<div class="error">❌ ${esc(e.message)}</div>`}}

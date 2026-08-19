@@ -523,6 +523,82 @@ app.post('/api/clear-all', authenticate, async (req, res) => {
     }
 });
 
+// ============ EXPORT ISTORIJE U EXCEL ============
+app.get('/api/history/export', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Samo admin može' });
+    }
+    try {
+        const { company, dateFrom, dateTo } = req.query;
+        let where = [];
+        let params = [];
+        let idx = 1;
+
+        if (company) {
+            where.push(`company = $${idx}`);
+            params.push(company);
+            idx++;
+        }
+        if (dateFrom) {
+            where.push(`changed_at >= $${idx}`);
+            params.push(dateFrom + ' 00:00:00');
+            idx++;
+        }
+        if (dateTo) {
+            where.push(`changed_at <= $${idx}`);
+            params.push(dateTo + ' 23:59:59');
+            idx++;
+        }
+        const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+        const result = await pool.query(
+            `SELECT order_number, company, phase, old_status, new_status, comment, changed_by, changed_at
+             FROM order_history
+             ${whereClause}
+             ORDER BY changed_at DESC`,
+            params
+        );
+
+        const statusLabel = s => s === 'completed' ? 'Urađeno' : s === 'problem' ? 'Problem' : 'Na čekanju';
+
+        const workbook = new ExcelJS.Workbook();
+        const sheet = workbook.addWorksheet('Istorija');
+        sheet.columns = [
+            { header: 'Datum i vreme', key: 'changed_at', width: 20 },
+            { header: 'Firma', key: 'company', width: 25 },
+            { header: 'Nalog', key: 'order_number', width: 15 },
+            { header: 'Faza', key: 'phase', width: 10 },
+            { header: 'Stari status', key: 'old_status', width: 15 },
+            { header: 'Novi status', key: 'new_status', width: 15 },
+            { header: 'Komentar', key: 'comment', width: 40 },
+            { header: 'Izmenio', key: 'changed_by', width: 15 }
+        ];
+        sheet.getRow(1).font = { bold: true };
+
+        result.rows.forEach(r => {
+            sheet.addRow({
+                changed_at: new Date(r.changed_at).toLocaleString('sr-RS'),
+                company: r.company,
+                order_number: r.order_number,
+                phase: r.phase,
+                old_status: statusLabel(r.old_status),
+                new_status: statusLabel(r.new_status),
+                comment: r.comment || '',
+                changed_by: r.changed_by || ''
+            });
+        });
+
+        const fileName = `istorija_${company || 'sve-firme'}_${dateFrom || 'x'}_${dateTo || 'x'}.xlsx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (e) {
+        console.error('❌ History export error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ============ SEND REPORT ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
