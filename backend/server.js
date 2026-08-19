@@ -293,7 +293,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                 // Vrati poslednje poznato stanje iz istorije (uključujući i datum)
                 let anyRestoredForThisOrder = false;
 
-                for (const phase of ['100', '200', '300', '400', '500']) {
+                for (const phase of ['KROJENJE', 'SERIGRAFIJA', 'VEZ', 'SIVENJE', 'POSLATO']) {
                     const histResult = await pool.query(
                         `SELECT new_status, comment, changed_at FROM order_history
                          WHERE order_number = $1 AND company = $2 AND phase = $3
@@ -590,7 +590,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             phaseSet.add(r.phase);
         });
         const phases = [...phaseSet].sort((a, b) => parseInt(a) - parseInt(b));
-        const finalPhases = phases.length ? phases : ['100', '200', '300', '400', '500'];
+        const finalPhases = phases.length ? phases : ['KROJENJE', 'SERIGRAFIJA', 'VEZ', 'SIVENJE', 'POSLATO'];
 
         const statusFill = s => s === 'completed' ? 'FFC6F6D5' : s === 'problem' ? 'FFFED7D7' : null;
         const statusFont = s => s === 'completed' ? 'FF276749' : s === 'problem' ? 'FF9B2C2C' : 'FF4A5568';
