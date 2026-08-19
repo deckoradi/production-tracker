@@ -56,7 +56,7 @@ const initDb = async () => {
             CREATE TABLE IF NOT EXISTS progress (
                 id SERIAL PRIMARY KEY,
                 order_id BIGINT NOT NULL,
-                phase VARCHAR(10) NOT NULL,
+                phase VARCHAR(20) NOT NULL,
                 status VARCHAR(20) DEFAULT 'pending',
                 comment TEXT DEFAULT '',
                 updated_at TIMESTAMP DEFAULT NOW(),
@@ -69,7 +69,7 @@ const initDb = async () => {
                 id SERIAL PRIMARY KEY,
                 order_number VARCHAR(100) NOT NULL,
                 company VARCHAR(255) NOT NULL,
-                phase VARCHAR(10) NOT NULL,
+                phase VARCHAR(20) NOT NULL,
                 old_status VARCHAR(20),
                 new_status VARCHAR(20) NOT NULL,
                 comment TEXT,
