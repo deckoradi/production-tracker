@@ -54,14 +54,15 @@ function renderModal(o){
   (o.progress||[]).forEach(p=>{
     const emoji = p.status==='completed' ? '✅' : p.status==='problem' ? '⚠️' : '⬜';
     const label = p.status==='completed' ? 'URAĐENO' : p.status==='problem' ? 'PROBLEM' : 'NA ČEKANJU';
-    // Uvek prikazuj datum, ako nema – "Nema datuma"
-    const dateStr = p.updatedAt ? date(p.updatedAt) : 'Nema datuma';
+    // Datum se prikazuje SAMO ako faza ima stvarnu aktivnost (status != pending ili postoji komentar)
+    const hasActivity = (p.status && p.status!=='pending') || (p.comment && p.comment.trim()!=='');
+    const dateStr = hasActivity && p.updatedAt ? date(p.updatedAt) : null;
     h+=`<div class="phase-card">
       <h4>Faza ${esc(p.phase)}</h4>
       <div style="text-align:center; padding:6px 0;">
         <div style="font-size:32px;">${emoji}</div>
         <div style="font-weight:bold; font-size:16px; margin-top:2px;">${label}</div>
-        <div style="font-size:13px; color:#718096; margin-top:2px;">📅 ${dateStr}</div>
+        ${dateStr ? `<div style="font-size:13px; color:#718096; margin-top:2px;">📅 ${dateStr}</div>` : ''}
       </div>
       <div class="phase-buttons" style="justify-content:center; gap:8px; display:flex; flex-wrap:wrap; margin:8px 0;">
         <button onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button>
