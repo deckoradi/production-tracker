@@ -551,40 +551,125 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         }
         const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
-        const result = await pool.query(
-            `SELECT order_number, company, phase, old_status, new_status, comment, changed_by, changed_at
+        // 1) Poslednja aktivnost po nalogu UNUTAR izabranog perioda (za datum/komentar/izmenio)
+        const lastActivityResult = await pool.query(
+            `SELECT DISTINCT ON (order_number, company) order_number, company, comment, changed_by, changed_at
              FROM order_history
              ${whereClause}
-             ORDER BY changed_at DESC`,
+             ORDER BY order_number, company, changed_at DESC`,
             params
         );
 
-        const statusLabel = s => s === 'completed' ? 'Urađeno' : s === 'problem' ? 'Problem' : 'Na čekanju';
+        if (lastActivityResult.rows.length === 0) {
+            const workbook = new ExcelJS.Workbook();
+            const sheet = workbook.addWorksheet('Istorija');
+            sheet.mergeCells('A1:C1');
+            const emptyCell = sheet.getCell('A1');
+            emptyCell.value = 'Nema podataka za izabrani filter.';
+            emptyCell.font = { name: 'Arial', italic: true, color: { argb: 'FFA0AEC0' } };
+            const fileName = `istorija_${company || 'sve-firme'}_${dateFrom || 'x'}_${dateTo || 'x'}.xlsx`;
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+            await workbook.xlsx.write(res);
+            return res.end();
+        }
+
+        // 2) Trenutni (najnoviji) status svake faze za te naloge - iz cele istorije, ne samo iz perioda
+        const phaseStatusResult = await pool.query(
+            `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, new_status
+             FROM order_history
+             ORDER BY order_number, company, phase, changed_at DESC`
+        );
+
+        const phaseMap = new Map(); // key: order_number||company -> { phase: status }
+        const phaseSet = new Set();
+        phaseStatusResult.rows.forEach(r => {
+            const key = `${r.order_number}||${r.company}`;
+            if (!phaseMap.has(key)) phaseMap.set(key, {});
+            phaseMap.get(key)[r.phase] = r.new_status;
+            phaseSet.add(r.phase);
+        });
+        const phases = [...phaseSet].sort((a, b) => parseInt(a) - parseInt(b));
+        const finalPhases = phases.length ? phases : ['100', '200', '300', '400', '500'];
+
+        const statusFill = s => s === 'completed' ? 'FFC6F6D5' : s === 'problem' ? 'FFFED7D7' : null;
+        const statusFont = s => s === 'completed' ? 'FF276749' : s === 'problem' ? 'FF9B2C2C' : 'FF4A5568';
+        const statusLabel = s => s === 'completed' ? '✅ Urađeno' : s === 'problem' ? '⚠️ Problem' : '';
 
         const workbook = new ExcelJS.Workbook();
-        const sheet = workbook.addWorksheet('Istorija');
-        sheet.columns = [
-            { header: 'Datum i vreme', key: 'changed_at', width: 20 },
-            { header: 'Firma', key: 'company', width: 25 },
-            { header: 'Nalog', key: 'order_number', width: 15 },
-            { header: 'Faza', key: 'phase', width: 10 },
-            { header: 'Stari status', key: 'old_status', width: 15 },
-            { header: 'Novi status', key: 'new_status', width: 15 },
-            { header: 'Komentar', key: 'comment', width: 40 },
-            { header: 'Izmenio', key: 'changed_by', width: 15 }
-        ];
-        sheet.getRow(1).font = { bold: true };
+        workbook.creator = 'Production Tracker';
+        workbook.created = new Date();
+        const sheet = workbook.addWorksheet('Istorija', {
+            views: [{ state: 'frozen', ySplit: 3 }],
+            pageSetup: { orientation: 'landscape', fitToPage: true }
+        });
 
-        result.rows.forEach(r => {
-            sheet.addRow({
+        const fixedCols = [
+            { key: 'changed_at', width: 20 },
+            { key: 'company', width: 22 },
+            { key: 'order_number', width: 15 }
+        ];
+        const phaseCols = finalPhases.map(p => ({ key: 'phase_' + p, width: 14 }));
+        const tailCols = [
+            { key: 'comment', width: 40 },
+            { key: 'changed_by', width: 16 }
+        ];
+        sheet.columns = [...fixedCols, ...phaseCols, ...tailCols];
+
+        const totalCols = sheet.columns.length;
+        const lastColLetter = sheet.getColumn(totalCols).letter;
+
+        // Naslovni red
+        sheet.mergeCells(`A1:${lastColLetter}1`);
+        const titleCell = sheet.getCell('A1');
+        titleCell.value = `Istorija aktivnosti — Firma: ${company || 'sve firme'} — Period: ${dateFrom || 'početak'} do ${dateTo || 'danas'} — Generisano: ${new Date().toLocaleString('sr-RS')}`;
+        titleCell.font = { name: 'Arial', size: 11, bold: true, italic: true, color: { argb: 'FF4A5568' } };
+        titleCell.alignment = { vertical: 'middle' };
+        sheet.getRow(1).height = 22;
+        sheet.mergeCells(`A2:${lastColLetter}2`);
+
+        // Zaglavlje
+        const headerRow = sheet.getRow(3);
+        headerRow.values = [
+            'Datum i vreme', 'Firma', 'Nalog',
+            ...finalPhases.map(p => `Faza ${p}`),
+            'Komentar', 'Izmenio'
+        ];
+        headerRow.eachCell(cell => {
+            cell.font = { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF667EEA' } };
+            cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+            cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+        });
+        headerRow.height = 26;
+        sheet.autoFilter = { from: `A3`, to: `${lastColLetter}3` };
+
+        lastActivityResult.rows.forEach((r, i) => {
+            const key = `${r.order_number}||${r.company}`;
+            const phaseStatuses = phaseMap.get(key) || {};
+            const rowData = {
                 changed_at: new Date(r.changed_at).toLocaleString('sr-RS'),
                 company: r.company,
                 order_number: r.order_number,
-                phase: r.phase,
-                old_status: statusLabel(r.old_status),
-                new_status: statusLabel(r.new_status),
                 comment: r.comment || '',
                 changed_by: r.changed_by || ''
+            };
+            finalPhases.forEach(p => { rowData['phase_' + p] = statusLabel(phaseStatuses[p]); });
+
+            const row = sheet.addRow(rowData);
+            row.font = { name: 'Arial', size: 10 };
+            row.alignment = { vertical: 'middle', wrapText: true };
+            row.eachCell(cell => {
+                cell.border = { top: { style: 'thin', color: { argb: 'FFE2E8F0' } }, bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } }, left: { style: 'thin', color: { argb: 'FFE2E8F0' } }, right: { style: 'thin', color: { argb: 'FFE2E8F0' } } };
+                if (i % 2 === 1) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFAFA' } };
+            });
+
+            finalPhases.forEach((p, idx) => {
+                const cell = row.getCell(4 + idx);
+                const fill = statusFill(phaseStatuses[p]);
+                cell.alignment = { vertical: 'middle', horizontal: 'center' };
+                cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: statusFont(phaseStatuses[p]) } };
+                if (fill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
             });
         });
 
