@@ -588,8 +588,9 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             return res.end();
         }
 
+        // Trenutni statusi faza (poslednja promena)
         const phaseStatusResult = await pool.query(
-            `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, new_status, comment
+            `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, new_status, comment, changed_at
              FROM order_history
              ORDER BY order_number, company, phase, changed_at DESC`
         );
@@ -599,22 +600,28 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         phaseStatusResult.rows.forEach(r => {
             const key = `${r.order_number}||${r.company}`;
             if (!phaseMap.has(key)) phaseMap.set(key, {});
-            phaseMap.get(key)[r.phase] = { status: r.new_status, comment: r.comment || '' };
+            phaseMap.get(key)[r.phase] = { 
+                status: r.new_status, 
+                comment: r.comment || '',
+                changed_at: r.changed_at
+            };
             phaseSet.add(r.phase);
         });
         const phases = [...phaseSet].sort((a, b) => parseInt(a) - parseInt(b));
         const finalPhases = phases.length ? phases : ['Krojenje', 'Serigrafija', 'Vez', 'Šivenje', 'Poslato'];
 
-        const statusFill = s => s === 'completed' ? 'FFC6F6D5' : s === 'problem' ? 'FFFED7D7' : null;
-        const statusFont = s => s === 'completed' ? 'FF276749' : s === 'problem' ? 'FF9B2C2C' : 'FF4A5568';
-        const statusIcon = s => s === 'completed' ? '✅ Urađeno' : s === 'problem' ? '⚠️ Problem' : '';
+        // ⭐ NOVA FUNKCIJA ZA ĆELIJU (samo ✅/⚠️ + datum)
         const phaseCellText = (entry) => {
             if (!entry) return '';
-            const label = statusIcon(entry.status);
-            const comment = (entry.comment || '').trim();
-            if (label && comment) return `${label}\n${comment}`;
-            if (label) return label;
-            if (comment) return `💬 ${comment}`;
+            const status = entry.status || 'pending';
+            if (status === 'pending') return '';
+            const date = entry.changed_at ? new Date(entry.changed_at).toLocaleDateString('sr-RS', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric'
+            }) : '';
+            if (status === 'completed') return `✅ ${date}`;
+            if (status === 'problem') return `⚠️ ${date}`;
             return '';
         };
 
@@ -631,7 +638,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             { key: 'company', width: 22 },
             { key: 'order_number', width: 15 }
         ];
-        const phaseCols = finalPhases.map(p => ({ key: 'phase_' + p, width: 26 }));
+        const phaseCols = finalPhases.map(p => ({ key: 'phase_' + p, width: 22 }));
         const tailCols = [
             { key: 'changed_by', width: 16 }
         ];
@@ -648,10 +655,11 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         sheet.getRow(1).height = 22;
         sheet.mergeCells(`A2:${lastColLetter}2`);
 
+        // ⭐ ZAGLAVLJE BEZ "FAZA" PREFIKSA
         const headerRow = sheet.getRow(3);
         headerRow.values = [
             'Datum i vreme', 'Firma', 'Nalog',
-            ...finalPhases.map(p => `Faza ${p}`),
+            ...finalPhases.map(p => `${p}`),
             'Izmenio'
         ];
         headerRow.eachCell(cell => {
@@ -686,11 +694,18 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             finalPhases.forEach((p, idx) => {
                 const entry = phaseData[p];
                 const cell = row.getCell(4 + idx);
-                const fill = entry ? statusFill(entry.status) : null;
-                cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-                cell.font = { name: 'Arial', size: 10, bold: !!(entry && entry.status && entry.status !== 'pending'), color: { argb: entry ? statusFont(entry.status) : 'FF4A5568' } };
-                if (fill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
-                if (entry && (entry.comment || '').trim()) hasComment = true;
+                const val = cell.value || '';
+                if (val.includes('✅') || val.includes('⚠️')) {
+                    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+                    cell.font = { name: 'Arial', size: 10, bold: true };
+                    if (val.includes('✅')) {
+                        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6F6D5' } };
+                        cell.font = { color: { argb: 'FF276749' } };
+                    } else if (val.includes('⚠️')) {
+                        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFED7D7' } };
+                        cell.font = { color: { argb: 'FF9B2C2C' } };
+                    }
+                }
             });
             row.height = hasComment ? 34 : 18;
         });
@@ -789,7 +804,7 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         d.font = { size: 12, bold: true };
         d.alignment = { horizontal: 'center' };
 
-        // ⭐ NOVI HEADERI BEZ "FAZA" PREFIKSA
+        // ⭐ ZAGLAVLJE BEZ "FAZA" PREFIKSA
         const headers = ['Nalog', 'Artikal', 'Šifra', 'Količina', 'Datum isporuke',
             'Krojenje', 'Serigrafija', 'Vez', 'Šivenje', 'Poslato', 'Komentar'];
         const hr = ws.addRow(headers);
@@ -838,7 +853,7 @@ app.post('/api/send-report', authenticate, async (req, res) => {
                 allComments
             ]);
 
-            // Bojenje ćelija
+            // Bojenje
             const phaseCols = [6, 7, 8, 9, 10];
             const phaseNames = ['Krojenje', 'Serigrafija', 'Vez', 'Šivenje', 'Poslato'];
             phaseCols.forEach((colIdx, idx) => {

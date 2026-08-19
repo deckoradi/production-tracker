@@ -96,8 +96,9 @@ function renderModal(o){
     // Datum se prikazuje SAMO ako faza ima stvarnu aktivnost (status != pending ili postoji komentar)
     const hasActivity = (p.status && p.status!=='pending') || (p.comment && p.comment.trim()!=='');
     const dateStr = hasActivity && p.updatedAt ? date(p.updatedAt) : null;
+    // ⭐ IZMENA: samo naziv faze, bez "Faza" prefiksa
     h+=`<div class="phase-card">
-      <h4>Faza ${esc(p.phase)}</h4>
+      <h4>${esc(p.phase)}</h4>
       <div style="text-align:center; padding:6px 0;">
         <div style="font-size:32px;">${emoji}</div>
         <div style="font-weight:bold; font-size:16px; margin-top:2px;">${label}</div>
