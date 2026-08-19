@@ -441,7 +441,10 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             [orderId, phase, status, finalComment]
         );
 
-        if (status !== oldStatus) {
+        // Upisujemo u istoriju kad god se nešto promeni (status ILI komentar),
+        // ne samo kad se promeni status - inače komentar-only izmene nestaju
+        // posle brisanja naloga + ponovnog Excel uploada.
+        if (status !== oldStatus || finalComment !== oldComment) {
             const orderInfo = await pool.query(
                 'SELECT order_number, company FROM orders WHERE id = $1',
                 [orderId]

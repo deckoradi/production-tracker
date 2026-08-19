@@ -46,7 +46,10 @@ function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)r
 // ============ RENDER MODAL – centriran status, datum ispod, bez "Istorija" ============
 function renderModal(o){
   modalOrderNumber.textContent=o.orderNumber||'N/A';
-  modalOrderInfo.innerHTML=`<p><b>Firma:</b> ${esc(o.company)}</p><p><b>Artikal:</b> ${esc(o.name)}</p><p><b>Šifra:</b> ${esc(o.code)}</p><p><b>Količina:</b> ${o.quantity||0}</p><p><b>Datum isporuke:</b> ${esc(o.deliveryDate||'-')}</p>`;
+  const isAdmin=currentUser?.role==='admin';
+  const isOwnCompany=o.company===currentUser?.company;
+  const firmaLine=(isAdmin||isOwnCompany)?`<p><b>Firma:</b> ${esc(o.company)}</p>`:'';
+  modalOrderInfo.innerHTML=`${firmaLine}<p><b>Artikal:</b> ${esc(o.name)}</p><p><b>Šifra:</b> ${esc(o.code)}</p><p><b>Količina:</b> ${o.quantity||0}</p><p><b>Datum isporuke:</b> ${esc(o.deliveryDate||'-')}</p>`;
   let h='';
   (o.progress||[]).forEach(p=>{
     const emoji = p.status==='completed' ? '✅' : p.status==='problem' ? '⚠️' : '⬜';
