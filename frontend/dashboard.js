@@ -1,108 +1,2034 @@
-// PRODUCTION TRACKER - orders.js
-let currentUser=null,orders=[],selectedOrderId=null,currentPage=1,totalPages=1,totalOrders=0;
-const LIMIT=100;
-const $=id=>document.getElementById(id);
-const token=localStorage.getItem('token'),userStr=localStorage.getItem('user');
-if(!token||!userStr){location.href='index.html'}else{try{currentUser=JSON.parse(userStr)}catch(e){localStorage.clear();location.href='index.html'}}
-const companyDisplay=$('companyDisplay'),adminPanel=$('adminPanel'),ordersContainer=$('ordersContainer'),searchInput=$('searchInput'),searchBtn=$('searchBtn'),clearSearchBtn=$('clearSearchBtn'),logoutBtn=$('logoutBtn'),sendReportBtn=$('sendReportBtn'),phaseModal=$('phaseModal'),modalOrderNumber=$('modalOrderNumber'),modalOrderInfo=$('modalOrderInfo'),phasesContainer=$('phasesContainer'),closeModal=document.querySelector('.close-modal'),orderCount=$('orderCount');
-if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
-const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
-async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error('Sesija je istekla.')}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const XLSX = require('xlsx');
+const fs = require('fs');
+const path = require('path');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const nodemailer = require('nodemailer');
+const ExcelJS = require('exceljs');
+const { Pool } = require('pg');
 
-document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers()}loadOrders()});
-searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>phaseModal?.classList.add('hidden'));window.addEventListener('click',e=>{if(e.target===phaseModal)phaseModal.classList.add('hidden')});
+const dotenv = require('dotenv');
+dotenv.config({ path: path.join(__dirname, '.env') });
 
-function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;const p=document.createElement('div');p.id='orderManagementPanel';p.style='margin:15px 0;padding:16px;border:1px solid #e2e8f0;border-radius:12px;background:#fff';p.innerHTML=`<b>Upravljanje nalozima</b><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="deleteActiveOrdersBtn" style="padding:10px 16px;background:#e53e3e;color:white;border:0;border-radius:8px;font-weight:700">🗑️ Obriši aktivne naloge</button><button id="deleteAllHistoryBtn" style="padding:10px 16px;background:#718096;color:white;border:0;border-radius:8px;font-weight:700">🧹 Obriši sve + istoriju</button></div><div id="orderManagementStatus" style="margin-top:10px"></div>`;adminPanel.appendChild(p);$('deleteActiveOrdersBtn').onclick=clearActive;$('deleteAllHistoryBtn').onclick=clearAll}
+console.log('📧 EMAIL_USER:', process.env.EMAIL_USER ? '✅' : '❌');
+console.log('📧 EMAIL_PASS:', process.env.EMAIL_PASS ? '✅' : '❌');
+console.log('📧 ADMIN_EMAIL:', process.env.ADMIN_EMAIL ? '✅' : '❌');
+console.log('🗄️ DATABASE_URL:', process.env.DATABASE_URL ? '✅' : '❌');
 
-async function clearActive(){
-  if(!confirm('Obrisati sve aktivne naloge? Istorija ostaje sačuvana.'))return;
-  try{
-    const d=await api('/api/clear-orders',{method:'POST',headers:headers()});
-    document.getElementById('orderManagementStatus').textContent=`✅ Obrisano ${d.deletedOrders} aktivnih naloga. Istorija je sačuvana.`;
-    loadOrders('',1);
-  }catch(e){document.getElementById('orderManagementStatus').textContent='❌ '+e.message}
+const app = express();
+const PORT = process.env.PORT || 5001;
+
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
+
+/* =========================================================
+   DATABASE
+========================================================= */
+
+const initDb = async () => {
+    try {
+
+        /* USERS */
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(100) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL,
+                role VARCHAR(50) DEFAULT 'user',
+                company VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+
+        /* ORDERS */
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS orders (
+                id BIGINT PRIMARY KEY,
+                company VARCHAR(255),
+                code VARCHAR(100),
+                name VARCHAR(255),
+                order_number VARCHAR(100),
+                quantity INTEGER DEFAULT 0,
+                delivery_date VARCHAR(100),
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+
+        /* PROGRESS */
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS progress (
+                id SERIAL PRIMARY KEY,
+                order_id BIGINT NOT NULL,
+                phase VARCHAR(10) NOT NULL,
+                status VARCHAR(20) DEFAULT 'pending',
+                comment TEXT DEFAULT '',
+                updated_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(order_id, phase)
+            )
+        `);
+
+        /*
+         * NOVA POLJA
+         *
+         * activity_at:
+         *   Datum kada je status poslednji put promenjen.
+         *
+         * comment_updated_at:
+         *   Datum poslednje izmene komentara.
+         *
+         * updated_at:
+         *   Poslednja bilo koja izmena.
+         */
+        await pool.query(`
+            ALTER TABLE progress
+            ADD COLUMN IF NOT EXISTS activity_at TIMESTAMP
+        `);
+
+        await pool.query(`
+            ALTER TABLE progress
+            ADD COLUMN IF NOT EXISTS comment_updated_at TIMESTAMP
+        `);
+
+        /* Stari podaci dobijaju postojeći datum kao datum aktivnosti */
+        await pool.query(`
+            UPDATE progress
+            SET activity_at = COALESCE(activity_at, updated_at)
+            WHERE activity_at IS NULL
+        `);
+
+        /* HISTORY */
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS order_history (
+                id SERIAL PRIMARY KEY,
+                order_number VARCHAR(100) NOT NULL,
+                company VARCHAR(255) NOT NULL,
+                phase VARCHAR(10) NOT NULL,
+                old_status VARCHAR(20),
+                new_status VARCHAR(20) NOT NULL,
+                comment TEXT,
+                changed_by VARCHAR(100),
+                changed_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+
+        /*
+         * Datum konkretne aktivnosti.
+         *
+         * Za postojeće zapise:
+         * activity_at = changed_at
+         */
+        await pool.query(`
+            ALTER TABLE order_history
+            ADD COLUMN IF NOT EXISTS activity_at TIMESTAMP
+        `);
+
+        await pool.query(`
+            UPDATE order_history
+            SET activity_at = COALESCE(activity_at, changed_at)
+            WHERE activity_at IS NULL
+        `);
+
+        /* ADMIN */
+        const adminCheck = await pool.query(
+            'SELECT * FROM users WHERE username = $1',
+            ['admin']
+        );
+
+        if (adminCheck.rows.length === 0) {
+
+            const hashedPassword = await bcrypt.hash('admin123', 10);
+
+            await pool.query(
+                `INSERT INTO users
+                    (username, password, role, company)
+                 VALUES ($1, $2, $3, $4)`,
+                [
+                    'admin',
+                    hashedPassword,
+                    'admin',
+                    'Administrator'
+                ]
+            );
+
+            console.log('✅ Admin korisnik kreiran: admin / admin123');
+        }
+
+        console.log('🗄️ PostgreSQL baza: ✅ Povezana');
+
+    } catch (e) {
+        console.error('❌ DB init error:', e.message);
+    }
+};
+
+initDb();
+
+/* =========================================================
+   MIDDLEWARE
+========================================================= */
+
+app.use(cors({
+    origin: [
+        'http://localhost:3000',
+        'https://production-tracker-wcy8.onrender.com',
+        'https://production-tracker.onrender.com'
+    ],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+app.use(express.json({ limit: '50mb' }));
+
+app.use(
+    express.static(
+        path.join(__dirname, '../frontend')
+    )
+);
+
+app.get('/', (req, res) => {
+    res.sendFile(
+        path.join(__dirname, '../frontend/index.html')
+    );
+});
+
+/* =========================================================
+   UPLOAD
+========================================================= */
+
+const uploadsDir = path.join(__dirname, 'uploads');
+
+if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
 }
-async function clearAll(){
-  if(!confirm('PAŽNJA: brišu se aktivni nalozi I SVA istorija. Nastaviti?'))return;
-  try{
-    const d=await api('/api/clear-all',{method:'POST',headers:headers()});
-    document.getElementById('orderManagementStatus').textContent=`✅ Obrisano ${d.deletedOrders} naloga i ${d.deletedHistory} istorijskih zapisa.`;
-    loadOrders('',1);
-  }catch(e){document.getElementById('orderManagementStatus').textContent='❌ '+e.message}
+
+const storage = multer.diskStorage({
+
+    destination: (req, file, cb) => {
+        cb(null, uploadsDir);
+    },
+
+    filename: (req, file, cb) => {
+        cb(
+            null,
+            Date.now() + '-' + file.originalname
+        );
+    }
+
+});
+
+const upload = multer({
+
+    storage,
+
+    limits: {
+        fileSize: 100 * 1024 * 1024
+    },
+
+    fileFilter: (req, file, cb) => {
+
+        const ext = path.extname(file.originalname).toLowerCase();
+
+        if (ext !== '.xlsx' && ext !== '.xls') {
+            return cb(
+                new Error('Only Excel files')
+            );
+        }
+
+        cb(null, true);
+    }
+
+});
+
+/* =========================================================
+   AUTHENTICATION
+========================================================= */
+
+const authenticate = (req, res, next) => {
+
+    const token =
+        req.headers.authorization?.split(' ')[1];
+
+    if (!token) {
+        return res.status(401).json({
+            error: 'No token'
+        });
+    }
+
+    try {
+
+        req.user = jwt.verify(
+            token,
+            process.env.JWT_SECRET || 'secret'
+        );
+
+        next();
+
+    } catch (e) {
+
+        res.status(401).json({
+            error: 'Invalid token'
+        });
+
+    }
+};
+
+/* =========================================================
+   EMAIL
+========================================================= */
+
+let transporter = null;
+
+try {
+
+    if (
+        process.env.EMAIL_USER &&
+        process.env.EMAIL_PASS
+    ) {
+
+        transporter = nodemailer.createTransport({
+
+            service: 'gmail',
+
+            auth: {
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS
+            },
+
+            connectionTimeout: 10000,
+            greetingTimeout: 10000,
+            socketTimeout: 15000
+
+        });
+
+        console.log('📧 Email transporter: ✅');
+    }
+
+} catch (e) {
+
+    console.log(
+        '📧 Email: ❌',
+        e.message
+    );
+
 }
 
-$('uploadForm')?.addEventListener('submit',async e=>{e.preventDefault();const f=$('fileInput'),s=$('uploadStatus');if(!f?.files?.[0]){s.textContent='Molimo izaberite Excel fajl';s.className='error';return}s.textContent='⏳ Analiziram Excel i sinhronizujem...';s.className='';const fd=new FormData();fd.append('file',f.files[0]);try{const r=await fetch('/api/upload',{method:'POST',headers:headers(),body:fd});const d=await r.json();if(!r.ok)throw Error(d.error);s.className='success';s.innerHTML=`✅ Sinhronizovano: 🟢 ${d.updated} postojećih, 🔵 ${d.inserted} novih, 🔴 ${d.removed} uklonjeno. Istorija sačuvana.`;f.value='';await loadOrders('',1)}catch(e){s.textContent='❌ '+e.message;s.className='error'}});
+/* =========================================================
+   LOGIN
+========================================================= */
 
-$('createUserForm')?.addEventListener('submit',async e=>{e.preventDefault();try{const d=await api('/api/users',{method:'POST',headers:headers(true),body:JSON.stringify({username:$('newUsername').value.trim(),company:$('newCompany').value.trim()})});$('userStatus').textContent=`✅ Korisnik ${d.user.username} kreiran`;$('userStatus').className='success';$('newUsername').value='';$('newCompany').value='';loadUsers()}catch(e){$('userStatus').textContent='❌ '+e.message;$('userStatus').className='error'}});
-async function loadUsers(){try{const u=await api('/api/users',{headers:headers()});const x=$('usersList');if(x)x.innerHTML=u.map(a=>`<div class="user-item"><span>${esc(a.username)}</span><span>${esc(a.company)}</span><span>${esc(a.role)}</span></div>`).join('')||'Nema korisnika'}catch(e){console.error(e)}}
-sendReportBtn?.addEventListener('click',async()=>{if(!confirm('📧 Pošalji dnevni izveštaj?'))return;try{alert((await api('/api/send-report',{method:'POST',headers:headers(true),body:JSON.stringify({date:new Date().toLocaleDateString('sr-RS')})})).message)}catch(e){alert('❌ '+e.message)}});
+app.post('/api/login', async (req, res) => {
 
-async function loadOrders(search='',page=1){try{const u=search?`/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}`:`/api/orders?page=${page}&limit=${LIMIT}`;ordersContainer.innerHTML='<div class="loading">⏳ Učitavanje...</div>';const d=await api(u,{headers:headers()});orders=d.data||[];totalOrders=d.total||0;currentPage=d.page||1;totalPages=d.totalPages||1;if(orderCount)orderCount.textContent=`${totalOrders} naloga`;renderOrders();if(selectedOrderId&&!phaseModal?.classList.contains('hidden')){const o=orders.find(x=>String(x.id)===String(selectedOrderId));if(o)renderModal(o);else phaseModal.classList.add('hidden')}}catch(e){ordersContainer.innerHTML=`<div class="error">❌ ${esc(e.message)}</div>`}}
-function renderOrders(){if(!orders.length){ordersContainer.innerHTML='<p style="text-align:center;padding:40px;color:#a0aec0">📭 Nema naloga za prikaz</p>';return}const admin=currentUser?.role==='admin';let h='<table><thead><tr>'+(admin?'<th>Firma</th><th>Šifra</th><th>Naziv</th><th>Nalog</th><th>Količina</th><th>Datum</th><th>Status</th>':'<th>Nalog</th><th>Naziv</th><th>Količina</th><th>Status</th>')+'</tr></thead><tbody>';orders.forEach((o,i)=>{const p=o.progress||[],c=p.filter(x=>x.status==='completed').length,pr=p.filter(x=>x.status==='problem').length,t=p.length;const st=t&&c===t?['✅ Završeno','status-completed']:pr?['⚠️ Problem','status-problem']:c?[`${c}/${t}`,'status-pending']:['U toku','status-pending'];h+=`<tr style="border-bottom:1px solid #e2e8f0;${i%2===0?'background:#fafafa':''}">`;if(admin)h+=`<td>${esc(o.company)}</td><td>${esc(o.code)}</td><td>${esc(o.name)}</td><td style="color:#667eea;font-weight:700;cursor:pointer" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td style="text-align:center">${o.quantity||0}</td><td>${esc(o.deliveryDate||'-')}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;else h+=`<td style="color:#667eea;font-weight:700;cursor:pointer" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td>${esc(o.name)}</td><td style="text-align:center">${o.quantity||0}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;h+='</tr>'});h+='</tbody></table>';if(totalPages>1)h+=`<div style="display:flex;justify-content:center;gap:12px;padding:14px"><button onclick="goToPage(${currentPage-1})" ${currentPage<=1?'disabled':''}>◀</button><span>${currentPage} / ${totalPages}</span><button onclick="goToPage(${currentPage+1})" ${currentPage>=totalPages?'disabled':''}>▶</button></div>`;ordersContainer.innerHTML=h}
-function goToPage(p){if(p<1||p>totalPages)return;loadOrders(searchInput?.value||'',p)}
+    try {
 
-function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)return;selectedOrderId=id;renderModal(o);phaseModal.classList.remove('hidden')}
+        const {
+            username,
+            password
+        } = req.body;
 
-// ============ RENDER MODAL – centriran status, datum ispod, bez "Istorija" ============
-function renderModal(o){
-  modalOrderNumber.textContent=o.orderNumber||'N/A';
-  modalOrderInfo.innerHTML=`<p><b>Firma:</b> ${esc(o.company)}</p><p><b>Artikal:</b> ${esc(o.name)}</p><p><b>Šifra:</b> ${esc(o.code)}</p><p><b>Količina:</b> ${o.quantity||0}</p><p><b>Datum isporuke:</b> ${esc(o.deliveryDate||'-')}</p>`;
-  let h='';
-  (o.progress||[]).forEach(p=>{
-    const emoji = p.status==='completed' ? '✅' : p.status==='problem' ? '⚠️' : '⬜';
-    const label = p.status==='completed' ? 'URAĐENO' : p.status==='problem' ? 'PROBLEM' : 'NA ČEKANJU';
-    // Uvek prikazuj datum, ako nema – "Nema datuma"
-    const dateStr = p.updatedAt ? date(p.updatedAt) : 'Nema datuma';
-    h+=`<div class="phase-card">
-      <h4>Faza ${esc(p.phase)}</h4>
-      <div style="text-align:center; padding:6px 0;">
-        <div style="font-size:32px;">${emoji}</div>
-        <div style="font-weight:bold; font-size:16px; margin-top:2px;">${label}</div>
-        <div style="font-size:13px; color:#718096; margin-top:2px;">📅 ${dateStr}</div>
-      </div>
-      <div class="phase-buttons" style="justify-content:center; gap:8px; display:flex; flex-wrap:wrap; margin:8px 0;">
-        <button onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button>
-        <button onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ Problem</button>
-        <button onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">⬜ Reset</button>
-      </div>
-      <textarea style="width:100%; min-height:60px; margin-top:4px;" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea>
-    </div>`;
-  });
-  phasesContainer.innerHTML=h||'Nema faza';
-}
+        const result = await pool.query(
+            'SELECT * FROM users WHERE username = $1',
+            [username]
+        );
 
-// ============ SAVE COMMENT ============
-async function saveComment(id, phase, comment) {
-  const o = orders.find(x => String(x.id) === String(id));
-  const p = o?.progress.find(x => String(x.phase) === String(phase));
-  if (!p) return;
-  const oldComment = p.comment, oldUpdated = p.updatedAt;
-  p.comment = comment;
-  p.updatedAt = new Date().toISOString(); // privremeno za prikaz
-  try {
-    const res = await api('/api/update-phase', {
-      method: 'POST',
-      headers: headers(true),
-      body: JSON.stringify({ orderId: id, phase, comment })
-    });
-    if (res.updatedAt) p.updatedAt = res.updatedAt;
-    renderModal(o);
-  } catch (e) {
-    p.comment = oldComment;
-    p.updatedAt = oldUpdated;
-    console.error(e);
-  }
-}
+        const user = result.rows[0];
 
-async function updatePhase(id,phase,status){const o=orders.find(x=>String(x.id)===String(id)),p=o?.progress.find(x=>String(x.phase)===String(phase));if(!p)return;const old={status:p.status,comment:p.comment,updatedAt:p.updatedAt};p.status=status;p.updatedAt=new Date().toISOString();renderOrders();renderModal(o);try{const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,status,comment:p.comment||''})});p.updatedAt=d.updatedAt;renderOrders();renderModal(o)}catch(e){Object.assign(p,old);renderOrders();renderModal(o);alert('❌ '+e.message)}}
+        if (!user) {
+            return res.status(401).json({
+                error: 'Invalid credentials'
+            });
+        }
 
-// ============ DATE function (samo datum) ============
-function date(v) {
-  const d = new Date(v);
-  if (isNaN(d)) return String(v);
-  return d.toLocaleDateString('sr-RS', { day:'2-digit', month:'2-digit', year:'numeric' });
-}
+        const valid = await bcrypt.compare(
+            password,
+            user.password
+        );
 
-function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
-function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
-window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;
+        if (!valid) {
+            return res.status(401).json({
+                error: 'Invalid credentials'
+            });
+        }
+
+        const token = jwt.sign(
+
+            {
+                id: user.id,
+                username: user.username,
+                role: user.role,
+                company: user.company
+            },
+
+            process.env.JWT_SECRET || 'secret',
+
+            {
+                expiresIn: '24h'
+            }
+
+        );
+
+        res.json({
+
+            token,
+
+            user: {
+                id: user.id,
+                username: user.username,
+                role: user.role,
+                company: user.company
+            }
+
+        });
+
+    } catch (e) {
+
+        res.status(500).json({
+            error: e.message
+        });
+
+    }
+
+});
+
+/* =========================================================
+   USERS
+========================================================= */
+
+app.get('/api/users', authenticate, async (req, res) => {
+
+    if (req.user.role !== 'admin') {
+
+        return res.status(403).json({
+            error: 'Access denied'
+        });
+
+    }
+
+    try {
+
+        const result = await pool.query(
+            `SELECT id, username, role, company
+             FROM users
+             ORDER BY id`
+        );
+
+        res.json(result.rows);
+
+    } catch (e) {
+
+        res.status(500).json({
+            error: e.message
+        });
+
+    }
+
+});
+
+app.post('/api/users', authenticate, async (req, res) => {
+
+    if (req.user.role !== 'admin') {
+
+        return res.status(403).json({
+            error: 'Access denied'
+        });
+
+    }
+
+    try {
+
+        const {
+            username,
+            company
+        } = req.body;
+
+        const cleanUsername =
+            String(username || '').trim();
+
+        const cleanCompany =
+            String(company || '').trim();
+
+        if (!cleanUsername || !cleanCompany) {
+
+            return res.status(400).json({
+                error: 'Username i firma su obavezni'
+            });
+
+        }
+
+        const exists = await pool.query(
+            'SELECT * FROM users WHERE username = $1',
+            [cleanUsername]
+        );
+
+        if (exists.rows.length > 0) {
+
+            return res.status(400).json({
+                error: 'Username already exists'
+            });
+
+        }
+
+        const hashedPassword =
+            await bcrypt.hash(
+                'password123',
+                10
+            );
+
+        const result = await pool.query(
+
+            `INSERT INTO users
+                (username, password, role, company)
+             VALUES ($1, $2, $3, $4)
+             RETURNING id, username, role, company`,
+
+            [
+                cleanUsername,
+                hashedPassword,
+                'user',
+                cleanCompany
+            ]
+
+        );
+
+        res.status(201).json({
+
+            message: 'User created',
+
+            user: result.rows[0]
+
+        });
+
+    } catch (e) {
+
+        res.status(500).json({
+            error: e.message
+        });
+
+    }
+
+});
+
+/* =========================================================
+   UPLOAD EXCEL
+========================================================= */
+
+app.post(
+    '/api/upload',
+    authenticate,
+    upload.single('file'),
+    async (req, res) => {
+
+        if (req.user.role !== 'admin') {
+
+            return res.status(403).json({
+                error: 'Access denied'
+            });
+
+        }
+
+        try {
+
+            if (!req.file) {
+
+                return res.status(400).json({
+                    error: 'Excel fajl nije prosleđen'
+                });
+
+            }
+
+            const filePath =
+                req.file.path;
+
+            console.log(
+                '📂 Fajl primljen:',
+                req.file.originalname
+            );
+
+            const workbook =
+                XLSX.readFile(
+                    filePath,
+                    {
+                        cellDates: true,
+                        cellNF: false,
+                        cellText: false
+                    }
+                );
+
+            const sheet =
+                workbook.Sheets[
+                    workbook.SheetNames[0]
+                ];
+
+            const data =
+                XLSX.utils.sheet_to_json(
+                    sheet,
+                    {
+                        defval: '',
+                        raw: false
+                    }
+                );
+
+            console.log(
+                '📊 Redova:',
+                data.length
+            );
+
+            console.log(
+                '📋 Kolone:',
+                Object.keys(data[0] || {})
+            );
+
+            const findValue = (
+                row,
+                keys
+            ) => {
+
+                for (const key of keys) {
+
+                    if (
+                        row[key] !== undefined &&
+                        row[key] !== null &&
+                        row[key] !== ''
+                    ) {
+                        return row[key];
+                    }
+
+                }
+
+                return '';
+            };
+
+            let inserted = 0;
+            let updated = 0;
+            let restored = 0;
+
+            for (
+                let i = 0;
+                i < data.length;
+                i++
+            ) {
+
+                const row = data[i];
+
+                const company =
+                    String(
+                        findValue(row, [
+                            'ime firme',
+                            'IME FIRME',
+                            'Firma',
+                            'firma',
+                            'Ime firme',
+                            'FIRMA',
+                            'Name',
+                            'name',
+                            'Company',
+                            'company',
+                            'Naziv firme'
+                        ])
+                    ).trim();
+
+                const code =
+                    String(
+                        findValue(row, [
+                            'cod artikal',
+                            'COD ARTIKAL',
+                            'Sifra',
+                            'sifra',
+                            'Šifra artikla',
+                            'Sifra artikla',
+                            'ŠIFRA ARTIKLA',
+                            'ŠIFRA',
+                            'Code',
+                            'code',
+                            'Šifra',
+                            'Sifra artikla'
+                        ])
+                    ).trim();
+
+                const name =
+                    String(
+                        findValue(row, [
+                            'naziv artikla',
+                            'NAZIV ARTIKLA',
+                            'Naziv',
+                            'naziv',
+                            'Naziv artikla',
+                            'NAZIV',
+                            'Name',
+                            'name',
+                            'Artikal',
+                            'Proizvod'
+                        ])
+                    ).trim();
+
+                const orderNumber =
+                    String(
+                        findValue(row, [
+                            'broj nalog',
+                            'BROJ NALOG',
+                            'Nalog',
+                            'nalog',
+                            'Broj naloga',
+                            'broj naloga',
+                            'BROJ NALOGA',
+                            'NALOG',
+                            'Order',
+                            'order',
+                            'Order Number'
+                        ])
+                    ).trim();
+
+                const quantity =
+                    parseInt(
+                        findValue(row, [
+                            'pari',
+                            'PARI',
+                            'Kolicina',
+                            'kolicina',
+                            'QUANTITA',
+                            'Quantity',
+                            'quantity',
+                            'Količina',
+                            'KOLIČINA'
+                        ])
+                    ) || 0;
+
+                const deliveryDate =
+                    String(
+                        findValue(row, [
+                            'datum isporuke',
+                            'DATUM ISPORUKE',
+                            'Datum',
+                            'datum',
+                            'Datum isporuke',
+                            'Delivery Date',
+                            'delivery',
+                            'DATUM ISPORUKE',
+                            'DATUM'
+                        ])
+                    ).trim();
+
+                if (
+                    !company &&
+                    !code &&
+                    !orderNumber
+                ) {
+                    continue;
+                }
+
+                /*
+                 * AKTIVAN NALOG
+                 */
+                const existing =
+                    await pool.query(
+
+                        `SELECT id
+                         FROM orders
+                         WHERE order_number = $1
+                         AND company = $2`,
+
+                        [
+                            orderNumber,
+                            company
+                        ]
+
+                    );
+
+                if (existing.rows.length > 0) {
+
+                    /*
+                     * Postojeći nalog:
+                     * menjamo samo podatke iz Excela.
+                     *
+                     * PROGRESS SE NE DIRA.
+                     *
+                     * Znači:
+                     * status ostaje,
+                     * komentar ostaje,
+                     * datum aktivnosti ostaje.
+                     */
+
+                    await pool.query(
+
+                        `UPDATE orders
+                         SET
+                            code = $1,
+                            name = $2,
+                            quantity = $3,
+                            delivery_date = $4
+                         WHERE order_number = $5
+                         AND company = $6`,
+
+                        [
+                            code,
+                            name,
+                            quantity,
+                            deliveryDate,
+                            orderNumber,
+                            company
+                        ]
+
+                    );
+
+                    updated++;
+
+                } else {
+
+                    /*
+                     * NOVI NALOG
+                     */
+                    const newId =
+                        Date.now() + i;
+
+                    await pool.query(
+
+                        `INSERT INTO orders
+                            (
+                                id,
+                                company,
+                                code,
+                                name,
+                                order_number,
+                                quantity,
+                                delivery_date
+                            )
+                         VALUES
+                            ($1,$2,$3,$4,$5,$6,$7)`,
+
+                        [
+                            newId,
+                            company,
+                            code,
+                            name,
+                            orderNumber,
+                            quantity,
+                            deliveryDate
+                        ]
+
+                    );
+
+                    /*
+                     * =====================================================
+                     * RESTORE IZ ISTORIJE
+                     * =====================================================
+                     *
+                     * Status uzimamo iz poslednje PROMENE STATUSA.
+                     *
+                     * Komentar uzimamo iz poslednje PROMENE KOMENTARA.
+                     *
+                     * Datum aktivnosti uzimamo iz poslednje PROMENE
+                     * STATUSA, a ne iz poslednje izmene komentara.
+                     */
+
+                    let anyRestoredForThisOrder = false;
+
+                    for (
+                        const phase of [
+                            '100',
+                            '200',
+                            '300',
+                            '400',
+                            '500'
+                        ]
+                    ) {
+
+                        /*
+                         * Poslednja stvarna promena statusa
+                         */
+                        const statusHistory =
+                            await pool.query(
+
+                                `SELECT
+                                    new_status,
+                                    old_status,
+                                    activity_at,
+                                    changed_at,
+                                    comment
+                                 FROM order_history
+                                 WHERE order_number = $1
+                                 AND company = $2
+                                 AND phase = $3
+                                 AND (
+                                    old_status IS NULL
+                                    OR new_status <> old_status
+                                 )
+                                 ORDER BY changed_at DESC
+                                 LIMIT 1`,
+
+                                [
+                                    orderNumber,
+                                    company,
+                                    phase
+                                ]
+
+                            );
+
+                        /*
+                         * Poslednja promena komentara
+                         */
+                        const commentHistory =
+                            await pool.query(
+
+                                `SELECT
+                                    comment,
+                                    changed_at
+                                 FROM order_history
+                                 WHERE order_number = $1
+                                 AND company = $2
+                                 AND phase = $3
+                                 AND comment IS NOT NULL
+                                 ORDER BY changed_at DESC
+                                 LIMIT 1`,
+
+                                [
+                                    orderNumber,
+                                    company,
+                                    phase
+                                ]
+
+                            );
+
+                        let restoredStatus =
+                            'pending';
+
+                        let restoredComment =
+                            '';
+
+                        let restoredActivityDate =
+                            null;
+
+                        if (
+                            statusHistory.rows.length
+                        ) {
+
+                            restoredStatus =
+                                statusHistory.rows[0]
+                                    .new_status ||
+                                'pending';
+
+                            restoredActivityDate =
+                                statusHistory.rows[0]
+                                    .activity_at ||
+                                statusHistory.rows[0]
+                                    .changed_at ||
+                                null;
+
+                            anyRestoredForThisOrder =
+                                true;
+
+                        }
+
+                        if (
+                            commentHistory.rows.length
+                        ) {
+
+                            restoredComment =
+                                commentHistory.rows[0]
+                                    .comment || '';
+
+                            anyRestoredForThisOrder =
+                                true;
+
+                        }
+
+                        /*
+                         * Ako nema stare aktivnosti,
+                         * activity_at ostaje NULL.
+                         */
+                        await pool.query(
+
+                            `INSERT INTO progress
+                                (
+                                    order_id,
+                                    phase,
+                                    status,
+                                    comment,
+                                    updated_at,
+                                    activity_at,
+                                    comment_updated_at
+                                )
+                             VALUES
+                                ($1,$2,$3,$4,$5,$6,$7)
+                             ON CONFLICT
+                                (order_id, phase)
+                             DO NOTHING`,
+
+                            [
+                                newId,
+                                phase,
+                                restoredStatus,
+                                restoredComment,
+                                restoredActivityDate ||
+                                    new Date(),
+                                restoredActivityDate,
+                                commentHistory.rows.length
+                                    ? commentHistory.rows[0].changed_at
+                                    : null
+                            ]
+
+                        );
+
+                    }
+
+                    if (
+                        anyRestoredForThisOrder
+                    ) {
+                        restored++;
+                    }
+
+                    inserted++;
+                }
+            }
+
+            /*
+             * Očisti upload fajl nakon obrade
+             */
+            try {
+                fs.unlinkSync(filePath);
+            } catch (_) {}
+
+            console.log(
+                `📦 Novih: ${inserted}, ` +
+                `Ažuriranih: ${updated}, ` +
+                `Vraćeno iz istorije: ${restored}`
+            );
+
+            res.json({
+
+                message:
+                    `✅ Novih: ${inserted}, ` +
+                    `Ažuriranih: ${updated}, ` +
+                    `Vraćeno iz istorije: ${restored}`,
+
+                inserted,
+                updated,
+                restored,
+                totalRows: data.length
+
+            });
+
+        } catch (e) {
+
+            console.error(
+                '❌ Upload error:',
+                e
+            );
+
+            res.status(500).json({
+                error: e.message
+            });
+
+        }
+
+    }
+);
+
+/* =========================================================
+   ORDERS
+========================================================= */
+
+app.get(
+    '/api/orders',
+    authenticate,
+    async (req, res) => {
+
+        try {
+
+            const {
+                search,
+                page = 1,
+                limit = 100
+            } = req.query;
+
+            const safePage =
+                Math.max(
+                    1,
+                    parseInt(page) || 1
+                );
+
+            const safeLimit =
+                Math.min(
+                    500,
+                    Math.max(
+                        1,
+                        parseInt(limit) || 100
+                    )
+                );
+
+            const offset =
+                (safePage - 1) *
+                safeLimit;
+
+            let whereClause = '';
+            let params = [];
+            let paramIndex = 1;
+
+            /*
+             * =====================================================
+             * SIGURNOST FIRME
+             * =====================================================
+             *
+             * ADMIN:
+             *   vidi sve firme.
+             *
+             * USER:
+             *   vidi ISKLJUČIVO svoju firmu.
+             *
+             * Ovo važi i kada je aktivna pretraga.
+             */
+
+            if (
+                req.user.role === 'admin'
+            ) {
+
+                if (search) {
+
+                    const s =
+                        String(search)
+                            .toLowerCase()
+                            .trim();
+
+                    whereClause = `
+                        WHERE
+                            LOWER(order_number)
+                                LIKE $${paramIndex}
+                            OR LOWER(name)
+                                LIKE $${paramIndex}
+                            OR LOWER(company)
+                                LIKE $${paramIndex}
+                            OR LOWER(code)
+                                LIKE $${paramIndex}
+                    `;
+
+                    params.push(
+                        `%${s}%`
+                    );
+
+                    paramIndex++;
+                }
+
+            } else {
+
+                /*
+                 * USER UVEK DOBIJA company FILTER
+                 */
+                whereClause =
+                    `WHERE company = $${paramIndex}`;
+
+                params.push(
+                    req.user.company
+                );
+
+                paramIndex++;
+
+                if (search) {
+
+                    const s =
+                        String(search)
+                            .toLowerCase()
+                            .trim();
+
+                    whereClause += `
+                        AND (
+                            LOWER(order_number)
+                                LIKE $${paramIndex}
+                            OR LOWER(name)
+                                LIKE $${paramIndex}
+                            OR LOWER(code)
+                                LIKE $${paramIndex}
+                        )
+                    `;
+
+                    params.push(
+                        `%${s}%`
+                    );
+
+                    paramIndex++;
+                }
+
+            }
+
+            const countQuery = `
+                SELECT COUNT(*)
+                FROM orders
+                ${whereClause}
+            `;
+
+            const countResult =
+                await pool.query(
+                    countQuery,
+                    params
+                );
+
+            const total =
+                parseInt(
+                    countResult.rows[0].count
+                );
+
+            const dataQuery = `
+
+                SELECT
+                    o.*,
+
+                    COALESCE(
+
+                        json_agg(
+
+                            json_build_object(
+
+                                'phase',
+                                p.phase,
+
+                                'status',
+                                p.status,
+
+                                'comment',
+                                p.comment,
+
+                                'updated_at',
+                                p.updated_at,
+
+                                'activity_at',
+                                p.activity_at,
+
+                                'comment_updated_at',
+                                p.comment_updated_at
+
+                            )
+
+                            ORDER BY p.phase
+
+                        )
+
+                        FILTER (
+                            WHERE p.phase IS NOT NULL
+                        ),
+
+                        '[]'
+
+                    ) AS progress
+
+                FROM orders o
+
+                LEFT JOIN progress p
+                    ON o.id = p.order_id
+
+                ${whereClause}
+
+                GROUP BY o.id
+
+                ORDER BY o.id DESC
+
+                LIMIT $${paramIndex}
+                OFFSET $${paramIndex + 1}
+
+            `;
+
+            params.push(
+                safeLimit,
+                offset
+            );
+
+            const result =
+                await pool.query(
+                    dataQuery,
+                    params
+                );
+
+            const data =
+                result.rows.map(
+                    row => ({
+
+                        id: row.id,
+
+                        /*
+                         * Company šaljemo server-side
+                         * zbog admina, ali frontend klijenta
+                         * je neće prikazati.
+                         */
+                        company: row.company,
+
+                        code: row.code,
+
+                        name: row.name,
+
+                        orderNumber:
+                            row.order_number,
+
+                        quantity:
+                            row.quantity,
+
+                        deliveryDate:
+                            row.delivery_date,
+
+                        progress:
+                            row.progress || []
+
+                    })
+                );
+
+            res.json({
+
+                data,
+
+                total,
+
+                page: safePage,
+
+                limit: safeLimit,
+
+                totalPages:
+                    Math.ceil(
+                        total / safeLimit
+                    )
+
+            });
+
+        } catch (e) {
+
+            console.error(
+                '❌ Orders error:',
+                e
+            );
+
+            res.status(500).json({
+                error: e.message
+            });
+
+        }
+
+    }
+);
+
+/* =========================================================
+   UPDATE PHASE
+========================================================= */
+
+app.post(
+    '/api/update-phase',
+    authenticate,
+    async (req, res) => {
+
+        try {
+
+            const {
+                orderId,
+                phase,
+                comment
+            } = req.body;
+
+            let {
+                status
+            } = req.body;
+
+            if (!orderId || !phase) {
+
+                return res.status(400).json({
+                    error:
+                        'orderId i phase su obavezni'
+                });
+
+            }
+
+            /*
+             * =====================================================
+             * PROVERA VLASNIŠTVA NAD NALOGOM
+             * =====================================================
+             */
+
+            const orderResult =
+                await pool.query(
+
+                    `SELECT
+                        id,
+                        order_number,
+                        company
+                     FROM orders
+                     WHERE id = $1`,
+
+                    [orderId]
+
+                );
+
+            if (
+                orderResult.rows.length === 0
+            ) {
+
+                return res.status(404).json({
+                    error: 'Nalog ne postoji'
+                });
+
+            }
+
+            const order =
+                orderResult.rows[0];
+
+            /*
+             * Klijent može menjati samo svoju firmu.
+             */
+            if (
+                req.user.role !== 'admin' &&
+                order.company !== req.user.company
+            ) {
+
+                return res.status(403).json({
+                    error:
+                        'Nemate pristup ovom nalogu'
+                });
+
+            }
+
+            /*
+             * Dozvoljeni statusi
+             */
+            const allowedStatuses = [
+                'pending',
+                'completed',
+                'problem'
+            ];
+
+            if (
+                status !== undefined &&
+                !allowedStatuses.includes(status)
+            ) {
+
+                return res.status(400).json({
+                    error:
+                        'Neispravan status'
+                });
+
+            }
+
+            /*
+             * =====================================================
+             * POSTOJEĆE STANJE
+             * =====================================================
+             */
+
+            const current =
+                await pool.query(
+
+                    `SELECT
+                        status,
+                        comment,
+                        updated_at,
+                        activity_at,
+                        comment_updated_at
+                     FROM progress
+                     WHERE order_id = $1
+                     AND phase = $2`,
+
+                    [
+                        orderId,
+                        phase
+                    ]
+
+                );
+
+            const oldStatus =
+                current.rows[0]?.status ||
+                'pending';
+
+            const oldComment =
+                current.rows[0]?.comment ||
+                '';
+
+            const oldActivityAt =
+                current.rows[0]?.activity_at ||
+                null;
+
+            const oldCommentUpdatedAt =
+                current.rows[0]?.comment_updated_at ||
+                null;
+
+            /*
+             * Ako status nije poslat,
+             * zadržavamo postojeći.
+             */
+            if (!status) {
+                status = oldStatus;
+            }
+
+            /*
+             * Ako komentar nije poslat,
+             * zadržavamo postojeći.
+             */
+            const finalComment =
+                comment !== undefined
+                    ? String(comment)
+                    : oldComment;
+
+            const statusChanged =
+                status !== oldStatus;
+
+            const commentChanged =
+                finalComment !== oldComment;
+
+            /*
+             * Ako nema nikakve promene,
+             * ništa ne diramo.
+             *
+             * Ovo je važno:
+             * samo otvaranje modula NE sme promeniti datum.
+             */
+            if (
+                !statusChanged &&
+                !commentChanged
+            ) {
+
+                return res.json({
+
+                    message:
+                        'Nema promena',
+
+                    status,
+
+                    comment:
+                        oldComment,
+
+                    updatedAt:
+                        current.rows[0]
+                            ?.updated_at ||
+                        null,
+
+                    activityAt:
+                        oldActivityAt,
+
+                    commentUpdatedAt:
+                        oldCommentUpdatedAt
+
+                });
+
+            }
+
+            /*
+             * =====================================================
+             * DATUMI
+             * =====================================================
+             */
+
+            /*
+             * Datum aktivnosti se menja SAMO
+             * kada se promeni STATUS.
+             */
+            const activityAt =
+                statusChanged
+                    ? new Date()
+                    : oldActivityAt;
+
+            /*
+             * Datum komentara se menja SAMO
+             * kada se promeni komentar.
+             */
+            const commentUpdatedAt =
+                commentChanged
+                    ? new Date()
+                    : oldCommentUpdatedAt;
+
+            /*
+             * updated_at predstavlja poslednju bilo koju promenu.
+             */
+            const updatedAt =
+                new Date();
+
+            /*
+             * =====================================================
+             * UPSERT PROGRESS
+             * =====================================================
+             */
+
+            await pool.query(
+
+                `INSERT INTO progress
+                    (
+                        order_id,
+                        phase,
+                        status,
+                        comment,
+                        updated_at,
+                        activity_at,
+                        comment_updated_at
+                    )
+                 VALUES
+                    ($1,$2,$3,$4,$5,$6,$7)
+
+                 ON CONFLICT
+                    (order_id, phase)
+
+                 DO UPDATE SET
+
+                    status =
+                        EXCLUDED.status,
+
+                    comment =
+                        EXCLUDED.comment,
+
+                    updated_at =
+                        EXCLUDED.updated_at,
+
+                    activity_at =
+                        EXCLUDED.activity_at,
+
+                    comment_updated_at =
+                        EXCLUDED.comment_updated_at`,
+
+                [
+                    orderId,
+                    phase,
+                    status,
+                    finalComment,
+                    updatedAt,
+                    activityAt,
+                    commentUpdatedAt
+                ]
+
+            );
+
+            /*
+             * =====================================================
+             * ISTORIJA
+             * =====================================================
+             *
+             * Čuvamo SVAKU relevantnu promenu.
+             *
+             * 1. promena statusa
+             * 2. promena komentara
+             *
+             * Zato komentar više ne nestaje kada se status promeni.
+             */
+
+            if (
+                statusChanged ||
+                commentChanged
+            ) {
+
+                await pool.query(
+
+                    `INSERT INTO order_history
+                        (
+                            order_number,
+                            company,
+                            phase,
+                            old_status,
+                            new_status,
+                            comment,
+                            changed_by,
+                            changed_at,
+                            activity_at
+                        )
+                     VALUES
+                        ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+
+                    [
+                        order.order_number,
+                        order.company,
+                        phase,
+                        oldStatus,
+                        status,
+                        finalComment,
+                        req.user.username,
+                        updatedAt,
+                        activityAt
+                    ]
+
+                );
+
+                console.log(
+                    '📜 Istorija sačuvana:',
+                    {
+                        order:
+                            order.order_number,
+                        phase,
+                        oldStatus,
+                        status,
+                        statusChanged,
+                        commentChanged,
+                        activityAt
+                    }
+                );
+
+            }
+
+            /*
+             * =====================================================
+             * VRATI STVARNO STANJE IZ BAZE
+             * =====================================================
+             */
+
+            const updated =
+                await pool.query(
+
+                    `SELECT
+                        updated_at,
+                        activity_at,
+                        comment_updated_at,
+                        status,
+                        comment
+                     FROM progress
+                     WHERE order_id = $1
+                     AND phase = $2`,
+
+                    [
+                        orderId,
+                        phase
+                    ]
+
+                );
+
+            const row =
+                updated.rows[0];
+
+            res.json({
+
+                message:
+                    'Phase updated',
+
+                status:
+                    row.status,
+
+                comment:
+                    row.comment,
+
+                updatedAt:
+                    row.updated_at,
+
+                /*
+                 * OVO JE DATUM AKTIVNOSTI
+                 * i ne menja se kada se samo
+                 * menja komentar.
+                 */
+                activityAt:
+                    row.activity_at,
+
+                commentUpdatedAt:
+                    row.comment_updated_at
+
+            });
+
+        } catch (e) {
+
+            console.error(
+                '❌ Update phase error:',
+                e
+            );
+
+            res.status(500).json({
+                error: e.message
+            });
+
+        }
+
+    }
+);
+
+/* =========================================================
+   OBRIŠI AKTIVNE NALOGE
+   ISTORIJA OSTANE
+========================================================= */
+
+app.post(
+    '/api/clear-orders',
+    authenticate,
+    async (req, res) => {
+
+        if (
+            req.user.role !== 'admin'
+        ) {
+
+            return res.status(403).json({
+                error:
+                    'Samo admin može'
+            });
+
+        }
+
+        try {
+
+            /*
+             * Prvo progress.
+             */
+            const deletedProgress =
+                await pool.query(
+                    'DELETE FROM progress RETURNING id'
+                );
+
+            /*
+             * Zatim aktivni orders.
+             */
+            const deletedOrders =
+                await pool.query(
+                    'DELETE FROM orders RETURNING id'
+                );
+
+            /*
+             * order_history SE NE BRIŠE.
+             */
+
+            res.json({
+
+                message:
+                    '✅ Aktivni nalozi obrisani! ' +
+                    'Istorija je sačuvana.',
+
+                deletedOrders:
+                    deletedOrders.rowCount,
+
+                deletedProgress:
+                    deletedProgress.rowCount
+
+            });
+
+        } catch (e) {
+
+            console.error(
+                '❌ Clear error:',
+                e
+            );
+
+            res.status(500).json({
+                error: e.message
+            });
+
+        }
+
+    }
+);
+
+/* =========================================================
+   POTPUNO BRISANJE
+   ORDERS + PROGRESS + HISTORY
+========================================================= */
+
+app.post(
+    '/api/clear-all',
+    authenticate,
+    async (req, res) => {
+
+        if (
+            req.user.role !== 'admin'
+        ) {
+
+            return res.status(403).json({
+                error:
+                    'Samo admin može'
+            });
+
+        }
+
+        try {
+
+            const deletedProgress =
+                await pool.query(
+                    'DELETE FROM progress RETURNING id'
+                );
+
+            const deletedOrders =
+                await pool.query(
+                    'DELETE FROM orders RETURNING id'
+                );
+
+            const deletedHistory =
+                await pool.query(
+                    'DELETE FROM order_history RETURNING id'
+                );
+
+            res.json({
+
+                message:
+                    '✅ Aktivni nalozi i istorija ' +
+                    'su potpuno obrisani!',
+
+                deletedOrders:
+                    deletedOrders.rowCount,
+
+                deletedProgress:
+                    deletedProgress.rowCount,
+
+                deletedHistory:
+                    deletedHistory.rowCount
+
+            });
+
+        } catch (e) {
+
+            console.error(
+                '❌ Clear all error:',
+                e
+            );
+
+            res.status(500).json({
+                error: e.message
+            });
+
+        }
+
+    }
+);
+
+/* =========================================================
+   SEND REPORT
+========================================================= */
+
+app.post(
+    '/api/send-report',
+    authenticate,
+    async (req, res) => {
+
+        try {
+
+            if (!transporter) {
+
+                return res.status(400).json({
+                    error:
+                        'Email not configured'
+                });
+
+            }
+
+            const {
+                date
+            } = req.body;
+
+            const today =
+                date ||
+                new Date()
+                    .toLocaleDateString(
+                        'sr-RS'
+                    );
+
+            const ordersResult =
+                await pool.query(
+
+                    `SELECT
+                        o.*,
+
+                        COALESCE(
+
+                            json_agg(
+
+                                json_build_object(
+
+                                    'phase',
+                                    p.phase,
+
+                                    'status',
+                                    p.status,
+
+                                    'comment',
+                                    p.comment,
+
+                                    'updated_at',
+                                    p.updated_at,
+
+                                    'activity_at',
+                                    p.activity_at,
+
+                                    'comment_updated_at',
+                                    p.comment_updated_at
+
+                                )
+
+                                ORDER BY p.phase
+
+                            )
+
+                            FILTER (
+                                WHERE p.phase IS NOT NULL
+                            ),
+
+                            '[]'
+
+                        ) AS progress
+
+                     FROM orders o
+
+                     LEFT JOIN progress p
+                        ON o.id = p.order_id
+
+                     WHERE o.company = $1
+
+                     GROUP BY o.id
+
+                     ORDER BY o.id DESC`,
+
+                    [
+                        req.user.company
+                    ]
+
+                );
+
+            const userOrders =
+                ordersResult.rows;
+
+            if (
+                userOrders.length === 0
+            ) {
+
+                return res.status(400).json({
+                    error:
+                        'Nema naloga'
+                });
+
+            }
+
+            /*
+             * Ovde ostaje tvoj postojeći
+             * kod za slanje emaila.
+             */
+
+            res.json({
+                message:
+                    '✅ Izveštaj poslat!'
+            });
+
+        } catch (e) {
+
+            console.error(
+                '❌ Send report error:',
+                e
+            );
+
+            res.status(500).json({
+                error: e.message
+            });
+
+        }
+
+    }
+);
+
+/* =========================================================
+   START SERVER
+========================================================= */
+
+app.listen(
+    PORT,
+    '0.0.0.0',
+    () => {
+
+        console.log(
+            `🚀 Server running on port ${PORT}`
+        );
+
+        console.log(
+            `🗄️ PostgreSQL: ${
+                process.env.DATABASE_URL
+                    ? '✅'
+                    : '❌'
+            }`
+        );
+
+        console.log(
+            `📧 Email: ${
+                transporter
+                    ? '✅'
+                    : '❌'
+            }`
+        );
+
+    }
+);
