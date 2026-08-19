@@ -52,7 +52,6 @@ const initDb = async () => {
             )
         `);
 
-        // ⭐ PROŠIRENA KOLONA NA VARCHAR(50)
         await pool.query(`
             CREATE TABLE IF NOT EXISTS progress (
                 id SERIAL PRIMARY KEY,
@@ -65,7 +64,6 @@ const initDb = async () => {
             )
         `);
 
-        // ⭐ PROŠIRENA KOLONA I U ISTORIJI
         await pool.query(`
             CREATE TABLE IF NOT EXISTS order_history (
                 id SERIAL PRIMARY KEY,
@@ -80,7 +78,7 @@ const initDb = async () => {
             )
         `);
 
-        // ⭐ Ako je kolona još uvek VARCHAR(10), proširi je (za postojeće baze)
+        // Proširi kolonu ako je još uvek VARCHAR(10)
         await pool.query(`
             DO $$
             BEGIN
@@ -262,7 +260,6 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
             return '';
         };
 
-        // ⭐ NOVE FAZE
         const PHASES = ['Krojenje', 'Serigrafija', 'Vez', 'Šivenje', 'Poslato'];
 
         let inserted = 0;
@@ -768,17 +765,17 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         const workbook = new ExcelJS.Workbook();
         const ws = workbook.addWorksheet('Dnevni izveštaj');
 
-        ws.getColumn(1).width = 15;
-        ws.getColumn(2).width = 25;
-        ws.getColumn(3).width = 12;
-        ws.getColumn(4).width = 12;
-        ws.getColumn(5).width = 15;
-        ws.getColumn(6).width = 12;
-        ws.getColumn(7).width = 12;
-        ws.getColumn(8).width = 12;
-        ws.getColumn(9).width = 12;
-        ws.getColumn(10).width = 12;
-        ws.getColumn(11).width = 30;
+        ws.getColumn(1).width = 15;  // Nalog
+        ws.getColumn(2).width = 25;  // Artikal
+        ws.getColumn(3).width = 12;  // Šifra
+        ws.getColumn(4).width = 12;  // Količina
+        ws.getColumn(5).width = 15;  // Datum isporuke
+        ws.getColumn(6).width = 18;  // Krojenje
+        ws.getColumn(7).width = 18;  // Serigrafija
+        ws.getColumn(8).width = 18;  // Vez
+        ws.getColumn(9).width = 18;  // Šivenje
+        ws.getColumn(10).width = 18; // Poslato
+        ws.getColumn(11).width = 30; // Komentar
 
         ws.mergeCells('A1:K1');
         const title = ws.getCell('A1');
@@ -792,7 +789,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         d.font = { size: 12, bold: true };
         d.alignment = { horizontal: 'center' };
 
-        // ⭐ NOVI NAZIVI FAZA U IZVEŠTAJU
         const headers = ['Nalog', 'Artikal', 'Šifra', 'Količina', 'Datum isporuke',
             'Krojenje', 'Serigrafija', 'Vez', 'Šivenje', 'Poslato', 'Komentar'];
         const hr = ws.addRow(headers);
@@ -800,46 +796,62 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         hr.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
         hr.alignment = { horizontal: 'center', vertical: 'middle' };
 
+        // ⭐ Funkcija koja vraća samo ✅ ili ⚠️ + datum
+        const getPhaseCell = (phaseObj) => {
+            if (!phaseObj) return '';
+            const status = phaseObj.status || 'pending';
+            if (status === 'pending') return '';
+            const date = phaseObj.updatedAt ? new Date(phaseObj.updatedAt).toLocaleDateString('sr-RS', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric'
+            }) : '';
+            if (status === 'completed') return `✅ ${date}`;
+            if (status === 'problem') return `⚠️ ${date}`;
+            return '';
+        };
+
         activeOrders.forEach(order => {
-            const phases = order.progress || [];
-            const map = {};
-            const comments = [];
-            phases.forEach(p => {
-                map[p.phase] = p.status;
-                if (p.comment && p.comment.trim() !== '') {
-                    comments.push(`Faza ${p.phase}: ${p.comment}`);
-                }
+            const phasesMap = {};
+            (order.progress || []).forEach(p => {
+                phasesMap[p.phase] = p;
             });
-            const getStatus = (p) => {
-                const s = map[p] || 'pending';
-                if (s === 'completed') return 'ZAVRŠENO';
-                if (s === 'problem') return 'PROBLEM';
-                return 'NA ČEKANJU';
-            };
+
             const row = ws.addRow([
                 order.order_number || '',
                 order.name || '',
                 order.code || '',
                 order.quantity || 0,
                 order.delivery_date || '',
-                getStatus('Krojenje'),
-                getStatus('Serigrafija'),
-                getStatus('Vez'),
-                getStatus('Šivenje'),
-                getStatus('Poslato'),
-                comments.join('; ')
+                getPhaseCell(phasesMap['Krojenje']),
+                getPhaseCell(phasesMap['Serigrafija']),
+                getPhaseCell(phasesMap['Vez']),
+                getPhaseCell(phasesMap['Šivenje']),
+                getPhaseCell(phasesMap['Poslato']),
+                (order.progress || [])
+                    .filter(p => p.comment && p.comment.trim() !== '')
+                    .map(p => `Faza ${p.phase}: ${p.comment}`)
+                    .join('; ')
             ]);
-            [6, 7, 8, 9, 10].forEach(col => {
-                const cell = row.getCell(col);
-                const val = cell.value;
-                if (val === 'ZAVRŠENO') {
-                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF92D050' } };
-                } else if (val === 'PROBLEM') {
-                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } };
-                    cell.font = { color: { argb: 'FFFFFFFF' } };
-                } else {
-                    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9D9D9' } };
+
+            // Bojenje ćelija na osnovu statusa
+            const phaseCols = [6, 7, 8, 9, 10];
+            const phaseNames = ['Krojenje', 'Serigrafija', 'Vez', 'Šivenje', 'Poslato'];
+            phaseCols.forEach((colIdx, idx) => {
+                const cell = row.getCell(colIdx);
+                const phaseName = phaseNames[idx];
+                const phaseData = phasesMap[phaseName];
+                if (phaseData) {
+                    const status = phaseData.status || 'pending';
+                    if (status === 'completed') {
+                        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF92D050' } };
+                        cell.font = { bold: true, color: { argb: 'FF1A6B3C' } };
+                    } else if (status === 'problem') {
+                        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFF0000' } };
+                        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+                    }
                 }
+                cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
             });
         });
 
