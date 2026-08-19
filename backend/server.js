@@ -789,6 +789,7 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         d.font = { size: 12, bold: true };
         d.alignment = { horizontal: 'center' };
 
+        // ⭐ Zaglavlje: samo nazivi faza (bez "Faza")
         const headers = ['Nalog', 'Artikal', 'Šifra', 'Količina', 'Datum isporuke',
             'Krojenje', 'Serigrafija', 'Vez', 'Šivenje', 'Poslato', 'Komentar'];
         const hr = ws.addRow(headers);
@@ -796,7 +797,7 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         hr.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
         hr.alignment = { horizontal: 'center', vertical: 'middle' };
 
-        // ⭐ Funkcija koja vraća samo ✅ ili ⚠️ + datum
+        // ⭐ Funkcija za formatiranje ćelije faze (samo ✅/⚠️ + datum)
         const getPhaseCell = (phaseObj) => {
             if (!phaseObj) return '';
             const status = phaseObj.status || 'pending';
@@ -817,6 +818,13 @@ app.post('/api/send-report', authenticate, async (req, res) => {
                 phasesMap[p.phase] = p;
             });
 
+            // ⭐ Komentar: skupljamo sve komentare bez prefiksa "Faza X:"
+            // samo čist tekst komentara razdvojen sa '; '
+            const allComments = (order.progress || [])
+                .filter(p => p.comment && p.comment.trim() !== '')
+                .map(p => p.comment.trim())
+                .join('; ');
+
             const row = ws.addRow([
                 order.order_number || '',
                 order.name || '',
@@ -828,10 +836,7 @@ app.post('/api/send-report', authenticate, async (req, res) => {
                 getPhaseCell(phasesMap['Vez']),
                 getPhaseCell(phasesMap['Šivenje']),
                 getPhaseCell(phasesMap['Poslato']),
-                (order.progress || [])
-                    .filter(p => p.comment && p.comment.trim() !== '')
-                    .map(p => `Faza ${p.phase}: ${p.comment}`)
-                    .join('; ')
+                allComments
             ]);
 
             // Bojenje ćelija na osnovu statusa
