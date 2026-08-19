@@ -574,19 +574,19 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             return res.end();
         }
 
-        // 2) Trenutni (najnoviji) status svake faze za te naloge - iz cele istorije, ne samo iz perioda
+        // 2) Trenutni (najnoviji) status I komentar svake faze - iz cele istorije
         const phaseStatusResult = await pool.query(
-            `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, new_status
+            `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, new_status, comment
              FROM order_history
              ORDER BY order_number, company, phase, changed_at DESC`
         );
 
-        const phaseMap = new Map(); // key: order_number||company -> { phase: status }
+        const phaseMap = new Map(); // key: order_number||company -> { phase: {status, comment} }
         const phaseSet = new Set();
         phaseStatusResult.rows.forEach(r => {
             const key = `${r.order_number}||${r.company}`;
             if (!phaseMap.has(key)) phaseMap.set(key, {});
-            phaseMap.get(key)[r.phase] = r.new_status;
+            phaseMap.get(key)[r.phase] = { status: r.new_status, comment: r.comment || '' };
             phaseSet.add(r.phase);
         });
         const phases = [...phaseSet].sort((a, b) => parseInt(a) - parseInt(b));
@@ -594,7 +594,19 @@ app.get('/api/history/export', authenticate, async (req, res) => {
 
         const statusFill = s => s === 'completed' ? 'FFC6F6D5' : s === 'problem' ? 'FFFED7D7' : null;
         const statusFont = s => s === 'completed' ? 'FF276749' : s === 'problem' ? 'FF9B2C2C' : 'FF4A5568';
-        const statusLabel = s => s === 'completed' ? '✅ Urađeno' : s === 'problem' ? '⚠️ Problem' : '';
+        const statusIcon = s => s === 'completed' ? '✅ Urađeno' : s === 'problem' ? '⚠️ Problem' : '';
+        // Sadržaj ćelije za fazu: ako nema NIKAKVE aktivnosti (ni status ni komentar) -> prazno.
+        // Ako ima status -> ikonica + (opciono) komentar u istoj ćeliji, tako da se jasno zna kojoj fazi pripada.
+        // Ako ima samo komentar bez promene statusa -> prikaži samo komentar (💬).
+        const phaseCellText = (entry) => {
+            if (!entry) return '';
+            const label = statusIcon(entry.status);
+            const comment = (entry.comment || '').trim();
+            if (label && comment) return `${label}\n${comment}`;
+            if (label) return label;
+            if (comment) return `💬 ${comment}`;
+            return '';
+        };
 
         const workbook = new ExcelJS.Workbook();
         workbook.creator = 'Production Tracker';
@@ -609,9 +621,8 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             { key: 'company', width: 22 },
             { key: 'order_number', width: 15 }
         ];
-        const phaseCols = finalPhases.map(p => ({ key: 'phase_' + p, width: 14 }));
+        const phaseCols = finalPhases.map(p => ({ key: 'phase_' + p, width: 26 }));
         const tailCols = [
-            { key: 'comment', width: 40 },
             { key: 'changed_by', width: 16 }
         ];
         sheet.columns = [...fixedCols, ...phaseCols, ...tailCols];
@@ -633,7 +644,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         headerRow.values = [
             'Datum i vreme', 'Firma', 'Nalog',
             ...finalPhases.map(p => `Faza ${p}`),
-            'Komentar', 'Izmenio'
+            'Izmenio'
         ];
         headerRow.eachCell(cell => {
             cell.font = { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
@@ -646,15 +657,14 @@ app.get('/api/history/export', authenticate, async (req, res) => {
 
         lastActivityResult.rows.forEach((r, i) => {
             const key = `${r.order_number}||${r.company}`;
-            const phaseStatuses = phaseMap.get(key) || {};
+            const phaseData = phaseMap.get(key) || {};
             const rowData = {
                 changed_at: new Date(r.changed_at).toLocaleString('sr-RS'),
                 company: r.company,
                 order_number: r.order_number,
-                comment: r.comment || '',
                 changed_by: r.changed_by || ''
             };
-            finalPhases.forEach(p => { rowData['phase_' + p] = statusLabel(phaseStatuses[p]); });
+            finalPhases.forEach(p => { rowData['phase_' + p] = phaseCellText(phaseData[p]); });
 
             const row = sheet.addRow(rowData);
             row.font = { name: 'Arial', size: 10 };
@@ -664,13 +674,17 @@ app.get('/api/history/export', authenticate, async (req, res) => {
                 if (i % 2 === 1) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFAFA' } };
             });
 
+            let hasComment = false;
             finalPhases.forEach((p, idx) => {
+                const entry = phaseData[p];
                 const cell = row.getCell(4 + idx);
-                const fill = statusFill(phaseStatuses[p]);
-                cell.alignment = { vertical: 'middle', horizontal: 'center' };
-                cell.font = { name: 'Arial', size: 10, bold: true, color: { argb: statusFont(phaseStatuses[p]) } };
+                const fill = entry ? statusFill(entry.status) : null;
+                cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+                cell.font = { name: 'Arial', size: 10, bold: !!(entry && entry.status && entry.status !== 'pending'), color: { argb: entry ? statusFont(entry.status) : 'FF4A5568' } };
                 if (fill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
+                if (entry && (entry.comment || '').trim()) hasComment = true;
             });
+            row.height = hasComment ? 34 : 18;
         });
 
         const fileName = `istorija_${company || 'sve-firme'}_${dateFrom || 'x'}_${dateTo || 'x'}.xlsx`;
