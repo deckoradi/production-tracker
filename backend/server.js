@@ -56,7 +56,7 @@ const initDb = async () => {
             CREATE TABLE IF NOT EXISTS progress (
                 id SERIAL PRIMARY KEY,
                 order_id BIGINT NOT NULL,
-                phase VARCHAR(20) NOT NULL,
+                phase VARCHAR(10) NOT NULL,
                 status VARCHAR(20) DEFAULT 'pending',
                 comment TEXT DEFAULT '',
                 updated_at TIMESTAMP DEFAULT NOW(),
@@ -69,7 +69,7 @@ const initDb = async () => {
                 id SERIAL PRIMARY KEY,
                 order_number VARCHAR(100) NOT NULL,
                 company VARCHAR(255) NOT NULL,
-                phase VARCHAR(20) NOT NULL,
+                phase VARCHAR(10) NOT NULL,
                 old_status VARCHAR(20),
                 new_status VARCHAR(20) NOT NULL,
                 comment TEXT,
@@ -293,7 +293,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                 // Vrati poslednje poznato stanje iz istorije (uključujući i datum)
                 let anyRestoredForThisOrder = false;
 
-                for (const phase of ['KROJENJE', 'SERIGRAFIJA', 'VEZ', 'SIVENJE', 'POSLATO']) {
+                for (const phase of ['100', '200', '300', '400', '500']) {
                     const histResult = await pool.query(
                         `SELECT new_status, comment, changed_at FROM order_history
                          WHERE order_number = $1 AND company = $2 AND phase = $3
@@ -590,7 +590,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             phaseSet.add(r.phase);
         });
         const phases = [...phaseSet].sort((a, b) => parseInt(a) - parseInt(b));
-        const finalPhases = phases.length ? phases : ['KROJENJE', 'SERIGRAFIJA', 'VEZ', 'SIVENJE', 'POSLATO'];
+        const finalPhases = phases.length ? phases : ['100', '200', '300', '400', '500'];
 
         const statusFill = s => s === 'completed' ? 'FFC6F6D5' : s === 'problem' ? 'FFFED7D7' : null;
         const statusFont = s => s === 'completed' ? 'FF276749' : s === 'problem' ? 'FF9B2C2C' : 'FF4A5568';
