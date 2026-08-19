@@ -82,6 +82,10 @@ function goToPage(p){if(p<1||p>totalPages)return;loadOrders(searchInput?.value||
 
 function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)return;selectedOrderId=id;renderModal(o);phaseModal.classList.remove('hidden')}
 
+// ============ NAZIVI FAZA ============
+const PHASE_LABELS={'100':'Krojenje','200':'Serigrafija','300':'Vez','400':'Šivenje','500':'Poslato'};
+function phaseLabel(p){return PHASE_LABELS[String(p)]||`Faza ${p}`}
+
 // ============ RENDER MODAL – centriran status, datum ispod, bez "Istorija" ============
 function renderModal(o){
   modalOrderNumber.textContent=o.orderNumber||'N/A';
@@ -97,7 +101,7 @@ function renderModal(o){
     const hasActivity = (p.status && p.status!=='pending') || (p.comment && p.comment.trim()!=='');
     const dateStr = hasActivity && p.updatedAt ? date(p.updatedAt) : null;
     h+=`<div class="phase-card">
-      <h4>Faza ${esc(p.phase)}</h4>
+      <h4>${esc(phaseLabel(p.phase))}</h4>
       <div style="text-align:center; padding:6px 0;">
         <div style="font-size:32px;">${emoji}</div>
         <div style="font-weight:bold; font-size:16px; margin-top:2px;">${label}</div>

@@ -523,6 +523,10 @@ app.post('/api/clear-all', authenticate, async (req, res) => {
     }
 });
 
+// ============ NAZIVI FAZA ============
+const PHASE_LABELS = { '100': 'Krojenje', '200': 'Serigrafija', '300': 'Vez', '400': 'Šivenje', '500': 'Poslato' };
+function phaseLabel(p) { return PHASE_LABELS[String(p)] || `Faza ${p}`; }
+
 // ============ EXPORT ISTORIJE U EXCEL ============
 app.get('/api/history/export', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
@@ -574,19 +578,19 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             return res.end();
         }
 
-        // 2) Trenutni (najnoviji) status I komentar svake faze - iz cele istorije
+        // 2) Trenutni (najnoviji) status, komentar I datum svake faze - iz cele istorije
         const phaseStatusResult = await pool.query(
-            `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, new_status, comment
+            `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, new_status, comment, changed_at
              FROM order_history
              ORDER BY order_number, company, phase, changed_at DESC`
         );
 
-        const phaseMap = new Map(); // key: order_number||company -> { phase: {status, comment} }
+        const phaseMap = new Map(); // key: order_number||company -> { phase: {status, comment, changedAt} }
         const phaseSet = new Set();
         phaseStatusResult.rows.forEach(r => {
             const key = `${r.order_number}||${r.company}`;
             if (!phaseMap.has(key)) phaseMap.set(key, {});
-            phaseMap.get(key)[r.phase] = { status: r.new_status, comment: r.comment || '' };
+            phaseMap.get(key)[r.phase] = { status: r.new_status, comment: r.comment || '', changedAt: r.changed_at };
             phaseSet.add(r.phase);
         });
         const phases = [...phaseSet].sort((a, b) => parseInt(a) - parseInt(b));
@@ -594,18 +598,19 @@ app.get('/api/history/export', authenticate, async (req, res) => {
 
         const statusFill = s => s === 'completed' ? 'FFC6F6D5' : s === 'problem' ? 'FFFED7D7' : null;
         const statusFont = s => s === 'completed' ? 'FF276749' : s === 'problem' ? 'FF9B2C2C' : 'FF4A5568';
-        const statusIcon = s => s === 'completed' ? '✅ Urađeno' : s === 'problem' ? '⚠️ Problem' : '';
+        const statusIcon = s => s === 'completed' ? '✅' : s === 'problem' ? '⚠️' : '';
         // Sadržaj ćelije za fazu: ako nema NIKAKVE aktivnosti (ni status ni komentar) -> prazno.
-        // Ako ima status -> ikonica + (opciono) komentar u istoj ćeliji, tako da se jasno zna kojoj fazi pripada.
-        // Ako ima samo komentar bez promene statusa -> prikaži samo komentar (💬).
+        // Ako ima aktivnosti -> znak (bez reči "Urađeno"/"Problem") + datum, i komentar ako postoji.
         const phaseCellText = (entry) => {
             if (!entry) return '';
-            const label = statusIcon(entry.status);
+            const icon = statusIcon(entry.status);
             const comment = (entry.comment || '').trim();
-            if (label && comment) return `${label}\n${comment}`;
-            if (label) return label;
-            if (comment) return `💬 ${comment}`;
-            return '';
+            const dateStr = entry.changedAt ? new Date(entry.changedAt).toLocaleDateString('sr-RS') : '';
+            const parts = [];
+            if (icon) parts.push(dateStr ? `${icon}  ${dateStr}` : icon);
+            else if (dateStr && comment) parts.push(`💬 ${dateStr}`);
+            if (comment) parts.push(comment);
+            return parts.join('\n');
         };
 
         const workbook = new ExcelJS.Workbook();
@@ -643,7 +648,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         const headerRow = sheet.getRow(3);
         headerRow.values = [
             'Datum i vreme', 'Firma', 'Nalog',
-            ...finalPhases.map(p => `Faza ${p}`),
+            ...finalPhases.map(p => phaseLabel(p)),
             'Izmenio'
         ];
         headerRow.eachCell(cell => {
