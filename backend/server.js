@@ -394,13 +394,13 @@ app.get('/api/orders', authenticate, async (req, res) => {
             SELECT o.*, 
                    COALESCE(json_agg(json_build_object(
                         'phase', p.phase, 'status', p.status, 'comment', p.comment, 'updatedAt', p.updated_at,
-                        'lastProblemAt', lastprob.changed_at
+                        'lastProblemAt', lastprob.changed_at, 'lastProblemComment', lastprob.comment
                    ) ORDER BY p.phase) 
                    FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
             FROM orders o
             LEFT JOIN progress p ON o.id = p.order_id
             LEFT JOIN LATERAL (
-                SELECT changed_at FROM order_history oh
+                SELECT changed_at, comment FROM order_history oh
                 WHERE oh.order_number = o.order_number AND oh.company = o.company
                   AND oh.phase = p.phase AND oh.new_status = 'problem'
                 ORDER BY oh.changed_at DESC LIMIT 1
@@ -576,11 +576,14 @@ function phaseLabel(p) { return PHASE_LABELS[String(p)] || `Faza ${p}`; }
 
 // ============ EXPORT ISTORIJE U EXCEL ============
 app.get('/api/history/export', authenticate, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Samo admin može' });
-    }
     try {
-        const { company, dateFrom, dateTo } = req.query;
+        let { company, dateFrom, dateTo } = req.query;
+        let changedBy = null;
+        // Klijent (ne-admin) vidi ISKLJUČIVO svoju firmu i ISKLJUČIVO ono što je LIČNO radio
+        if (req.user.role !== 'admin') {
+            company = req.user.company;
+            changedBy = req.user.username;
+        }
         let where = [];
         let params = [];
         let idx = 1;
@@ -588,6 +591,11 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         if (company) {
             where.push(`company = $${idx}`);
             params.push(company);
+            idx++;
+        }
+        if (changedBy) {
+            where.push(`changed_by = $${idx}`);
+            params.push(changedBy);
             idx++;
         }
         if (dateFrom) {
@@ -632,16 +640,16 @@ app.get('/api/history/export', authenticate, async (req, res) => {
              ORDER BY order_number, company, phase, changed_at DESC`
         );
 
-        // 3) Poslednji put kad je faza bila "problem" - da ostane trajno vidljivo i posle prelaska na Urađeno
+        // 3) Poslednji put kad je faza bila "problem" (sa tekstom koji ga je pratio) - trajno vidljivo i posle prelaska na Urađeno
         const lastProblemResult = await pool.query(
-            `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, changed_at
+            `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, comment, changed_at
              FROM order_history
              WHERE new_status = 'problem'
              ORDER BY order_number, company, phase, changed_at DESC`
         );
-        const problemMap = new Map(); // key: order_number||company||phase -> changed_at
+        const problemMap = new Map(); // key: order_number||company||phase -> {comment, changedAt}
         lastProblemResult.rows.forEach(r => {
-            problemMap.set(`${r.order_number}||${r.company}||${r.phase}`, r.changed_at);
+            problemMap.set(`${r.order_number}||${r.company}||${r.phase}`, { comment: r.comment || '', changedAt: r.changed_at });
         });
 
         const phaseMap = new Map();    // key: order_number||company -> { phase: {status, comment, changedAt} }
@@ -662,27 +670,33 @@ app.get('/api/history/export', authenticate, async (req, res) => {
 
         const statusFill = s => s === 'completed' ? 'FFC6F6D5' : s === 'problem' ? 'FFFED7D7' : null;
         const statusFont = s => s === 'completed' ? 'FF276749' : s === 'problem' ? 'FF9B2C2C' : 'FF4A5568';
-        const statusIcon = s => s === 'completed' ? '✅' : s === 'problem' ? '⚠️' : '';
-        // Sadržaj ćelije za fazu: ako nema NIKAKVE aktivnosti (ni status ni komentar) -> prazno.
-        // Ako ima aktivnosti -> znak (bez reči "Urađeno"/"Problem") + datum, i komentar ako postoji.
-        // Ako je faza NEKAD bila "problem" a sad je npr. urađena -> ostaje trajno vidljiv i taj stari datum.
+        // Sadržaj ćelije za fazu:
+        // - Urađeno: ✅ + datum (posebna linija)
+        // - Problem (trenutno): ⚠️ + datum + tekst, sve u JEDNOJ liniji
+        // - Ako je NEKAD bilo problema (a sad npr. Urađeno): dodatna trajna linija ⚠️ + datum + tekst
+        // - Bez ikakve aktivnosti -> prazno
         const phaseCellText = (entry, orderNumber, comp, phaseCode) => {
             if (!entry) return '';
-            const icon = statusIcon(entry.status);
             const comment = (entry.comment || '').trim();
             const dateStr = entry.changedAt ? new Date(entry.changedAt).toLocaleDateString('sr-RS') : '';
-            const parts = [];
-            if (icon) parts.push(dateStr ? `${icon}  ${dateStr}` : icon);
-            else if (dateStr && comment) parts.push(`💬 ${dateStr}`);
-            if (comment) parts.push(comment);
+            const lines = [];
+
+            if (entry.status === 'completed') {
+                lines.push(dateStr ? `✅ ${dateStr}` : '✅');
+            } else if (entry.status === 'problem') {
+                lines.push([`⚠️ ${dateStr}`, comment].filter(Boolean).join('  '));
+            } else if (comment) {
+                lines.push([`💬 ${dateStr}`, comment].filter(Boolean).join('  '));
+            }
 
             if (entry.status !== 'problem') {
-                const probDate = problemMap.get(`${orderNumber}||${comp}||${phaseCode}`);
-                if (probDate) {
-                    parts.push(`⚠️ Problem prijavljen ${new Date(probDate).toLocaleDateString('sr-RS')}`);
+                const prob = problemMap.get(`${orderNumber}||${comp}||${phaseCode}`);
+                if (prob) {
+                    const probDateStr = prob.changedAt ? new Date(prob.changedAt).toLocaleDateString('sr-RS') : '';
+                    lines.push([`⚠️ ${probDateStr}`, prob.comment].filter(Boolean).join('  '));
                 }
             }
-            return parts.join('\n');
+            return lines.join('\n');
         };
 
         const workbook = new ExcelJS.Workbook();
@@ -711,7 +725,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         // Naslovni red
         sheet.mergeCells(`A1:${lastColLetter}1`);
         const titleCell = sheet.getCell('A1');
-        titleCell.value = `Istorija aktivnosti — Firma: ${company || 'sve firme'} — Period: ${dateFrom || 'početak'} do ${dateTo || 'danas'} — Generisano: ${new Date().toLocaleString('sr-RS')}`;
+        titleCell.value = `Istorija aktivnosti — Firma: ${company || 'sve firme'}${changedBy ? ` — Korisnik: ${changedBy}` : ''} — Period: ${dateFrom || 'početak'} do ${dateTo || 'danas'} — Generisano: ${new Date().toLocaleString('sr-RS')}`;
         titleCell.font = { name: 'Arial', size: 11, bold: true, italic: true, color: { argb: 'FF4A5568' } };
         titleCell.alignment = { vertical: 'middle' };
         sheet.getRow(1).height = 22;

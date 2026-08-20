@@ -643,15 +643,16 @@ tr:hover td {
 
 .phase-state {
     font-family: var(--font-mono);
-    font-size: 10.5px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 2px 7px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    padding: 2px 8px;
     border-radius: 4px;
     background: var(--paper);
     color: var(--muted);
     border: 1px solid var(--line);
+    white-space: normal;
+    line-height: 1.4;
 }
 
 .phase-row--completed .phase-state {

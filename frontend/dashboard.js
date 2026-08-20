@@ -9,7 +9,9 @@ if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
 const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
 async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error('Sesija je istekla.')}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
 
-document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers()}loadOrders()});
+document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers()}addClientExportControls();loadOrders()});
+let searchDebounce=null;
+searchInput?.addEventListener('input',()=>{clearTimeout(searchDebounce);searchDebounce=setTimeout(()=>loadOrders(searchInput.value,1),300)});
 searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>phaseModal?.classList.add('hidden'));window.addEventListener('click',e=>{if(e.target===phaseModal)phaseModal.classList.add('hidden')});
 
 function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;const p=document.createElement('div');p.id='orderManagementPanel';p.className='admin-section';p.innerHTML=`<h3>🗂️ Upravljanje nalozima</h3><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="deleteActiveOrdersBtn" class="btn-tag btn-tag--problem" style="padding:10px 16px;font-size:13px">🗑️ Obriši aktivne naloge</button><button id="deleteAllHistoryBtn" class="btn-tag btn-tag--reset" style="padding:10px 16px;font-size:13px">🧹 Obriši sve + istoriju</button></div><div id="orderManagementStatus"></div>`;adminPanel.appendChild(p);$('deleteActiveOrdersBtn').onclick=clearActive;$('deleteAllHistoryBtn').onclick=clearAll;
@@ -47,6 +49,45 @@ async function exportHistory(){
     const a=document.createElement('a');
     a.href=url;
     a.download=`istorija_${company||'sve-firme'}_${dateFrom||'x'}_${dateTo||'x'}.xlsx`;
+    document.body.appendChild(a);a.click();a.remove();
+    URL.revokeObjectURL(url);
+    status.textContent='✅ Fajl preuzet';status.className='success';
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
+
+// ============ EXPORT ZA KLIJENTA (iskljucivo njegova firma + njegove licne aktivnosti) ============
+function addClientExportControls(){
+  if(currentUser?.role==='admin')return;
+  if($('clientExportPanel'))return;
+  const div=document.createElement('div');div.id='clientExportPanel';div.className='panel';
+  div.innerHTML=`<div class="panel-header"><h2>📊 Moj izveštaj</h2></div>
+    <div class="panel-body">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="date" id="myDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+        <input type="date" id="myDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+        <button id="myExportBtn" class="btn-success">📥 Preuzmi Excel</button>
+      </div>
+      <div id="myExportStatus" style="margin-top:8px"></div>
+    </div>`;
+  adminPanel?.insertAdjacentElement('afterend',div);
+  $('myExportBtn').onclick=exportMyHistory;
+}
+async function exportMyHistory(){
+  const status=$('myExportStatus');
+  const dateFrom=$('myDateFrom')?.value||'';
+  const dateTo=$('myDateTo')?.value||'';
+  status.textContent='⏳ Generišem Excel...';status.className='';
+  try{
+    const params=new URLSearchParams();
+    if(dateFrom)params.append('dateFrom',dateFrom);
+    if(dateTo)params.append('dateTo',dateTo);
+    const r=await fetch(`/api/history/export?${params.toString()}`,{headers:headers()});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw Error(d.error||`HTTP ${r.status}`)}
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=`moja_istorija_${dateFrom||'x'}_${dateTo||'x'}.xlsx`;
     document.body.appendChild(a);a.click();a.remove();
     URL.revokeObjectURL(url);
     status.textContent='✅ Fajl preuzet';status.className='success';
@@ -133,31 +174,40 @@ function renderModal(o){
   let h='<div class="phase-timeline">';
   phases.forEach(p=>{
     const stateClass = p.status==='completed' ? 'phase-row--completed' : p.status==='problem' ? 'phase-row--problem' : '';
-    const label = p.status==='completed' ? 'URAĐENO' : p.status==='problem' ? 'PROBLEM' : 'NA ČEKANJU';
     const hasActivity = (p.status && p.status!=='pending') || (p.comment && p.comment.trim()!=='');
     const dateStr = hasActivity && p.updatedAt ? date(p.updatedAt) : null;
-    // Trajni datum "Problem prijavljen ..." - ostaje vidljiv i posle prelaska na Urađeno
-    const problemDateStr = p.lastProblemAt && p.status!=='problem' ? date(p.lastProblemAt) : null;
+    const comment = (p.comment||'').trim();
     const lock=phaseLockState(p);
 
-    let actionsHtml='';
-    if(lock.locked && !lock.onlyCompleteAllowed){
-      actionsHtml=`<div class="phase-actions"><span class="phase-state" style="background:var(--paper)">🔒 Zaključano — obratite se administratoru</span></div>`;
-    } else if(lock.locked && lock.onlyCompleteAllowed){
-      actionsHtml=`<div class="phase-actions">
-          <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button>
-        </div>`;
+    // Bedž: samo ikonica + datum (bez reči "Urađeno"/"Problem"). Za Problem: ikonica+datum+tekst u jednoj liniji.
+    let badge='';
+    if(p.status==='completed'){
+      badge=`<span class="phase-state">✅${dateStr?` ${dateStr}`:''}</span>`;
+    } else if(p.status==='problem'){
+      badge=`<span class="phase-state">⚠️${dateStr?` ${dateStr}`:''}${comment?` — ${esc(comment)}`:''}</span>`;
+    }
+    // Trajna istorija "Problem" (ostaje vidljivo i posle prelaska na Urađeno), sa tekstom koji ga je pratio
+    const problemDateStr = p.lastProblemAt && p.status!=='problem' ? date(p.lastProblemAt) : null;
+    const problemComment = (p.lastProblemComment||'').trim();
+    const problemLine = problemDateStr ? `<div class="phase-date" style="margin-top:-4px;margin-bottom:6px">⚠️ ${problemDateStr}${problemComment?` — ${esc(problemComment)}`:''}</div>` : '';
+
+    let bodyHtml='';
+    if(lock.locked){
+      // Zaključano: kompaktan prikaz u jednoj liniji (bedž već sadrži ikonicu+datum+tekst za problem),
+      // za "urađeno" dodajemo tekst posle bedža ako postoji komentar.
+      const lockedExtra = (p.status==='completed' && comment) ? `<div class="phase-date" style="margin-top:2px">${esc(comment)}</div>` : '';
+      bodyHtml=`${lockedExtra}
+        ${lock.onlyCompleteAllowed
+          ? `<div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button></div>`
+          : `<div class="phase-actions"><span class="phase-state" style="background:var(--paper)">🔒 Zaključano — obratite se administratoru</span></div>`}`;
     } else {
-      actionsHtml=`<div class="phase-actions">
+      bodyHtml=`<div class="phase-actions">
           <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button>
           <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ Problem</button>
           ${isAdmin ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">⬜ Reset</button>` : ''}
-        </div>`;
+        </div>
+        <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea>`;
     }
-
-    const noteHtml = lock.locked
-      ? (p.comment ? `<div class="phase-note" style="background:var(--paper);cursor:default">${esc(p.comment)}</div>` : '')
-      : `<textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea>`;
 
     h+=`<div class="phase-row ${stateClass}">
       <div class="phase-spine">
@@ -167,12 +217,10 @@ function renderModal(o){
       <div class="phase-content">
         <div class="phase-head">
           <span class="phase-name">${esc(phaseLabel(p.phase))}</span>
-          <span class="phase-state">${label}</span>
-          ${dateStr ? `<span class="phase-date">📅 ${dateStr}</span>` : ''}
+          ${badge}
         </div>
-        ${problemDateStr ? `<div class="phase-date" style="margin-top:-4px;margin-bottom:6px">⚠️ Problem prijavljen ${problemDateStr}</div>` : ''}
-        ${actionsHtml}
-        ${noteHtml}
+        ${problemLine}
+        ${bodyHtml}
       </div>
     </div>`;
   });
