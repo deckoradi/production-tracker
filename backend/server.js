@@ -579,9 +579,10 @@ app.get('/api/history/export', authenticate, async (req, res) => {
     try {
         let { company, dateFrom, dateTo } = req.query;
         let changedBy = null;
-        // Klijent (ne-admin) vidi ISKLJUČIVO svoju firmu i ISKLJUČIVO ono što je LIČNO radio
+        // Klijent (ne-admin) vidi ISKLJUČIVO ono što je LIČNO radio - bez obzira čiji je nalog bio
+        // (firma se u prikazu sakriva ako mu ne pripada, ali sam red aktivnosti ostaje)
         if (req.user.role !== 'admin') {
-            company = req.user.company;
+            company = null;
             changedBy = req.user.username;
         }
         let where = [];
@@ -751,9 +752,10 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             const key = `${r.order_number}||${r.company}`;
             const phaseData = phaseMap.get(key) || {};
             const napomena = napomenaMap.get(key);
+            const visibleCompany = (req.user.role === 'admin' || r.company === req.user.company) ? r.company : '—';
             const rowData = {
                 changed_at: new Date(r.changed_at).toLocaleString('sr-RS'),
-                company: r.company,
+                company: visibleCompany,
                 order_number: r.order_number,
                 napomena: napomena && napomena.comment ? napomena.comment : '',
                 changed_by: r.changed_by || ''

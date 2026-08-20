@@ -1,864 +1,288 @@
-/* ============================================================
-   PRODUCTION TRACKER — Design system
-   Tema: tekstilna radionica (kroj, konac, štampa, etiketa)
-   ============================================================ */
+// PRODUCTION TRACKER - orders.js
+let currentUser=null,orders=[],selectedOrderId=null,currentPage=1,totalPages=1,totalOrders=0;
+const LIMIT=100;
+const $=id=>document.getElementById(id);
+const token=localStorage.getItem('token'),userStr=localStorage.getItem('user');
+if(!token||!userStr){location.href='index.html'}else{try{currentUser=JSON.parse(userStr)}catch(e){localStorage.clear();location.href='index.html'}}
+const companyDisplay=$('companyDisplay'),adminPanel=$('adminPanel'),ordersContainer=$('ordersContainer'),searchInput=$('searchInput'),searchBtn=$('searchBtn'),clearSearchBtn=$('clearSearchBtn'),logoutBtn=$('logoutBtn'),sendReportBtn=$('sendReportBtn'),phaseModal=$('phaseModal'),modalOrderNumber=$('modalOrderNumber'),modalOrderInfo=$('modalOrderInfo'),phasesContainer=$('phasesContainer'),closeModal=document.querySelector('.close-modal'),orderCount=$('orderCount');
+if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
+const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
+async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error('Sesija je istekla.')}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
 
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
+document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers()}addClientExportControls();loadOrders()});
+let searchDebounce=null;
+searchInput?.addEventListener('input',()=>{clearTimeout(searchDebounce);searchDebounce=setTimeout(()=>loadOrders(searchInput.value,1),300)});
+searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>phaseModal?.classList.add('hidden'));window.addEventListener('click',e=>{if(e.target===phaseModal)phaseModal.classList.add('hidden')});
 
-:root {
-    --ink: #1C2321;
-    --denim: #2B4570;
-    --denim-dark: #1C2E4A;
-    --denim-tint: #E7ECF3;
-    --mustard: #D6A419;
-    --mustard-dark: #B78710;
-    --paper: #EEF1EF;
-    --card: #FFFFFF;
-    --line: #D9DFDC;
-    --muted: #70796F;
-    --green: #3F7A5C;
-    --green-bg: #DDEEE4;
-    --red: #B94630;
-    --red-bg: #F6DEDA;
+function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;const p=document.createElement('div');p.id='orderManagementPanel';p.className='admin-section';p.innerHTML=`<h3>🗂️ Upravljanje nalozima</h3><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="deleteActiveOrdersBtn" class="btn-tag btn-tag--problem" style="padding:10px 16px;font-size:13px">🗑️ Obriši aktivne naloge</button><button id="deleteAllHistoryBtn" class="btn-tag btn-tag--reset" style="padding:10px 16px;font-size:13px">🧹 Obriši sve + istoriju</button></div><div id="orderManagementStatus"></div>`;adminPanel.appendChild(p);$('deleteActiveOrdersBtn').onclick=clearActive;$('deleteAllHistoryBtn').onclick=clearAll;
 
-    --font-display: 'Space Grotesk', sans-serif;
-    --font-body: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
-
-    --radius-sm: 6px;
-    --radius-md: 10px;
-    --radius-lg: 16px;
+  const h=document.createElement('div');h.id='historyExportPanel';h.className='admin-section';
+  h.innerHTML=`<h3>📊 Istorija aktivnosti (Excel izveštaj)</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      <select id="historyCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;flex:1;min-width:150px;font-family:var(--font-body);background:var(--card)">
+        <option value="">Sve firme</option>
+      </select>
+      <input type="date" id="historyDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+      <input type="date" id="historyDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+      <button id="exportHistoryBtn" class="btn-success" style="padding:10px 16px">📥 Preuzmi Excel</button>
+    </div>
+    <div id="historyExportStatus"></div>`;
+  adminPanel.appendChild(h);
+  $('exportHistoryBtn').onclick=exportHistory;
 }
 
-* {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
+async function exportHistory(){
+  const status=$('historyExportStatus');
+  const company=$('historyCompany')?.value||'';
+  const dateFrom=$('historyDateFrom')?.value||'';
+  const dateTo=$('historyDateTo')?.value||'';
+  status.textContent='⏳ Generišem Excel...';status.className='';
+  try{
+    const params=new URLSearchParams();
+    if(company)params.append('company',company);
+    if(dateFrom)params.append('dateFrom',dateFrom);
+    if(dateTo)params.append('dateTo',dateTo);
+    const r=await fetch(`/api/history/export?${params.toString()}`,{headers:headers()});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw Error(d.error||`HTTP ${r.status}`)}
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=`istorija_${company||'sve-firme'}_${dateFrom||'x'}_${dateTo||'x'}.xlsx`;
+    document.body.appendChild(a);a.click();a.remove();
+    URL.revokeObjectURL(url);
+    status.textContent='✅ Fajl preuzet';status.className='success';
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
 }
 
-body {
-    font-family: var(--font-body);
-    background: var(--paper);
-    color: var(--ink);
-    font-size: 16px;
-    line-height: 1.6;
+// ============ EXPORT ZA KLIJENTA (iskljucivo njegova firma + njegove licne aktivnosti) ============
+function addClientExportControls(){
+  if(currentUser?.role==='admin')return;
+  if($('clientExportPanel'))return;
+  const div=document.createElement('div');div.id='clientExportPanel';div.className='panel';
+  div.innerHTML=`<div class="panel-header"><h2>📊 Moj izveštaj</h2></div>
+    <div class="panel-body">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="date" id="myDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+        <input type="date" id="myDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+        <button id="myExportBtn" class="btn-success">📥 Preuzmi Excel</button>
+      </div>
+      <div id="myExportStatus" style="margin-top:8px"></div>
+    </div>`;
+  adminPanel?.insertAdjacentElement('afterend',div);
+  $('myExportBtn').onclick=exportMyHistory;
+}
+async function exportMyHistory(){
+  const status=$('myExportStatus');
+  const dateFrom=$('myDateFrom')?.value||'';
+  const dateTo=$('myDateTo')?.value||'';
+  status.textContent='⏳ Generišem Excel...';status.className='';
+  try{
+    const params=new URLSearchParams();
+    if(dateFrom)params.append('dateFrom',dateFrom);
+    if(dateTo)params.append('dateTo',dateTo);
+    const r=await fetch(`/api/history/export?${params.toString()}`,{headers:headers()});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw Error(d.error||`HTTP ${r.status}`)}
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=`moja_istorija_${dateFrom||'x'}_${dateTo||'x'}.xlsx`;
+    document.body.appendChild(a);a.click();a.remove();
+    URL.revokeObjectURL(url);
+    status.textContent='✅ Fajl preuzet';status.className='success';
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
 }
 
-/* ============ LOGIN ============ */
-.login-container {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    min-height: 100vh;
-    background:
-        repeating-linear-gradient(90deg, rgba(255,255,255,0.05) 0px, rgba(255,255,255,0.05) 1px, transparent 1px, transparent 24px),
-        linear-gradient(160deg, var(--denim) 0%, var(--denim-dark) 100%);
-    padding: 20px;
+async function clearActive(){
+  if(!confirm('Obrisati sve aktivne naloge? Istorija ostaje sačuvana.'))return;
+  try{
+    const d=await api('/api/clear-orders',{method:'POST',headers:headers()});
+    document.getElementById('orderManagementStatus').textContent=`✅ Obrisano ${d.deletedOrders} aktivnih naloga. Istorija je sačuvana.`;
+    loadOrders('',1);
+  }catch(e){document.getElementById('orderManagementStatus').textContent='❌ '+e.message}
+}
+async function clearAll(){
+  if(!confirm('PAŽNJA: brišu se aktivni nalozi I SVA istorija. Nastaviti?'))return;
+  try{
+    const d=await api('/api/clear-all',{method:'POST',headers:headers()});
+    document.getElementById('orderManagementStatus').textContent=`✅ Obrisano ${d.deletedOrders} naloga i ${d.deletedHistory} istorijskih zapisa.`;
+    loadOrders('',1);
+  }catch(e){document.getElementById('orderManagementStatus').textContent='❌ '+e.message}
 }
 
-.login-box {
-    background: var(--card);
-    padding: 44px 32px 36px;
-    border-radius: var(--radius-lg);
-    box-shadow: 0 24px 60px rgba(28, 46, 74, 0.35);
-    width: 100%;
-    max-width: 400px;
-    border-top: 4px solid var(--mustard);
+$('uploadForm')?.addEventListener('submit',async e=>{e.preventDefault();const f=$('fileInput'),s=$('uploadStatus');if(!f?.files?.[0]){s.textContent='Molimo izaberite Excel fajl';s.className='error';return}s.textContent='⏳ Analiziram Excel i sinhronizujem...';s.className='';const fd=new FormData();fd.append('file',f.files[0]);try{const r=await fetch('/api/upload',{method:'POST',headers:headers(),body:fd});const d=await r.json();if(!r.ok)throw Error(d.error);s.className='success';s.innerHTML=`✅ Sinhronizovano: 🟢 ${d.updated} postojećih, 🔵 ${d.inserted} novih, 🔴 ${d.removed} uklonjeno. Istorija sačuvana.`;f.value='';await loadOrders('',1)}catch(e){s.textContent='❌ '+e.message;s.className='error'}});
+
+$('createUserForm')?.addEventListener('submit',async e=>{e.preventDefault();try{const d=await api('/api/users',{method:'POST',headers:headers(true),body:JSON.stringify({username:$('newUsername').value.trim(),company:$('newCompany').value.trim()})});$('userStatus').textContent=`✅ Korisnik ${d.user.username} kreiran`;$('userStatus').className='success';$('newUsername').value='';$('newCompany').value='';loadUsers()}catch(e){$('userStatus').textContent='❌ '+e.message;$('userStatus').className='error'}});
+async function loadUsers(){try{const u=await api('/api/users',{headers:headers()});const x=$('usersList');if(x)x.innerHTML=u.map(a=>`<div class="user-item"><span>${esc(a.username)}</span><span>${esc(a.company)}</span><span>${esc(a.role)}</span>${a.role!=='admin'?`<span class="clickable" style="color:var(--red);font-weight:700" onclick="deleteUser(${a.id},'${js(a.username)}')" title="Obriši korisnika">🗑️</span>`:'<span></span>'}</div>`).join('')||'Nema korisnika';const sel=$('historyCompany');if(sel){const companies=[...new Set(u.map(a=>a.company).filter(Boolean))].sort();sel.innerHTML='<option value="">Sve firme</option>'+companies.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}}catch(e){console.error(e)}}
+
+async function deleteUser(id,username){
+  if(!confirm(`Obrisati korisnika "${username}"? Ova akcija se ne može poništiti.`))return;
+  try{
+    const d=await api(`/api/users/${id}`,{method:'DELETE',headers:headers()});
+    $('userStatus').textContent='✅ '+d.message;$('userStatus').className='success';
+    loadUsers();
+  }catch(e){$('userStatus').textContent='❌ '+e.message;$('userStatus').className='error'}
+}
+sendReportBtn?.addEventListener('click',async()=>{if(!confirm('📧 Pošalji dnevni izveštaj?'))return;try{alert((await api('/api/send-report',{method:'POST',headers:headers(true),body:JSON.stringify({date:new Date().toLocaleDateString('sr-RS')})})).message)}catch(e){alert('❌ '+e.message)}});
+
+async function loadOrders(search='',page=1){try{const u=search?`/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}`:`/api/orders?page=${page}&limit=${LIMIT}`;ordersContainer.innerHTML='<div class="loading">⏳ Učitavanje...</div>';const d=await api(u,{headers:headers()});orders=d.data||[];totalOrders=d.total||0;currentPage=d.page||1;totalPages=d.totalPages||1;if(orderCount)orderCount.textContent=`${totalOrders} naloga`;renderOrders();if(selectedOrderId&&!phaseModal?.classList.contains('hidden')){const o=orders.find(x=>String(x.id)===String(selectedOrderId));if(o)renderModal(o);else phaseModal.classList.add('hidden')}}catch(e){ordersContainer.innerHTML=`<div class="error">❌ ${esc(e.message)}</div>`}}
+function renderOrders(){if(!orders.length){ordersContainer.innerHTML='<p style="text-align:center;padding:40px;color:var(--muted)">📭 Nema naloga za prikaz</p>';return}const admin=currentUser?.role==='admin';let h='<table><thead><tr>'+(admin?'<th>Firma</th><th>Šifra</th><th>Naziv</th><th>Nalog</th><th>Količina</th><th>Datum</th><th>Status</th>':'<th>Nalog</th><th>Naziv</th><th>Količina</th><th>Status</th>')+'</tr></thead><tbody>';orders.forEach((o,i)=>{const p=o.progress||[],c=p.filter(x=>x.status==='completed').length,pr=p.filter(x=>x.status==='problem').length,t=p.length;const st=t&&c===t?['✅ Završeno','status-completed']:pr?['⚠️ Problem','status-problem']:c?[`${c}/${t}`,'status-pending']:['U toku','status-pending'];h+=`<tr style="${i%2===0?'background:var(--paper)':''}">`;if(admin)h+=`<td>${esc(o.company)}</td><td class="clickable" style="cursor:default;font-weight:600">${esc(o.code)}</td><td>${esc(o.name)}</td><td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td style="text-align:center">${o.quantity||0}</td><td>${esc(o.deliveryDate||'-')}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;else h+=`<td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td>${esc(o.name)}</td><td style="text-align:center">${o.quantity||0}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;h+='</tr>'});h+='</tbody></table>';if(totalPages>1)h+=`<div class="pagination"><button onclick="goToPage(${currentPage-1})" ${currentPage<=1?'disabled':''}>◀</button><span>${currentPage} / ${totalPages}</span><button onclick="goToPage(${currentPage+1})" ${currentPage>=totalPages?'disabled':''}>▶</button></div>`;ordersContainer.innerHTML=h}
+function goToPage(p){if(p<1||p>totalPages)return;loadOrders(searchInput?.value||'',p)}
+
+function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)return;selectedOrderId=id;renderModal(o);phaseModal.classList.remove('hidden')}
+
+// ============ NAZIVI FAZA ============
+const PHASE_LABELS={'100':'Krojenje','200':'Serigrafija','300':'Vez','400':'Šivenje','500':'Poslato'};
+function phaseLabel(p){return PHASE_LABELS[String(p)]||`Faza ${p}`}
+
+// ============ IKONICE FAZA (medaljoni na "prošivenoj" liniji) ============
+const PHASE_ICONS={'100':'✂️','200':'🖨️','300':'🧵','400':'🪡','500':'📦'};
+function phaseIcon(p){return PHASE_ICONS[String(p)]||'●'}
+
+// ============ ZAKLJUČAVANJE PO DANU (isto pravilo kao na serveru) ============
+// - Ako faza nikad nije dirana ILI je zadnji put dirana DANAS -> otvorena za klijenta.
+// - Ako je zadnja izmena bila ranijeg dana:
+//     - status 'problem' -> jedino dozvoljeno dugme "Urađeno" (ostalo zaključano)
+//     - svaki drugi status -> potpuno zaključano
+function isSameLocalDay(iso){
+  if(!iso) return false;
+  const d=new Date(iso), n=new Date();
+  return d.getFullYear()===n.getFullYear() && d.getMonth()===n.getMonth() && d.getDate()===n.getDate();
+}
+function phaseLockState(p){
+  if(currentUser?.role==='admin') return {locked:false, onlyCompleteAllowed:false};
+  const hasActivity=(p.status && p.status!=='pending') || (p.comment && p.comment.trim()!=='');
+  if(!hasActivity) return {locked:false, onlyCompleteAllowed:false};
+  if(isSameLocalDay(p.updatedAt)) return {locked:false, onlyCompleteAllowed:false};
+  if(p.status==='problem') return {locked:true, onlyCompleteAllowed:true};
+  return {locked:true, onlyCompleteAllowed:false};
 }
 
-.login-box h1 {
-    text-align: center;
-    color: var(--denim);
-    font-family: var(--font-display);
-    font-weight: 700;
-    font-size: 26px;
-    letter-spacing: -0.01em;
-    margin-bottom: 6px;
-}
+// ============ RENDER MODAL – prošivena linija kroz faze, zaključavanje po danu, Napomena ============
+function renderModal(o){
+  modalOrderNumber.textContent=o.orderNumber||'N/A';
+  const isAdmin=currentUser?.role==='admin';
+  const isOwnCompany=o.company===currentUser?.company;
+  const firmaLine=(isAdmin||isOwnCompany)?`<p><b>Firma:</b> ${esc(o.company)}</p>`:'';
+  modalOrderInfo.innerHTML=`${firmaLine}<p><b>Artikal:</b> ${esc(o.name)}</p><p><b>Šifra:</b> ${esc(o.code)}</p><p><b>Količina:</b> ${o.quantity||0}</p><p><b>Datum isporuke:</b> ${esc(o.deliveryDate||'-')}</p>`;
 
-.login-box h2 {
-    text-align: center;
-    color: var(--muted);
-    font-size: 14px;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin-bottom: 30px;
-    font-family: var(--font-mono);
-}
+  const progress=o.progress||[];
+  const phases=progress.filter(p=>p.phase!=='NAPOMENA');
+  const napomena=progress.find(p=>p.phase==='NAPOMENA');
 
-.form-group {
-    margin-bottom: 18px;
-}
+  let h='<div class="phase-timeline">';
+  phases.forEach(p=>{
+    const stateClass = p.status==='completed' ? 'phase-row--completed' : p.status==='problem' ? 'phase-row--problem' : '';
+    const hasActivity = (p.status && p.status!=='pending') || (p.comment && p.comment.trim()!=='');
+    const dateStr = hasActivity && p.updatedAt ? date(p.updatedAt) : null;
+    const comment = (p.comment||'').trim();
+    const lock=phaseLockState(p);
 
-.form-group label {
-    display: block;
-    font-weight: 600;
-    color: var(--ink);
-    margin-bottom: 6px;
-    font-size: 13px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-}
+    // Bedž: samo ikonica + datum (bez reči "Urađeno"/"Problem"). Za Problem: ikonica+datum+tekst u jednoj liniji.
+    let badge='';
+    if(p.status==='completed'){
+      badge=`<span class="phase-state">✅${dateStr?` ${dateStr}`:''}</span>`;
+    } else if(p.status==='problem'){
+      badge=`<span class="phase-state">⚠️${dateStr?` ${dateStr}`:''}${comment?` — ${esc(comment)}`:''}</span>`;
+    }
+    // Trajna istorija "Problem" (ostaje vidljivo i posle prelaska na Urađeno), sa tekstom koji ga je pratio
+    const problemDateStr = p.lastProblemAt && p.status!=='problem' ? date(p.lastProblemAt) : null;
+    const problemComment = (p.lastProblemComment||'').trim();
+    const problemLine = problemDateStr ? `<div class="phase-date" style="margin-top:-4px;margin-bottom:6px">⚠️ ${problemDateStr}${problemComment?` — ${esc(problemComment)}`:''}</div>` : '';
 
-.form-group input {
-    width: 100%;
-    padding: 14px 16px;
-    border: 2px solid var(--line);
-    border-radius: var(--radius-sm);
-    font-size: 16px;
-    font-family: var(--font-body);
-    transition: border-color 0.2s;
-    background: var(--paper);
-    -webkit-appearance: none;
-}
-
-.form-group input:focus {
-    outline: none;
-    border-color: var(--denim);
-    background: var(--card);
-    box-shadow: 0 0 0 3px var(--denim-tint);
-}
-
-.btn-primary {
-    width: 100%;
-    padding: 14px;
-    background: var(--denim);
-    color: white;
-    border: none;
-    border-radius: var(--radius-sm);
-    font-size: 16px;
-    font-weight: 600;
-    font-family: var(--font-body);
-    cursor: pointer;
-    transition: background 0.2s, transform 0.1s;
-    -webkit-tap-highlight-color: transparent;
-}
-
-.btn-primary:hover {
-    background: var(--denim-dark);
-}
-
-.btn-primary:active {
-    transform: scale(0.98);
-}
-
-.error-message {
-    color: var(--red);
-    margin-top: 14px;
-    text-align: center;
-    font-weight: 600;
-    font-size: 14px;
-}
-
-/* ============ DASHBOARD ============ */
-.dashboard {
-    min-height: 100vh;
-    padding-bottom: 80px;
-}
-
-.navbar {
-    background: var(--denim);
-    padding: 14px 16px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    flex-wrap: wrap;
-    gap: 8px;
-    border-bottom: 3px dashed var(--mustard);
-}
-
-.nav-left {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-}
-
-.nav-left h1 {
-    font-family: var(--font-display);
-    font-weight: 700;
-    font-size: 18px;
-    color: white;
-    white-space: nowrap;
-    letter-spacing: -0.01em;
-}
-
-.company-badge {
-    background: var(--mustard);
-    color: var(--denim-dark);
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 11px;
-    font-weight: 700;
-    font-family: var(--font-mono);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-}
-
-.nav-right {
-    display: flex;
-    gap: 8px;
-}
-
-.btn-secondary {
-    padding: 8px 16px;
-    background: rgba(255,255,255,0.12);
-    color: white;
-    border: 1px solid rgba(255,255,255,0.25);
-    border-radius: var(--radius-sm);
-    font-size: 13px;
-    font-family: var(--font-body);
-    cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
-    font-weight: 600;
-}
-
-.btn-secondary:active {
-    transform: scale(0.96);
-}
-
-.btn-success {
-    padding: 8px 16px;
-    background: var(--mustard);
-    color: var(--denim-dark);
-    border: none;
-    border-radius: var(--radius-sm);
-    font-size: 13px;
-    font-family: var(--font-body);
-    cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
-    font-weight: 700;
-}
-
-.btn-success:active {
-    transform: scale(0.96);
-}
-
-.dashboard-content {
-    padding: 16px 16px;
-    max-width: 800px;
-    margin: 0 auto;
-}
-
-.panel {
-    background: var(--card);
-    border-radius: var(--radius-md);
-    box-shadow: 0 1px 3px rgba(28,35,33,0.06);
-    border: 1px solid var(--line);
-    margin-bottom: 16px;
-    overflow: hidden;
-}
-
-.panel-header {
-    padding: 14px 16px;
-    background: var(--paper);
-    border-bottom: 1px solid var(--line);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-}
-
-.panel-header h2 {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    color: var(--muted);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-}
-
-.panel-body {
-    padding: 14px 16px;
-}
-
-.hidden {
-    display: none !important;
-}
-
-/* ============ ADMIN ============ */
-.admin-section {
-    margin-bottom: 16px;
-    padding: 14px;
-    background: var(--paper);
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--line);
-}
-
-.admin-section h3 {
-    font-size: 13px;
-    color: var(--ink);
-    margin-bottom: 10px;
-    font-family: var(--font-mono);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-}
-
-.upload-form, .user-form {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.upload-form input[type="file"] {
-    flex: 1;
-    padding: 10px;
-    border: 2px dashed var(--line);
-    border-radius: var(--radius-sm);
-    font-size: 14px;
-    min-width: 150px;
-    background: var(--card);
-    font-family: var(--font-body);
-}
-
-.upload-form button, .user-form button {
-    padding: 10px 16px;
-    font-size: 14px;
-}
-
-.user-form input {
-    flex: 1;
-    padding: 10px 12px;
-    border: 2px solid var(--line);
-    border-radius: var(--radius-sm);
-    font-size: 14px;
-    min-width: 120px;
-    background: var(--card);
-    font-family: var(--font-body);
-}
-
-.user-form input:focus {
-    outline: none;
-    border-color: var(--denim);
-}
-
-#usersList {
-    margin-top: 8px;
-}
-
-.user-item {
-    display: grid;
-    grid-template-columns: 1fr 1fr auto auto;
-    align-items: center;
-    gap: 8px;
-    padding: 9px 2px;
-    border-bottom: 1px solid var(--line);
-    font-size: 13px;
-}
-
-.user-item span:first-child {
-    font-family: var(--font-mono);
-    font-weight: 600;
-}
-
-/* ============ SEARCH ============ */
-.search-bar {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.search-bar input {
-    flex: 1;
-    padding: 12px 14px;
-    border: 2px solid var(--line);
-    border-radius: var(--radius-sm);
-    font-size: 16px;
-    font-family: var(--font-body);
-    min-width: 150px;
-    background: var(--paper);
-    -webkit-appearance: none;
-}
-
-.search-bar input:focus {
-    outline: none;
-    border-color: var(--denim);
-    background: var(--card);
-    box-shadow: 0 0 0 3px var(--denim-tint);
-}
-
-.search-bar button {
-    padding: 12px 16px;
-    font-size: 14px;
-    white-space: nowrap;
-}
-
-/* ============ ORDERS TABLE ============ */
-#ordersContainer {
-    overflow-x: auto;
-    margin: 0 -4px;
-}
-
-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13.5px;
-    min-width: 320px;
-}
-
-th {
-    background: var(--denim);
-    padding: 10px 8px;
-    text-align: left;
-    font-weight: 600;
-    color: white;
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-}
-
-td {
-    padding: 10px 8px;
-    border-bottom: 1px solid var(--line);
-    vertical-align: middle;
-}
-
-tr:hover td {
-    background: var(--paper);
-}
-
-.clickable {
-    cursor: pointer;
-    color: var(--denim);
-    font-weight: 700;
-    font-family: var(--font-mono);
-}
-
-.clickable:active {
-    opacity: 0.7;
-}
-
-.status-badge {
-    display: inline-block;
-    padding: 3px 9px;
-    border-radius: 4px;
-    font-size: 10.5px;
-    font-weight: 700;
-    font-family: var(--font-mono);
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    white-space: nowrap;
-    border: 1px solid transparent;
-}
-
-.status-pending {
-    background: var(--paper);
-    color: var(--muted);
-    border-color: var(--line);
-}
-
-.status-completed {
-    background: var(--green-bg);
-    color: var(--green);
-    border-color: var(--green);
-}
-
-.status-problem {
-    background: var(--red-bg);
-    color: var(--red);
-    border-color: var(--red);
-}
-
-/* ============ MOBILNA TABELA ============ */
-@media (max-width: 600px) {
-    table {
-        font-size: 12.5px;
-        min-width: unset;
+    let bodyHtml='';
+    if(lock.locked){
+      // Zaključano: kompaktan prikaz, katanac je već u naslovnoj liniji (bez teksta).
+      const lockedExtra = (p.status==='completed' && comment) ? `<div class="phase-date" style="margin-top:2px">${esc(comment)}</div>` : '';
+      bodyHtml=`${lockedExtra}
+        ${lock.onlyCompleteAllowed
+          ? `<div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button></div>`
+          : ''}`;
+    } else {
+      bodyHtml=`<div class="phase-actions">
+          <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button>
+          <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ Problem</button>
+          ${isAdmin ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">⬜ Reset</button>` : ''}
+        </div>
+        <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea>`;
     }
 
-    th, td {
-        padding: 8px 6px;
-    }
+    const lockIcon = (lock.locked && !lock.onlyCompleteAllowed) ? `<span class="phase-lock" title="Zaključano — obratite se administratoru">🔒</span>` : '';
 
-    th {
-        font-size: 9.5px;
-    }
+    h+=`<div class="phase-row ${stateClass}">
+      <div class="phase-spine">
+        <div class="phase-medallion">${phaseIcon(p.phase)}</div>
+        <div class="phase-connector"></div>
+      </div>
+      <div class="phase-content">
+        <div class="phase-head">
+          <span class="phase-name">${esc(phaseLabel(p.phase))}</span>
+          ${badge}
+          ${lockIcon}
+        </div>
+        ${problemLine}
+        ${bodyHtml}
+      </div>
+    </div>`;
+  });
+  h+='</div>';
 
-    .hide-mobile {
-        display: none;
-    }
+  // ============ NAPOMENA (opšte polje, van faza, ista logika zaključavanja) ============
+  const nLock = napomena ? phaseLockState(napomena) : {locked:false};
+  const nComment = napomena?.comment || '';
+  const nDate = napomena?.updatedAt && (nComment.trim()!=='') ? date(napomena.updatedAt) : null;
+  h+=`<div class="phase-row" style="margin-top:6px">
+      <div class="phase-spine">
+        <div class="phase-medallion">📝</div>
+      </div>
+      <div class="phase-content" style="border-bottom:none">
+        <div class="phase-head">
+          <span class="phase-name">Napomena</span>
+          ${nDate ? `<span class="phase-date">📅 ${nDate}</span>` : ''}
+          ${nLock.locked ? `<span class="phase-lock" title="Zaključano — obratite se administratoru">🔒</span>` : ''}
+        </div>
+        ${nLock.locked
+          ? (nComment ? `<div class="phase-note" style="background:var(--paper);cursor:default;margin-top:8px">${esc(nComment)}</div>` : '')
+          : `<textarea class="phase-note" style="margin-top:8px" onblur="saveComment(${o.id},'NAPOMENA',this.value)" placeholder="Napomena...">${esc(nComment)}</textarea>`}
+      </div>
+    </div>`;
+
+  phasesContainer.innerHTML=phases.length ? h : 'Nema faza';
 }
 
-/* ============ MODAL ============ */
-.modal {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(19, 27, 36, 0.6);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    z-index: 1000;
-    padding: 16px;
+// ============ SAVE COMMENT ============
+async function saveComment(id, phase, comment) {
+  const o = orders.find(x => String(x.id) === String(id));
+  const p = o?.progress.find(x => String(x.phase) === String(phase));
+  if (!p) return;
+  const oldComment = p.comment, oldUpdated = p.updatedAt;
+  p.comment = comment;
+  p.updatedAt = new Date().toISOString(); // privremeno za prikaz
+  try {
+    const res = await api('/api/update-phase', {
+      method: 'POST',
+      headers: headers(true),
+      body: JSON.stringify({ orderId: id, phase, comment })
+    });
+    if (res.updatedAt) p.updatedAt = res.updatedAt;
+    renderModal(o);
+  } catch (e) {
+    p.comment = oldComment;
+    p.updatedAt = oldUpdated;
+    console.error(e);
+  }
 }
 
-.modal-content {
-    background: var(--card);
-    padding: 26px 20px;
-    border-radius: var(--radius-lg);
-    max-width: 620px;
-    width: 100%;
-    max-height: 90vh;
-    overflow-y: auto;
-    position: relative;
-    border-top: 4px solid var(--mustard);
+async function updatePhase(id,phase,status){const o=orders.find(x=>String(x.id)===String(id)),p=o?.progress.find(x=>String(x.phase)===String(phase));if(!p)return;const old={status:p.status,comment:p.comment,updatedAt:p.updatedAt};p.status=status;p.updatedAt=new Date().toISOString();renderOrders();renderModal(o);try{const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,status,comment:p.comment||''})});p.updatedAt=d.updatedAt;renderOrders();renderModal(o)}catch(e){Object.assign(p,old);renderOrders();renderModal(o);alert('❌ '+e.message)}}
+
+// ============ DATE function (samo datum) ============
+function date(v) {
+  const d = new Date(v);
+  if (isNaN(d)) return String(v);
+  return d.toLocaleDateString('sr-RS', { day:'2-digit', month:'2-digit', year:'numeric' });
 }
 
-.modal-content h2 {
-    font-family: var(--font-mono);
-    font-weight: 600;
-    letter-spacing: 0.02em;
-}
-
-.close-modal {
-    position: absolute;
-    top: 14px;
-    right: 18px;
-    font-size: 26px;
-    cursor: pointer;
-    color: var(--muted);
-    font-weight: 300;
-    line-height: 1;
-}
-
-.close-modal:active {
-    color: var(--ink);
-}
-
-.order-info {
-    background: var(--paper);
-    padding: 14px 16px;
-    border-radius: var(--radius-sm);
-    margin: 14px 0;
-    font-size: 14px;
-    border: 1px solid var(--line);
-}
-
-.order-info p {
-    margin: 4px 0;
-}
-
-.order-info b {
-    font-family: var(--font-mono);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--muted);
-    font-weight: 600;
-}
-
-/* ============ PHASE TIMELINE (signature element) ============
-   Isprekidana linija ("konac") koja povezuje faze proizvodnje,
-   poput šava koji prati proizvod kroz radionicu.               */
-.phase-timeline {
-    margin-top: 18px;
-}
-
-.phase-row {
-    display: flex;
-    gap: 14px;
-    align-items: stretch;
-}
-
-.phase-spine {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    width: 44px;
-    flex-shrink: 0;
-}
-
-.phase-medallion {
-    width: 42px;
-    height: 42px;
-    border-radius: 50%;
-    background: var(--card);
-    border: 3px solid var(--line);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 18px;
-    flex-shrink: 0;
-    transition: border-color 0.2s, background 0.2s;
-}
-
-.phase-row--completed .phase-medallion {
-    border-color: var(--green);
-    background: var(--green-bg);
-}
-
-.phase-row--problem .phase-medallion {
-    border-color: var(--red);
-    background: var(--red-bg);
-}
-
-.phase-connector {
-    flex: 1;
-    width: 0;
-    border-left: 3px dashed var(--line);
-    margin: 4px 0;
-    min-height: 14px;
-}
-
-.phase-row:last-child .phase-connector {
-    display: none;
-}
-
-.phase-content {
-    flex: 1;
-    min-width: 0;
-    padding-bottom: 22px;
-    border-bottom: 1px solid var(--line);
-    margin-bottom: 0;
-}
-
-.phase-row:last-child .phase-content {
-    border-bottom: none;
-    padding-bottom: 4px;
-}
-
-.phase-head {
-    display: flex;
-    align-items: baseline;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding-top: 6px;
-}
-
-.phase-name {
-    font-family: var(--font-display);
-    font-weight: 700;
-    font-size: 16px;
-    color: var(--ink);
-}
-
-.phase-state {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.01em;
-    padding: 2px 8px;
-    border-radius: 4px;
-    background: var(--paper);
-    color: var(--muted);
-    border: 1px solid var(--line);
-    white-space: normal;
-    line-height: 1.4;
-}
-
-.phase-row--completed .phase-state {
-    background: var(--green-bg);
-    color: var(--green);
-    border-color: var(--green);
-}
-
-.phase-row--problem .phase-state {
-    background: var(--red-bg);
-    color: var(--red);
-    border-color: var(--red);
-}
-
-.phase-date {
-    font-family: var(--font-mono);
-    font-size: 11.5px;
-    color: var(--muted);
-}
-
-.phase-actions {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-    margin: 10px 0 8px;
-}
-
-.btn-tag {
-    padding: 6px 12px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: 11.5px;
-    font-weight: 600;
-    font-family: var(--font-body);
-    background: var(--card);
-    color: var(--ink);
-    -webkit-tap-highlight-color: transparent;
-    transition: transform 0.1s, background 0.15s, color 0.15s, border-color 0.15s;
-}
-
-.btn-tag:active {
-    transform: scale(0.95);
-}
-
-.btn-tag--done:hover, .btn-tag--done:active {
-    background: var(--green);
-    border-color: var(--green);
-    color: white;
-}
-
-.btn-tag--problem:hover, .btn-tag--problem:active {
-    background: var(--red);
-    border-color: var(--red);
-    color: white;
-}
-
-.btn-tag--reset:hover, .btn-tag--reset:active {
-    background: var(--muted);
-    border-color: var(--muted);
-    color: white;
-}
-
-.phase-note {
-    width: 100%;
-    padding: 8px 10px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    min-height: 44px;
-    font-size: 13px;
-    font-family: var(--font-body);
-    resize: vertical;
-    background: var(--paper);
-    transition: border-color 0.2s, background 0.2s;
-}
-
-.phase-note:focus {
-    outline: none;
-    border-color: var(--denim);
-    background: var(--card);
-}
-
-/* ============ STATUS PORUKE ============ */
-#uploadStatus, #userStatus, #orderManagementStatus, #historyExportStatus {
-    margin-top: 8px;
-    padding: 9px 12px;
-    border-radius: var(--radius-sm);
-    font-size: 13.5px;
-}
-
-.success {
-    background: var(--green-bg);
-    color: var(--green);
-    border: 1px solid var(--green);
-}
-
-.error {
-    background: var(--red-bg);
-    color: var(--red);
-    border: 1px solid var(--red);
-}
-
-.loading {
-    text-align: center;
-    padding: 34px;
-    color: var(--muted);
-    font-family: var(--font-mono);
-    font-size: 13px;
-}
-
-/* ============ PAGINACIJA ============ */
-.pagination {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 10px;
-    padding: 14px;
-    border-top: 1px solid var(--line);
-    flex-wrap: wrap;
-}
-
-.pagination button {
-    padding: 8px 16px;
-    border: none;
-    border-radius: var(--radius-sm);
-    font-size: 13px;
-    font-weight: 700;
-    font-family: var(--font-mono);
-    cursor: pointer;
-    background: var(--denim);
-    color: white;
-}
-
-.pagination button:disabled {
-    background: var(--line);
-    color: #A8B0AB;
-    cursor: not-allowed;
-}
-
-.pagination span {
-    color: var(--muted);
-    font-weight: 600;
-    font-size: 13px;
-    font-family: var(--font-mono);
-}
-
-/* ============ POBOLJŠANJA ZA TELEFONE ============ */
-@media (max-width: 480px) {
-    .login-box {
-        padding: 34px 22px;
-    }
-
-    .login-box h1 {
-        font-size: 22px;
-    }
-
-    .dashboard-content {
-        padding: 10px 10px;
-    }
-
-    .panel-header {
-        padding: 10px 12px;
-    }
-
-    .panel-body {
-        padding: 10px 10px;
-    }
-
-    .search-bar input {
-        font-size: 16px;
-        padding: 14px;
-    }
-
-    .btn-primary {
-        font-size: 16px;
-        padding: 16px;
-    }
-
-    table {
-        font-size: 12px;
-    }
-
-    th, td {
-        padding: 6px 4px;
-    }
-
-    .modal-content {
-        padding: 18px 14px;
-    }
-
-    .phase-name {
-        font-size: 14.5px;
-    }
-}
-
-/* ============ SCROLL ============ */
-::-webkit-scrollbar {
-    width: 4px;
-    height: 4px;
-}
-
-::-webkit-scrollbar-track {
-    background: var(--paper);
-}
-
-::-webkit-scrollbar-thumb {
-    background: var(--line);
-    border-radius: 4px;
-}
+function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
+function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
+window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;

@@ -193,13 +193,12 @@ function renderModal(o){
 
     let bodyHtml='';
     if(lock.locked){
-      // Zaključano: kompaktan prikaz u jednoj liniji (bedž već sadrži ikonicu+datum+tekst za problem),
-      // za "urađeno" dodajemo tekst posle bedža ako postoji komentar.
+      // Zaključano: kompaktan prikaz, katanac je već u naslovnoj liniji (bez teksta).
       const lockedExtra = (p.status==='completed' && comment) ? `<div class="phase-date" style="margin-top:2px">${esc(comment)}</div>` : '';
       bodyHtml=`${lockedExtra}
         ${lock.onlyCompleteAllowed
           ? `<div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button></div>`
-          : `<div class="phase-actions"><span class="phase-state" style="background:var(--paper)">🔒 Zaključano — obratite se administratoru</span></div>`}`;
+          : ''}`;
     } else {
       bodyHtml=`<div class="phase-actions">
           <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button>
@@ -208,6 +207,8 @@ function renderModal(o){
         </div>
         <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea>`;
     }
+
+    const lockIcon = (lock.locked && !lock.onlyCompleteAllowed) ? `<span class="phase-lock" title="Zaključano — obratite se administratoru">🔒</span>` : '';
 
     h+=`<div class="phase-row ${stateClass}">
       <div class="phase-spine">
@@ -218,6 +219,7 @@ function renderModal(o){
         <div class="phase-head">
           <span class="phase-name">${esc(phaseLabel(p.phase))}</span>
           ${badge}
+          ${lockIcon}
         </div>
         ${problemLine}
         ${bodyHtml}
@@ -238,9 +240,10 @@ function renderModal(o){
         <div class="phase-head">
           <span class="phase-name">Napomena</span>
           ${nDate ? `<span class="phase-date">📅 ${nDate}</span>` : ''}
+          ${nLock.locked ? `<span class="phase-lock" title="Zaključano — obratite se administratoru">🔒</span>` : ''}
         </div>
         ${nLock.locked
-          ? (nComment ? `<div class="phase-note" style="background:var(--paper);cursor:default;margin-top:8px">${esc(nComment)}</div><div class="phase-date" style="margin-top:6px">🔒 Zaključano — obratite se administratoru</div>` : `<div class="phase-date" style="margin-top:8px">🔒 Zaključano — obratite se administratoru</div>`)
+          ? (nComment ? `<div class="phase-note" style="background:var(--paper);cursor:default;margin-top:8px">${esc(nComment)}</div>` : '')
           : `<textarea class="phase-note" style="margin-top:8px" onblur="saveComment(${o.id},'NAPOMENA',this.value)" placeholder="Napomena...">${esc(nComment)}</textarea>`}
       </div>
     </div>`;
