@@ -208,6 +208,21 @@ app.post('/api/users', authenticate, async (req, res) => {
     }
 });
 
+app.delete('/api/users/:id', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
+    try {
+        const { id } = req.params;
+        const target = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+        if (target.rows.length === 0) return res.status(404).json({ error: 'Korisnik ne postoji' });
+        if (target.rows[0].role === 'admin') return res.status(400).json({ error: 'Ne može se obrisati admin nalog' });
+        if (String(target.rows[0].id) === String(req.user.id)) return res.status(400).json({ error: 'Ne možete obrisati sami sebe' });
+        await pool.query('DELETE FROM users WHERE id = $1', [id]);
+        res.json({ message: `Korisnik "${target.rows[0].username}" obrisan` });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ============ UPLOAD ============
 app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
     if (req.user.role !== 'admin') {
@@ -293,7 +308,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                 // Vrati poslednje poznato stanje iz istorije (uključujući i datum)
                 let anyRestoredForThisOrder = false;
 
-                for (const phase of ['100', '200', '300', '400', '500']) {
+                for (const phase of ['100', '200', '300', '400', '500', 'NAPOMENA']) {
                     const histResult = await pool.query(
                         `SELECT new_status, comment, changed_at FROM order_history
                          WHERE order_number = $1 AND company = $2 AND phase = $3
@@ -377,10 +392,19 @@ app.get('/api/orders', authenticate, async (req, res) => {
 
         const dataQuery = `
             SELECT o.*, 
-                   COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment, 'updatedAt', p.updated_at) ORDER BY p.phase) 
+                   COALESCE(json_agg(json_build_object(
+                        'phase', p.phase, 'status', p.status, 'comment', p.comment, 'updatedAt', p.updated_at,
+                        'lastProblemAt', lastprob.changed_at
+                   ) ORDER BY p.phase) 
                    FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
             FROM orders o
             LEFT JOIN progress p ON o.id = p.order_id
+            LEFT JOIN LATERAL (
+                SELECT changed_at FROM order_history oh
+                WHERE oh.order_number = o.order_number AND oh.company = o.company
+                  AND oh.phase = p.phase AND oh.new_status = 'problem'
+                ORDER BY oh.changed_at DESC LIMIT 1
+            ) lastprob ON true
             ${whereClause}
             GROUP BY o.id
             ORDER BY o.id DESC
@@ -422,14 +446,37 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         console.log(`🔄 Menjam fazu ${phase} za nalog ${orderId}`, status ? `na ${status}` : '(samo komentar)');
 
         const current = await pool.query(
-            'SELECT status, comment FROM progress WHERE order_id = $1 AND phase = $2',
+            'SELECT status, comment, updated_at FROM progress WHERE order_id = $1 AND phase = $2',
             [orderId, phase]
         );
         const oldStatus = current.rows[0]?.status || 'pending';
         const oldComment = current.rows[0]?.comment || '';
+        const oldUpdatedAt = current.rows[0]?.updated_at || null;
 
         if (!status) status = oldStatus;
         const finalComment = comment !== undefined ? comment : oldComment;
+
+        // ============ ZAKLJUČAVANJE PO DANU (samo za klijente, admin nema ograničenja) ============
+        if (req.user.role !== 'admin') {
+            const hasPriorActivity = oldStatus !== 'pending' || oldComment.trim() !== '';
+            let sameDay = true;
+            if (hasPriorActivity && oldUpdatedAt) {
+                const oldDate = new Date(oldUpdatedAt);
+                const now = new Date();
+                sameDay = oldDate.getFullYear() === now.getFullYear()
+                    && oldDate.getMonth() === now.getMonth()
+                    && oldDate.getDate() === now.getDate();
+            }
+            if (hasPriorActivity && !sameDay) {
+                // Jedini izuzetak posle isteka dana: Problem -> Urađeno (bez menjanja komentara)
+                const isProblemToCompleted = oldStatus === 'problem' && status === 'completed' && finalComment === oldComment;
+                if (!isProblemToCompleted) {
+                    return res.status(403).json({
+                        error: '🔒 Ova stavka je zaključana (poslednja izmena je bila ranijeg dana). Obratite se administratoru.'
+                    });
+                }
+            }
+        }
 
         await pool.query(
             `INSERT INTO progress (order_id, phase, status, comment, updated_at)
@@ -585,10 +632,27 @@ app.get('/api/history/export', authenticate, async (req, res) => {
              ORDER BY order_number, company, phase, changed_at DESC`
         );
 
-        const phaseMap = new Map(); // key: order_number||company -> { phase: {status, comment, changedAt} }
+        // 3) Poslednji put kad je faza bila "problem" - da ostane trajno vidljivo i posle prelaska na Urađeno
+        const lastProblemResult = await pool.query(
+            `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, changed_at
+             FROM order_history
+             WHERE new_status = 'problem'
+             ORDER BY order_number, company, phase, changed_at DESC`
+        );
+        const problemMap = new Map(); // key: order_number||company||phase -> changed_at
+        lastProblemResult.rows.forEach(r => {
+            problemMap.set(`${r.order_number}||${r.company}||${r.phase}`, r.changed_at);
+        });
+
+        const phaseMap = new Map();    // key: order_number||company -> { phase: {status, comment, changedAt} }
+        const napomenaMap = new Map(); // key: order_number||company -> {comment, changedAt}
         const phaseSet = new Set();
         phaseStatusResult.rows.forEach(r => {
             const key = `${r.order_number}||${r.company}`;
+            if (r.phase === 'NAPOMENA') {
+                napomenaMap.set(key, { comment: r.comment || '', changedAt: r.changed_at });
+                return;
+            }
             if (!phaseMap.has(key)) phaseMap.set(key, {});
             phaseMap.get(key)[r.phase] = { status: r.new_status, comment: r.comment || '', changedAt: r.changed_at };
             phaseSet.add(r.phase);
@@ -601,7 +665,8 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         const statusIcon = s => s === 'completed' ? '✅' : s === 'problem' ? '⚠️' : '';
         // Sadržaj ćelije za fazu: ako nema NIKAKVE aktivnosti (ni status ni komentar) -> prazno.
         // Ako ima aktivnosti -> znak (bez reči "Urađeno"/"Problem") + datum, i komentar ako postoji.
-        const phaseCellText = (entry) => {
+        // Ako je faza NEKAD bila "problem" a sad je npr. urađena -> ostaje trajno vidljiv i taj stari datum.
+        const phaseCellText = (entry, orderNumber, comp, phaseCode) => {
             if (!entry) return '';
             const icon = statusIcon(entry.status);
             const comment = (entry.comment || '').trim();
@@ -610,6 +675,13 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             if (icon) parts.push(dateStr ? `${icon}  ${dateStr}` : icon);
             else if (dateStr && comment) parts.push(`💬 ${dateStr}`);
             if (comment) parts.push(comment);
+
+            if (entry.status !== 'problem') {
+                const probDate = problemMap.get(`${orderNumber}||${comp}||${phaseCode}`);
+                if (probDate) {
+                    parts.push(`⚠️ Problem prijavljen ${new Date(probDate).toLocaleDateString('sr-RS')}`);
+                }
+            }
             return parts.join('\n');
         };
 
@@ -628,6 +700,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         ];
         const phaseCols = finalPhases.map(p => ({ key: 'phase_' + p, width: 26 }));
         const tailCols = [
+            { key: 'napomena', width: 30 },
             { key: 'changed_by', width: 16 }
         ];
         sheet.columns = [...fixedCols, ...phaseCols, ...tailCols];
@@ -649,7 +722,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         headerRow.values = [
             'Datum i vreme', 'Firma', 'Nalog',
             ...finalPhases.map(p => phaseLabel(p)),
-            'Izmenio'
+            'Napomena', 'Izmenio'
         ];
         headerRow.eachCell(cell => {
             cell.font = { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
@@ -663,13 +736,15 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         lastActivityResult.rows.forEach((r, i) => {
             const key = `${r.order_number}||${r.company}`;
             const phaseData = phaseMap.get(key) || {};
+            const napomena = napomenaMap.get(key);
             const rowData = {
                 changed_at: new Date(r.changed_at).toLocaleString('sr-RS'),
                 company: r.company,
                 order_number: r.order_number,
+                napomena: napomena && napomena.comment ? napomena.comment : '',
                 changed_by: r.changed_by || ''
             };
-            finalPhases.forEach(p => { rowData['phase_' + p] = phaseCellText(phaseData[p]); });
+            finalPhases.forEach(p => { rowData['phase_' + p] = phaseCellText(phaseData[p], r.order_number, r.company, p); });
 
             const row = sheet.addRow(rowData);
             row.font = { name: 'Arial', size: 10 };
