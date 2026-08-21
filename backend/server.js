@@ -267,6 +267,29 @@ app.get('/api/companies', authenticate, async (req, res) => {
     }
 });
 
+app.post('/api/change-password', authenticate, async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({ error: 'Unesi trenutnu i novu lozinku.' });
+        }
+        if (newPassword.length < 6) {
+            return res.status(400).json({ error: 'Nova lozinka mora imati bar 6 karaktera.' });
+        }
+        const result = await pool.query('SELECT * FROM users WHERE id = $1', [req.user.id]);
+        const user = result.rows[0];
+        if (!user) return res.status(404).json({ error: 'Korisnik ne postoji.' });
+        if (!await bcrypt.compare(currentPassword, user.password)) {
+            return res.status(401).json({ error: 'Trenutna lozinka nije tačna.' });
+        }
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        await pool.query('UPDATE users SET password = $1 WHERE id = $2', [hashedPassword, req.user.id]);
+        res.json({ message: '✅ Lozinka je promenjena.' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ============ UPLOAD ============
 app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
     if (req.user.role !== 'admin') {

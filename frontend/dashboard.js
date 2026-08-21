@@ -4,7 +4,7 @@ const LIMIT=100;
 const $=id=>document.getElementById(id);
 const token=localStorage.getItem('token'),userStr=localStorage.getItem('user');
 if(!token||!userStr){location.href='index.html'}else{try{currentUser=JSON.parse(userStr)}catch(e){localStorage.clear();location.href='index.html'}}
-const companyDisplay=$('companyDisplay'),adminPanel=$('adminPanel'),ordersContainer=$('ordersContainer'),searchInput=$('searchInput'),searchBtn=$('searchBtn'),clearSearchBtn=$('clearSearchBtn'),logoutBtn=$('logoutBtn'),sendReportBtn=$('sendReportBtn'),phaseModal=$('phaseModal'),modalOrderNumber=$('modalOrderNumber'),modalOrderInfo=$('modalOrderInfo'),phasesContainer=$('phasesContainer'),closeModal=document.querySelector('.close-modal'),orderCount=$('orderCount');
+const companyDisplay=$('companyDisplay'),adminPanel=$('adminPanel'),ordersContainer=$('ordersContainer'),searchInput=$('searchInput'),searchBtn=$('searchBtn'),clearSearchBtn=$('clearSearchBtn'),logoutBtn=$('logoutBtn'),sendReportBtn=$('sendReportBtn'),changePasswordBtn=$('changePasswordBtn'),phaseModal=$('phaseModal'),modalOrderNumber=$('modalOrderNumber'),modalOrderInfo=$('modalOrderInfo'),phasesContainer=$('phasesContainer'),closeModal=document.querySelector('.close-modal'),orderCount=$('orderCount');
 if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
 const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
 async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error('Sesija je istekla.')}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
@@ -134,6 +134,19 @@ async function deleteUser(id,username){
   }catch(e){$('userStatus').textContent='❌ '+e.message;$('userStatus').className='error'}
 }
 sendReportBtn?.addEventListener('click',async()=>{if(!confirm('📧 Pošalji dnevni izveštaj?'))return;try{alert((await api('/api/send-report',{method:'POST',headers:headers(true),body:JSON.stringify({date:new Date().toLocaleDateString('sr-RS')})})).message)}catch(e){alert('❌ '+e.message)}});
+
+changePasswordBtn?.addEventListener('click',async()=>{
+  const currentPassword=prompt('Unesi TRENUTNU lozinku:');
+  if(!currentPassword)return;
+  const newPassword=prompt('Unesi NOVU lozinku (bar 6 karaktera):');
+  if(!newPassword)return;
+  const confirmPassword=prompt('Ponovi NOVU lozinku:');
+  if(newPassword!==confirmPassword){alert('❌ Nova lozinka i potvrda se ne poklapaju.');return}
+  try{
+    const d=await api('/api/change-password',{method:'POST',headers:headers(true),body:JSON.stringify({currentPassword,newPassword})});
+    alert(d.message);
+  }catch(e){alert('❌ '+e.message)}
+});
 
 async function loadOrders(search='',page=1){try{const u=search?`/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}`:`/api/orders?page=${page}&limit=${LIMIT}`;ordersContainer.innerHTML='<div class="loading">⏳ Učitavanje...</div>';const d=await api(u,{headers:headers()});orders=d.data||[];totalOrders=d.total||0;currentPage=d.page||1;totalPages=d.totalPages||1;if(orderCount)orderCount.textContent=`${totalOrders} naloga`;renderOrders();if(selectedOrderId&&!phaseModal?.classList.contains('hidden')){const o=orders.find(x=>String(x.id)===String(selectedOrderId));if(o)renderModal(o);else phaseModal.classList.add('hidden')}}catch(e){ordersContainer.innerHTML=`<div class="error">❌ ${esc(e.message)}</div>`}}
 function renderOrders(){if(!orders.length){ordersContainer.innerHTML='<p style="text-align:center;padding:40px;color:var(--muted)">📭 Nema naloga za prikaz</p>';return}const admin=currentUser?.role==='admin'||currentUser?.role==='kontrola';let h='<table><thead><tr>'+(admin?'<th>Firma</th><th>Šifra</th><th>Naziv</th><th>Nalog</th><th>Količina</th><th>Datum</th><th>Status</th>':'<th>Nalog</th><th>Naziv</th><th>Količina</th><th>Status</th>')+'</tr></thead><tbody>';orders.forEach((o,i)=>{const p=o.progress||[],c=p.filter(x=>x.status==='completed').length,pr=p.filter(x=>x.status==='problem').length,t=p.length;const st=t&&c===t?['✅ Završeno','status-completed']:pr?['⚠️ Problem','status-problem']:c?[`${c}/${t}`,'status-pending']:['U toku','status-pending'];h+=`<tr style="${i%2===0?'background:var(--paper)':''}">`;if(admin)h+=`<td>${esc(o.company)}</td><td class="clickable" style="cursor:default;font-weight:600">${esc(o.code)}</td><td>${esc(o.name)}</td><td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td style="text-align:center">${o.quantity||0}</td><td>${esc(o.deliveryDate||'-')}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;else h+=`<td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td>${esc(o.name)}</td><td style="text-align:center">${o.quantity||0}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;h+='</tr>'});h+='</tbody></table>';if(totalPages>1)h+=`<div class="pagination"><button onclick="goToPage(${currentPage-1})" ${currentPage<=1?'disabled':''}>◀</button><span>${currentPage} / ${totalPages}</span><button onclick="goToPage(${currentPage+1})" ${currentPage>=totalPages?'disabled':''}>▶</button></div>`;ordersContainer.innerHTML=h}

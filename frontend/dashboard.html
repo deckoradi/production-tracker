@@ -24,6 +24,7 @@
             </div>
             <div class="nav-right">
                 <button id="sendReportBtn" class="btn-success" style="padding:6px 12px;font-size:12px;">📧 Izveštaj</button>
+                <button id="changePasswordBtn" class="btn-secondary" style="padding:6px 12px;font-size:12px;">🔑 Lozinka</button>
                 <button id="logoutBtn" class="btn-secondary" style="padding:6px 12px;font-size:12px;">Odjava</button>
             </div>
         </nav>
@@ -50,7 +51,11 @@
                         <h3>👤 Novi korisnik</h3>
                         <form id="createUserForm" class="user-form">
                             <input type="text" id="newUsername" placeholder="Korisničko ime" required>
-                            <input type="text" id="newCompany" placeholder="Naziv firme" required>
+                            <input type="text" id="newCompany" placeholder="Naziv firme">
+                            <select id="newRole" style="padding:10px 12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;background:white">
+                                <option value="user">Klijent</option>
+                                <option value="kontrola">Kontrola</option>
+                            </select>
                             <button type="submit" class="btn-primary">Kreiraj</button>
                         </form>
                         <div id="userStatus"></div>
