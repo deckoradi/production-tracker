@@ -9,7 +9,7 @@ if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
 const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
 async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error('Sesija je istekla.')}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
 
-document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers()}if(currentUser?.role==='kontrola'){addKontrolaControls()}addClientExportControls();loadOrders()});
+document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers()}addClientExportControls();if(currentUser?.role==='kontrola'){addKontrolaControls()}loadOrders()});
 let searchDebounce=null;
 searchInput?.addEventListener('input',()=>{clearTimeout(searchDebounce);searchDebounce=setTimeout(()=>loadOrders(searchInput.value,1),300)});
 searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>phaseModal?.classList.add('hidden'));window.addEventListener('click',e=>{if(e.target===phaseModal)phaseModal.classList.add('hidden')});
@@ -92,6 +92,70 @@ async function exportMyHistory(){
     URL.revokeObjectURL(url);
     status.textContent='✅ Fajl preuzet';status.className='success';
   }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
+
+// ============ KONTROLA - PANEL SA ŠABLONOM ZA MAIL (Prijem, po firmi/danu) ============
+async function addKontrolaControls(){
+  if($('kontrolaPanel'))return;
+  const div=document.createElement('div');div.id='kontrolaPanel';div.className='panel';
+  div.innerHTML=`<div class="panel-header"><h2>📋 Šablon za Prijem (mail)</h2></div>
+    <div class="panel-body">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <select id="prijemTplCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;flex:1;min-width:150px;font-family:var(--font-body);background:var(--card)">
+          <option value="">Izaberi firmu...</option>
+        </select>
+        <input type="date" id="prijemTplDate" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+        <button id="prijemTplGenBtn" class="btn-success">📋 Generiši</button>
+      </div>
+      <textarea id="prijemTplResult" class="phase-note" readonly style="margin-top:10px;min-height:180px;font-family:var(--font-mono);font-size:12.5px" placeholder="Ovde će se pojaviti tekst spreman za copy-paste u mail..."></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <button id="prijemTplCopyBtn" class="btn-secondary">📋 Kopiraj tekst</button>
+      </div>
+      <div id="prijemTplStatus" style="margin-top:8px"></div>
+    </div>`;
+  const anchor=$('clientExportPanel')||adminPanel;
+  anchor?.insertAdjacentElement('afterend',div);
+
+  const dateInput=$('prijemTplDate');
+  if(dateInput)dateInput.value=new Date().toISOString().slice(0,10);
+
+  try{
+    const companies=await api('/api/companies',{headers:headers()});
+    const sel=$('prijemTplCompany');
+    if(sel)sel.innerHTML='<option value="">Izaberi firmu...</option>'+companies.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  }catch(e){console.error(e)}
+
+  $('prijemTplGenBtn').onclick=generatePrijemTemplate;
+  $('prijemTplCopyBtn').onclick=copyPrijemTemplate;
+}
+
+async function generatePrijemTemplate(){
+  const status=$('prijemTplStatus');
+  const company=$('prijemTplCompany')?.value||'';
+  const date=$('prijemTplDate')?.value||'';
+  if(!company){status.textContent='❌ Izaberi firmu.';status.className='error';return}
+  status.textContent='⏳ Generišem...';status.className='';
+  try{
+    const params=new URLSearchParams();
+    params.append('company',company);
+    if(date)params.append('date',date);
+    const d=await api(`/api/prijem-template?${params.toString()}`,{headers:headers()});
+    $('prijemTplResult').value=d.text||'';
+    status.textContent='✅ Spremno - kopiraj i zalepi u mail';status.className='success';
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
+
+async function copyPrijemTemplate(){
+  const ta=$('prijemTplResult');
+  const status=$('prijemTplStatus');
+  if(!ta?.value){status.textContent='❌ Nema teksta za kopiranje - prvo generiši.';status.className='error';return}
+  try{
+    await navigator.clipboard.writeText(ta.value);
+    status.textContent='✅ Tekst kopiran u clipboard';status.className='success';
+  }catch(e){
+    ta.select();document.execCommand('copy');
+    status.textContent='✅ Tekst kopiran (fallback)';status.className='success';
+  }
 }
 
 async function clearActive(){
