@@ -822,10 +822,53 @@ app.post('/api/send-report', authenticate, async (req, res) => {
             return res.status(400).json({ error: 'Nema naloga' });
         }
 
-        // Ovde ide kod za slanje emaila (nije prikazan radi kratkoće)
-        // ...
+        const phaseSummary = (progress) => (progress || [])
+            .filter(p => p.phase !== 'NAPOMENA')
+            .map(p => {
+                const icon = p.status === 'completed' ? '✅' : p.status === 'problem' ? '⚠️' : '⬜';
+                return `${icon} ${phaseLabel(p.phase)}`;
+            })
+            .join(' &nbsp; ');
 
-        res.json({ message: '✅ Izveštaj poslat!' });
+        const rowsHtml = userOrders.map(o => `
+            <tr>
+                <td style="padding:8px;border-bottom:1px solid #e2e8f0;font-family:monospace;font-weight:600">${o.order_number}</td>
+                <td style="padding:8px;border-bottom:1px solid #e2e8f0">${o.name || ''}</td>
+                <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center">${o.quantity || 0}</td>
+                <td style="padding:8px;border-bottom:1px solid #e2e8f0;font-size:13px">${phaseSummary(o.progress)}</td>
+            </tr>`).join('');
+
+        const html = `
+            <div style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto">
+                <h2 style="color:#2B4570;margin-bottom:4px">📦 Dnevni izveštaj — ${req.user.company}</h2>
+                <p style="color:#70796F;margin-top:0">Datum: ${today}</p>
+                <table style="width:100%;border-collapse:collapse;margin-top:12px">
+                    <thead>
+                        <tr style="background:#2B4570;color:white">
+                            <th style="padding:8px;text-align:left">Nalog</th>
+                            <th style="padding:8px;text-align:left">Naziv</th>
+                            <th style="padding:8px;text-align:center">Količina</th>
+                            <th style="padding:8px;text-align:left">Status faza</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rowsHtml}</tbody>
+                </table>
+                <p style="color:#A0AEC0;font-size:12px;margin-top:20px">Automatski generisano iz Production Tracker sistema.</p>
+            </div>`;
+
+        const recipient = email || process.env.ADMIN_EMAIL;
+        if (!recipient) {
+            return res.status(400).json({ error: 'Nije definisan primalac (ADMIN_EMAIL nije podešen na serveru).' });
+        }
+
+        await transporter.sendMail({
+            from: `"Production Tracker" <${process.env.EMAIL_USER}>`,
+            to: recipient,
+            subject: `📦 Dnevni izveštaj — ${req.user.company} — ${today}`,
+            html
+        });
+
+        res.json({ message: `✅ Izveštaj poslat na ${recipient}` });
     } catch (e) {
         console.error('❌ Send report error:', e);
         res.status(500).json({ error: e.message });
