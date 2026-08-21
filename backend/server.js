@@ -6,15 +6,13 @@ const fs = require('fs');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
 const ExcelJS = require('exceljs');
 const { Pool } = require('pg');
 
 const dotenv = require('dotenv');
 dotenv.config({ path: path.join(__dirname, '.env') });
 
-console.log('📧 EMAIL_USER:', process.env.EMAIL_USER ? '✅' : '❌');
-console.log('📧 EMAIL_PASS:', process.env.EMAIL_PASS ? '✅' : '❌');
+console.log('📧 RESEND_API_KEY:', process.env.RESEND_API_KEY ? '✅' : '❌');
 console.log('📧 ADMIN_EMAIL:', process.env.ADMIN_EMAIL ? '✅' : '❌');
 console.log('🗄️ DATABASE_URL:', process.env.DATABASE_URL ? '✅' : '❌');
 
@@ -140,22 +138,31 @@ const authenticate = (req, res, next) => {
     }
 };
 
-let transporter = null;
-try {
-    if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-        transporter = nodemailer.createTransport({
-            service: 'gmail',
-            auth: {
-                user: process.env.EMAIL_USER,
-                pass: process.env.EMAIL_PASS
-            },
-            connectionTimeout: 10000,
-            greetingTimeout: 10000,
-            socketTimeout: 15000
-        });
-        console.log('📧 Email transporter: ✅');
+// ============ EMAIL (Resend HTTP API - radi na Render free planu, SMTP je blokiran) ============
+async function sendEmail({ to, subject, html }) {
+    if (!process.env.RESEND_API_KEY) {
+        throw new Error('Email nije podešen (RESEND_API_KEY nedostaje na serveru).');
     }
-} catch (e) { console.log('📧 Email: ❌', e.message); }
+    const r = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            from: 'Production Tracker <onboarding@resend.dev>',
+            to: [to],
+            subject,
+            html
+        })
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+        throw new Error(data.message || `Resend greška (HTTP ${r.status})`);
+    }
+    return data;
+}
+console.log('📧 Email (Resend): ' + (process.env.RESEND_API_KEY ? '✅' : '❌'));
 
 // ============ ROUTES ============
 
@@ -189,20 +196,45 @@ app.get('/api/users', authenticate, async (req, res) => {
     }
 });
 
+// Nasumična lozinka - bez lako zabunjujućih karaktera (0/O, 1/l/I) radi lakšeg diktiranja
+function generatePassword(length = 8) {
+    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+    let pass = '';
+    for (let i = 0; i < length; i++) pass += chars[Math.floor(Math.random() * chars.length)];
+    return pass;
+}
+
 app.post('/api/users', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
     try {
-        const { username, company } = req.body;
+        const { username, company, role } = req.body;
+        const finalRole = role === 'kontrola' ? 'kontrola' : 'user';
         const exists = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
         if (exists.rows.length > 0) {
             return res.status(400).json({ error: 'Username already exists' });
         }
-        const hashedPassword = await bcrypt.hash('password123', 10);
+        const plainPassword = generatePassword();
+        const hashedPassword = await bcrypt.hash(plainPassword, 10);
         const result = await pool.query(
             'INSERT INTO users (username, password, role, company) VALUES ($1, $2, $3, $4) RETURNING id, username, role, company',
-            [username, hashedPassword, 'user', company]
+            [username, hashedPassword, finalRole, company || (finalRole === 'kontrola' ? 'Kontrola' : '')]
         );
-        res.status(201).json({ message: 'User created', user: result.rows[0] });
+        res.status(201).json({ message: 'User created', user: result.rows[0], password: plainPassword });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/users/:id/reset-password', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
+    try {
+        const { id } = req.params;
+        const target = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
+        if (target.rows.length === 0) return res.status(404).json({ error: 'Korisnik ne postoji' });
+        const plainPassword = generatePassword();
+        const hashedPassword = await bcrypt.hash(plainPassword, 10);
+        await pool.query('UPDATE users SET password = $1 WHERE id = $2', [hashedPassword, id]);
+        res.json({ message: `Nova lozinka za "${target.rows[0].username}" generisana.`, password: plainPassword });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -218,6 +250,18 @@ app.delete('/api/users/:id', authenticate, async (req, res) => {
         if (String(target.rows[0].id) === String(req.user.id)) return res.status(400).json({ error: 'Ne možete obrisati sami sebe' });
         await pool.query('DELETE FROM users WHERE id = $1', [id]);
         res.json({ message: `Korisnik "${target.rows[0].username}" obrisan` });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/companies', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const result = await pool.query('SELECT DISTINCT company FROM orders WHERE company IS NOT NULL ORDER BY company');
+        res.json(result.rows.map(r => r.company));
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -308,7 +352,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                 // Vrati poslednje poznato stanje iz istorije (uključujući i datum)
                 let anyRestoredForThisOrder = false;
 
-                for (const phase of ['100', '200', '300', '400', '500', 'NAPOMENA']) {
+                for (const phase of ['100', '200', '300', '400', '500', 'NAPOMENA', 'PRIJEM']) {
                     const histResult = await pool.query(
                         `SELECT new_status, comment, changed_at FROM order_history
                          WHERE order_number = $1 AND company = $2 AND phase = $3
@@ -362,7 +406,9 @@ app.get('/api/orders', authenticate, async (req, res) => {
         let params = [];
         let paramIndex = 1;
 
-        if (req.user.role !== 'admin') {
+        const isPrivileged = req.user.role === 'admin' || req.user.role === 'kontrola';
+
+        if (!isPrivileged) {
             if (search) {
                 const s = search.toLowerCase();
                 whereClause = `WHERE LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex}`;
@@ -375,7 +421,7 @@ app.get('/api/orders', authenticate, async (req, res) => {
             }
         }
 
-        if (req.user.role === 'admin' && search) {
+        if (isPrivileged && search) {
             const s = search.toLowerCase();
             if (whereClause) {
                 whereClause += ` AND (LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(company) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex})`;
@@ -398,7 +444,7 @@ app.get('/api/orders', authenticate, async (req, res) => {
                    ) ORDER BY p.phase) 
                    FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
             FROM orders o
-            LEFT JOIN progress p ON o.id = p.order_id
+            LEFT JOIN progress p ON o.id = p.order_id ${isPrivileged ? '' : "AND p.phase != 'PRIJEM'"}
             LEFT JOIN LATERAL (
                 SELECT changed_at, comment FROM order_history oh
                 WHERE oh.order_number = o.order_number AND oh.company = o.company
@@ -455,6 +501,14 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
 
         if (!status) status = oldStatus;
         const finalComment = comment !== undefined ? comment : oldComment;
+
+        // ============ PRAVA PRISTUPA PO ULOZI ============
+        if (req.user.role === 'kontrola' && phase !== 'PRIJEM') {
+            return res.status(403).json({ error: 'Kontrola može da menja isključivo fazu Prijem.' });
+        }
+        if (req.user.role !== 'admin' && req.user.role !== 'kontrola' && phase === 'PRIJEM') {
+            return res.status(403).json({ error: 'Nemate dozvolu za ovu fazu.' });
+        }
 
         // ============ ZAKLJUČAVANJE PO DANU (samo za klijente, admin nema ograničenja) ============
         if (req.user.role !== 'admin') {
@@ -655,11 +709,16 @@ app.get('/api/history/export', authenticate, async (req, res) => {
 
         const phaseMap = new Map();    // key: order_number||company -> { phase: {status, comment, changedAt} }
         const napomenaMap = new Map(); // key: order_number||company -> {comment, changedAt}
+        const prijemMap = new Map();   // key: order_number||company -> {status, comment, changedAt}
         const phaseSet = new Set();
         phaseStatusResult.rows.forEach(r => {
             const key = `${r.order_number}||${r.company}`;
             if (r.phase === 'NAPOMENA') {
                 napomenaMap.set(key, { comment: r.comment || '', changedAt: r.changed_at });
+                return;
+            }
+            if (r.phase === 'PRIJEM') {
+                prijemMap.set(key, { status: r.new_status, comment: r.comment || '', changedAt: r.changed_at });
                 return;
             }
             if (!phaseMap.has(key)) phaseMap.set(key, {});
@@ -668,6 +727,22 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         });
         const phases = [...phaseSet].sort((a, b) => parseInt(a) - parseInt(b));
         const finalPhases = phases.length ? phases : ['100', '200', '300', '400', '500'];
+        const showPrijem = req.user.role === 'admin' || req.user.role === 'kontrola';
+
+        // Formatiranje PRIJEM podatka: JSON {outcome, unit, items:[{size,qty}], note} sačuvan u comment koloni
+        const prijemCellText = (entry) => {
+            if (!entry || entry.status === 'pending') return '';
+            const dateStr = entry.changedAt ? new Date(entry.changedAt).toLocaleDateString('sr-RS') : '';
+            if (entry.status === 'completed') return [`✅ ${dateStr}`].filter(Boolean).join('  ');
+            try {
+                const d = JSON.parse(entry.comment || '{}');
+                const icon = d.outcome === 'anulirano' ? '❌ ANULIRANO' : '🔧 REPARACIJA';
+                const items = (d.items || []).map(it => `${it.size}/${d.unit || 'par'}×${it.qty}`).join(', ');
+                return [`${icon} ${dateStr}`, items, d.note].filter(Boolean).join('  —  ');
+            } catch (_) {
+                return [`⚠️ ${dateStr}`, entry.comment].filter(Boolean).join('  ');
+            }
+        };
 
         const statusFill = s => s === 'completed' ? 'FFC6F6D5' : s === 'problem' ? 'FFFED7D7' : null;
         const statusFont = s => s === 'completed' ? 'FF276749' : s === 'problem' ? 'FF9B2C2C' : 'FF4A5568';
@@ -715,6 +790,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         ];
         const phaseCols = finalPhases.map(p => ({ key: 'phase_' + p, width: 26 }));
         const tailCols = [
+            ...(showPrijem ? [{ key: 'prijem', width: 36 }] : []),
             { key: 'napomena', width: 30 },
             { key: 'changed_by', width: 16 }
         ];
@@ -737,6 +813,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         headerRow.values = [
             'Datum i vreme', 'Firma', 'Nalog',
             ...finalPhases.map(p => phaseLabel(p)),
+            ...(showPrijem ? ['Prijem'] : []),
             'Napomena', 'Izmenio'
         ];
         headerRow.eachCell(cell => {
@@ -752,11 +829,12 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             const key = `${r.order_number}||${r.company}`;
             const phaseData = phaseMap.get(key) || {};
             const napomena = napomenaMap.get(key);
-            const visibleCompany = (req.user.role === 'admin' || r.company === req.user.company) ? r.company : '—';
+            const visibleCompany = (req.user.role === 'admin' || req.user.role === 'kontrola' || r.company === req.user.company) ? r.company : '—';
             const rowData = {
                 changed_at: new Date(r.changed_at).toLocaleString('sr-RS'),
                 company: visibleCompany,
                 order_number: r.order_number,
+                ...(showPrijem ? { prijem: prijemCellText(prijemMap.get(key)) } : {}),
                 napomena: napomena && napomena.comment ? napomena.comment : '',
                 changed_by: r.changed_by || ''
             };
@@ -794,13 +872,77 @@ app.get('/api/history/export', authenticate, async (req, res) => {
     }
 });
 
+// ============ PRIJEM - ŠABLONSKI TEKST ZA COPY-PASTE U MAIL ============
+// Zbirno po firmi za dati dan (podrazumevano danas) - admin i Kontrola, moze se generisati vise puta dnevno
+app.get('/api/prijem-template', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const { company, date } = req.query;
+        if (!company) return res.status(400).json({ error: 'Firma je obavezna.' });
+        const targetDate = date || new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
+
+        const result = await pool.query(
+            `SELECT DISTINCT ON (order_number) order_number, new_status, comment, changed_at
+             FROM order_history
+             WHERE company = $1 AND phase = 'PRIJEM'
+               AND changed_at >= $2::date AND changed_at < ($2::date + INTERVAL '1 day')
+             ORDER BY order_number, changed_at DESC`,
+            [company, targetDate]
+        );
+
+        if (result.rows.length === 0) {
+            return res.json({ text: `Nema Prijem aktivnosti za "${company}" na dan ${targetDate}.` });
+        }
+
+        // Uzmi naziv/artikal naloga radi čitljivosti
+        const orderNumbers = result.rows.map(r => r.order_number);
+        const infoResult = await pool.query(
+            `SELECT order_number, name FROM orders WHERE company = $1 AND order_number = ANY($2::text[])`,
+            [company, orderNumbers]
+        );
+        const nameMap = new Map(infoResult.rows.map(r => [r.order_number, r.name]));
+
+        const lines = [];
+        lines.push(`IZVEŠTAJ PRIJEMA — ${company}`);
+        lines.push(`Datum: ${new Date(targetDate).toLocaleDateString('sr-RS')}`);
+        lines.push('');
+
+        result.rows.forEach(r => {
+            const naziv = nameMap.get(r.order_number) || '';
+            lines.push(`Nalog #${r.order_number}${naziv ? ' — ' + naziv : ''}`);
+            if (r.new_status === 'completed') {
+                lines.push('✅ Sve u redu');
+            } else {
+                try {
+                    const d = JSON.parse(r.comment || '{}');
+                    const icon = d.outcome === 'anulirano' ? '❌ ANULIRANO' : '🔧 REPARACIJA';
+                    lines.push(icon);
+                    const items = (d.items || []).map(it => `${it.size} (${d.unit || 'par'}) x${it.qty}`).join(', ');
+                    if (items) lines.push(`Brojevi: ${items}`);
+                    if (d.note) lines.push(`Napomena: ${d.note}`);
+                } catch (_) {
+                    lines.push('⚠️ Problem');
+                    if (r.comment) lines.push(r.comment);
+                }
+            }
+            lines.push('');
+        });
+
+        lines.push('—');
+        lines.push(`Generisano: ${new Date().toLocaleString('sr-RS')}`);
+
+        res.json({ text: lines.join('\n') });
+    } catch (e) {
+        console.error('❌ Prijem template error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ============ SEND REPORT ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
-        if (!transporter) {
-            return res.status(400).json({ error: 'Email not configured' });
-        }
-
         const { email, date } = req.body;
         const today = date || new Date().toLocaleDateString('sr-RS');
 
@@ -861,8 +1003,7 @@ app.post('/api/send-report', authenticate, async (req, res) => {
             return res.status(400).json({ error: 'Nije definisan primalac (ADMIN_EMAIL nije podešen na serveru).' });
         }
 
-        await transporter.sendMail({
-            from: `"Production Tracker" <${process.env.EMAIL_USER}>`,
+        await sendEmail({
             to: recipient,
             subject: `📦 Dnevni izveštaj — ${req.user.company} — ${today}`,
             html
@@ -879,5 +1020,5 @@ app.post('/api/send-report', authenticate, async (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`🗄️ PostgreSQL: ${process.env.DATABASE_URL ? '✅' : '❌'}`);
-    console.log(`📧 Email: ${transporter ? '✅' : '❌'}`);
+    console.log(`📧 Email (Resend): ${process.env.RESEND_API_KEY ? '✅' : '❌'}`);
 });

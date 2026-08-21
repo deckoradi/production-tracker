@@ -9,7 +9,7 @@ if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
 const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
 async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error('Sesija je istekla.')}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
 
-document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers()}addClientExportControls();loadOrders()});
+document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers()}if(currentUser?.role==='kontrola'){addKontrolaControls()}addClientExportControls();loadOrders()});
 let searchDebounce=null;
 searchInput?.addEventListener('input',()=>{clearTimeout(searchDebounce);searchDebounce=setTimeout(()=>loadOrders(searchInput.value,1),300)});
 searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>phaseModal?.classList.add('hidden'));window.addEventListener('click',e=>{if(e.target===phaseModal)phaseModal.classList.add('hidden')});
@@ -113,8 +113,17 @@ async function clearAll(){
 
 $('uploadForm')?.addEventListener('submit',async e=>{e.preventDefault();const f=$('fileInput'),s=$('uploadStatus');if(!f?.files?.[0]){s.textContent='Molimo izaberite Excel fajl';s.className='error';return}s.textContent='⏳ Analiziram Excel i sinhronizujem...';s.className='';const fd=new FormData();fd.append('file',f.files[0]);try{const r=await fetch('/api/upload',{method:'POST',headers:headers(),body:fd});const d=await r.json();if(!r.ok)throw Error(d.error);s.className='success';s.innerHTML=`✅ Sinhronizovano: 🟢 ${d.updated} postojećih, 🔵 ${d.inserted} novih, 🔴 ${d.removed} uklonjeno. Istorija sačuvana.`;f.value='';await loadOrders('',1)}catch(e){s.textContent='❌ '+e.message;s.className='error'}});
 
-$('createUserForm')?.addEventListener('submit',async e=>{e.preventDefault();try{const d=await api('/api/users',{method:'POST',headers:headers(true),body:JSON.stringify({username:$('newUsername').value.trim(),company:$('newCompany').value.trim()})});$('userStatus').textContent=`✅ Korisnik ${d.user.username} kreiran`;$('userStatus').className='success';$('newUsername').value='';$('newCompany').value='';loadUsers()}catch(e){$('userStatus').textContent='❌ '+e.message;$('userStatus').className='error'}});
-async function loadUsers(){try{const u=await api('/api/users',{headers:headers()});const x=$('usersList');if(x)x.innerHTML=u.map(a=>`<div class="user-item"><span>${esc(a.username)}</span><span>${esc(a.company)}</span><span>${esc(a.role)}</span>${a.role!=='admin'?`<span class="clickable" style="color:var(--red);font-weight:700" onclick="deleteUser(${a.id},'${js(a.username)}')" title="Obriši korisnika">🗑️</span>`:'<span></span>'}</div>`).join('')||'Nema korisnika';const sel=$('historyCompany');if(sel){const companies=[...new Set(u.map(a=>a.company).filter(Boolean))].sort();sel.innerHTML='<option value="">Sve firme</option>'+companies.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}}catch(e){console.error(e)}}
+$('createUserForm')?.addEventListener('submit',async e=>{e.preventDefault();try{const d=await api('/api/users',{method:'POST',headers:headers(true),body:JSON.stringify({username:$('newUsername').value.trim(),company:$('newCompany').value.trim(),role:$('newRole')?.value||'user'})});$('userStatus').textContent=`✅ Korisnik ${d.user.username} kreiran (${d.user.role==='kontrola'?'Kontrola':'Klijent'})`;$('userStatus').className='success';$('newUsername').value='';$('newCompany').value='';loadUsers();alert(`✅ Korisnik "${d.user.username}" kreiran.\n\n🔑 Lozinka: ${d.password}\n\nZapiši je i prosledi korisniku - prikazuje se samo ovaj put!`)}catch(e){$('userStatus').textContent='❌ '+e.message;$('userStatus').className='error'}});
+async function loadUsers(){try{const u=await api('/api/users',{headers:headers()});const x=$('usersList');if(x)x.innerHTML=u.map(a=>`<div class="user-item" style="grid-template-columns:1fr 1fr auto auto auto"><span>${esc(a.username)}</span><span>${esc(a.company)}</span><span>${esc(a.role)}</span><span class="clickable" style="color:var(--denim);font-weight:700" onclick="resetPassword(${a.id},'${js(a.username)}')" title="Resetuj lozinku">🔑</span>${a.role!=='admin'?`<span class="clickable" style="color:var(--red);font-weight:700" onclick="deleteUser(${a.id},'${js(a.username)}')" title="Obriši korisnika">🗑️</span>`:'<span></span>'}</div>`).join('')||'Nema korisnika';const sel=$('historyCompany');if(sel){const companies=[...new Set(u.map(a=>a.company).filter(Boolean))].sort();sel.innerHTML='<option value="">Sve firme</option>'+companies.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}}catch(e){console.error(e)}}
+
+async function resetPassword(id,username){
+  if(!confirm(`Generisati novu lozinku za "${username}"? Stara prestaje da važi.`))return;
+  try{
+    const d=await api(`/api/users/${id}/reset-password`,{method:'POST',headers:headers()});
+    $('userStatus').textContent='✅ '+d.message;$('userStatus').className='success';
+    alert(`🔑 Nova lozinka za "${username}": ${d.password}\n\nZapiši je i prosledi korisniku - prikazuje se samo ovaj put!`);
+  }catch(e){$('userStatus').textContent='❌ '+e.message;$('userStatus').className='error'}
+}
 
 async function deleteUser(id,username){
   if(!confirm(`Obrisati korisnika "${username}"? Ova akcija se ne može poništiti.`))return;
@@ -127,7 +136,7 @@ async function deleteUser(id,username){
 sendReportBtn?.addEventListener('click',async()=>{if(!confirm('📧 Pošalji dnevni izveštaj?'))return;try{alert((await api('/api/send-report',{method:'POST',headers:headers(true),body:JSON.stringify({date:new Date().toLocaleDateString('sr-RS')})})).message)}catch(e){alert('❌ '+e.message)}});
 
 async function loadOrders(search='',page=1){try{const u=search?`/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}`:`/api/orders?page=${page}&limit=${LIMIT}`;ordersContainer.innerHTML='<div class="loading">⏳ Učitavanje...</div>';const d=await api(u,{headers:headers()});orders=d.data||[];totalOrders=d.total||0;currentPage=d.page||1;totalPages=d.totalPages||1;if(orderCount)orderCount.textContent=`${totalOrders} naloga`;renderOrders();if(selectedOrderId&&!phaseModal?.classList.contains('hidden')){const o=orders.find(x=>String(x.id)===String(selectedOrderId));if(o)renderModal(o);else phaseModal.classList.add('hidden')}}catch(e){ordersContainer.innerHTML=`<div class="error">❌ ${esc(e.message)}</div>`}}
-function renderOrders(){if(!orders.length){ordersContainer.innerHTML='<p style="text-align:center;padding:40px;color:var(--muted)">📭 Nema naloga za prikaz</p>';return}const admin=currentUser?.role==='admin';let h='<table><thead><tr>'+(admin?'<th>Firma</th><th>Šifra</th><th>Naziv</th><th>Nalog</th><th>Količina</th><th>Datum</th><th>Status</th>':'<th>Nalog</th><th>Naziv</th><th>Količina</th><th>Status</th>')+'</tr></thead><tbody>';orders.forEach((o,i)=>{const p=o.progress||[],c=p.filter(x=>x.status==='completed').length,pr=p.filter(x=>x.status==='problem').length,t=p.length;const st=t&&c===t?['✅ Završeno','status-completed']:pr?['⚠️ Problem','status-problem']:c?[`${c}/${t}`,'status-pending']:['U toku','status-pending'];h+=`<tr style="${i%2===0?'background:var(--paper)':''}">`;if(admin)h+=`<td>${esc(o.company)}</td><td class="clickable" style="cursor:default;font-weight:600">${esc(o.code)}</td><td>${esc(o.name)}</td><td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td style="text-align:center">${o.quantity||0}</td><td>${esc(o.deliveryDate||'-')}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;else h+=`<td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td>${esc(o.name)}</td><td style="text-align:center">${o.quantity||0}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;h+='</tr>'});h+='</tbody></table>';if(totalPages>1)h+=`<div class="pagination"><button onclick="goToPage(${currentPage-1})" ${currentPage<=1?'disabled':''}>◀</button><span>${currentPage} / ${totalPages}</span><button onclick="goToPage(${currentPage+1})" ${currentPage>=totalPages?'disabled':''}>▶</button></div>`;ordersContainer.innerHTML=h}
+function renderOrders(){if(!orders.length){ordersContainer.innerHTML='<p style="text-align:center;padding:40px;color:var(--muted)">📭 Nema naloga za prikaz</p>';return}const admin=currentUser?.role==='admin'||currentUser?.role==='kontrola';let h='<table><thead><tr>'+(admin?'<th>Firma</th><th>Šifra</th><th>Naziv</th><th>Nalog</th><th>Količina</th><th>Datum</th><th>Status</th>':'<th>Nalog</th><th>Naziv</th><th>Količina</th><th>Status</th>')+'</tr></thead><tbody>';orders.forEach((o,i)=>{const p=o.progress||[],c=p.filter(x=>x.status==='completed').length,pr=p.filter(x=>x.status==='problem').length,t=p.length;const st=t&&c===t?['✅ Završeno','status-completed']:pr?['⚠️ Problem','status-problem']:c?[`${c}/${t}`,'status-pending']:['U toku','status-pending'];h+=`<tr style="${i%2===0?'background:var(--paper)':''}">`;if(admin)h+=`<td>${esc(o.company)}</td><td class="clickable" style="cursor:default;font-weight:600">${esc(o.code)}</td><td>${esc(o.name)}</td><td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td style="text-align:center">${o.quantity||0}</td><td>${esc(o.deliveryDate||'-')}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;else h+=`<td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td>${esc(o.name)}</td><td style="text-align:center">${o.quantity||0}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;h+='</tr>'});h+='</tbody></table>';if(totalPages>1)h+=`<div class="pagination"><button onclick="goToPage(${currentPage-1})" ${currentPage<=1?'disabled':''}>◀</button><span>${currentPage} / ${totalPages}</span><button onclick="goToPage(${currentPage+1})" ${currentPage>=totalPages?'disabled':''}>▶</button></div>`;ordersContainer.innerHTML=h}
 function goToPage(p){if(p<1||p>totalPages)return;loadOrders(searchInput?.value||'',p)}
 
 function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)return;selectedOrderId=id;renderModal(o);phaseModal.classList.remove('hidden')}
@@ -159,17 +168,20 @@ function phaseLockState(p){
   return {locked:true, onlyCompleteAllowed:false};
 }
 
-// ============ RENDER MODAL – prošivena linija kroz faze, zaključavanje po danu, Napomena ============
+// ============ RENDER MODAL – prošivena linija kroz faze, zaključavanje po danu, Napomena, Prijem ============
 function renderModal(o){
   modalOrderNumber.textContent=o.orderNumber||'N/A';
   const isAdmin=currentUser?.role==='admin';
+  const isKontrola=currentUser?.role==='kontrola';
+  const isPrivileged=isAdmin||isKontrola;
   const isOwnCompany=o.company===currentUser?.company;
-  const firmaLine=(isAdmin||isOwnCompany)?`<p><b>Firma:</b> ${esc(o.company)}</p>`:'';
+  const firmaLine=(isPrivileged||isOwnCompany)?`<p><b>Firma:</b> ${esc(o.company)}</p>`:'';
   modalOrderInfo.innerHTML=`${firmaLine}<p><b>Artikal:</b> ${esc(o.name)}</p><p><b>Šifra:</b> ${esc(o.code)}</p><p><b>Količina:</b> ${o.quantity||0}</p><p><b>Datum isporuke:</b> ${esc(o.deliveryDate||'-')}</p>`;
 
   const progress=o.progress||[];
-  const phases=progress.filter(p=>p.phase!=='NAPOMENA');
+  const phases=progress.filter(p=>p.phase!=='NAPOMENA' && p.phase!=='PRIJEM');
   const napomena=progress.find(p=>p.phase==='NAPOMENA');
+  const prijem=progress.find(p=>p.phase==='PRIJEM');
 
   let h='<div class="phase-timeline">';
   phases.forEach(p=>{
@@ -177,7 +189,7 @@ function renderModal(o){
     const hasActivity = (p.status && p.status!=='pending') || (p.comment && p.comment.trim()!=='');
     const dateStr = hasActivity && p.updatedAt ? date(p.updatedAt) : null;
     const comment = (p.comment||'').trim();
-    const lock=phaseLockState(p);
+    const lock = isKontrola ? {locked:true, onlyCompleteAllowed:false} : phaseLockState(p);
 
     // Bedž: samo ikonica + datum (bez reči "Urađeno"/"Problem"). Za Problem: ikonica+datum+tekst u jednoj liniji.
     let badge='';
@@ -248,7 +260,145 @@ function renderModal(o){
       </div>
     </div>`;
 
+  // ============ PRIJEM (samo admin i Kontrola) ============
+  if(isPrivileged && prijem){
+    const pLock = isAdmin ? {locked:false,onlyCompleteAllowed:false} : phaseLockState(prijem);
+    let pBadge='';
+    let pBody='';
+    if(prijem.status==='completed'){
+      const d = prijem.updatedAt ? date(prijem.updatedAt) : null;
+      pBadge = `<span class="phase-state">✅${d?` ${d}`:''}</span>`;
+    } else if(prijem.status==='problem'){
+      const parsed = parsePrijemData(prijem.comment);
+      const d = prijem.updatedAt ? date(prijem.updatedAt) : null;
+      const icon = parsed.outcome==='anulirano' ? '❌ ANULIRANO' : '🔧 REPARACIJA';
+      const items = (parsed.items||[]).map(it=>`${it.size}/${parsed.unit||'par'}×${it.qty}`).join(', ');
+      pBadge = `<span class="phase-state">${icon}${d?` ${d}`:''}${items?` — ${esc(items)}`:''}${parsed.note?` — ${esc(parsed.note)}`:''}</span>`;
+    }
+    const pLockIcon = (pLock.locked && !pLock.onlyCompleteAllowed) ? `<span class="phase-lock" title="Zaključano — obratite se administratoru">🔒</span>` : '';
+
+    if(pLock.locked && !pLock.onlyCompleteAllowed){
+      pBody = '';
+    } else if(pLock.locked && pLock.onlyCompleteAllowed){
+      pBody = `<div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="submitPrijemOk(${o.id})">✅ Sve u redu</button></div>`;
+    } else {
+      pBody = `<div class="phase-actions" id="prijemActions-${o.id}">
+          <button class="btn-tag btn-tag--done" onclick="submitPrijemOk(${o.id})">✅ Sve u redu</button>
+          <button class="btn-tag btn-tag--problem" onclick="togglePrijemChoice(${o.id})">⚠️ Problem</button>
+        </div>
+        <div id="prijemChoice-${o.id}" class="hidden" style="margin:6px 0">
+          <div class="phase-actions">
+            <button class="btn-tag btn-tag--problem" onclick="openSizeModal(${o.id},'reparacija')">🔧 Reparacija</button>
+            <button class="btn-tag btn-tag--problem" onclick="openSizeModal(${o.id},'anulirano')">❌ Anulirano</button>
+          </div>
+        </div>`;
+    }
+
+    h+=`<div class="phase-row" style="margin-top:6px">
+      <div class="phase-spine">
+        <div class="phase-medallion">📥</div>
+      </div>
+      <div class="phase-content" style="border-bottom:none">
+        <div class="phase-head">
+          <span class="phase-name">Prijem</span>
+          ${pBadge}
+          ${pLockIcon}
+        </div>
+        ${pBody}
+      </div>
+    </div>`;
+  }
+
   phasesContainer.innerHTML=phases.length ? h : 'Nema faza';
+}
+
+function parsePrijemData(comment){
+  try{ return JSON.parse(comment||'{}') }catch(_){ return {} }
+}
+
+function togglePrijemChoice(id){
+  const el=$(`prijemChoice-${id}`);
+  el?.classList.toggle('hidden');
+}
+
+async function submitPrijemOk(id){
+  const o=orders.find(x=>String(x.id)===String(id));
+  const p=o?.progress.find(x=>x.phase==='PRIJEM');
+  if(!p)return;
+  const old={status:p.status,comment:p.comment,updatedAt:p.updatedAt};
+  p.status='completed';p.comment='';p.updatedAt=new Date().toISOString();
+  renderModal(o);
+  try{
+    const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase:'PRIJEM',status:'completed',comment:''})});
+    p.updatedAt=d.updatedAt;renderModal(o);
+  }catch(e){Object.assign(p,old);renderModal(o);alert('❌ '+e.message)}
+}
+
+// ============ SIZE MODAL (Reparacija / Anulirano) ============
+const SIZE_RANGE=Array.from({length:46-18+1},(_,i)=>18+i);
+let sizeModalOrderId=null, sizeModalOutcome=null;
+
+function ensureSizeModal(){
+  if($('sizeModal'))return;
+  const div=document.createElement('div');
+  div.id='sizeModal';div.className='modal hidden';
+  div.innerHTML=`<div class="modal-content" style="max-width:460px">
+    <span class="close-modal" onclick="closeSizeModal()">&times;</span>
+    <h2 id="sizeModalTitle" style="font-size:18px"></h2>
+    <p style="color:var(--muted);font-size:13px;margin-top:8px">Unesi količinu za brojeve koji su u pitanju.</p>
+    <div style="display:flex;gap:14px;align-items:center;margin:10px 0">
+      <label style="font-size:13px;font-weight:600"><input type="radio" name="sizeUnit" value="par" checked> Par</label>
+      <label style="font-size:13px;font-weight:600"><input type="radio" name="sizeUnit" value="komad"> Komad</label>
+    </div>
+    <div id="sizeGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:8px;margin:10px 0"></div>
+    <textarea id="sizeNote" class="phase-note" placeholder="Komentar..." style="margin-top:6px"></textarea>
+    <div class="phase-actions" style="margin-top:12px">
+      <button class="btn-tag btn-tag--done" onclick="confirmSizeModal()">✅ Potvrdi</button>
+      <button class="btn-tag btn-tag--reset" onclick="closeSizeModal()">Otkaži</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+  const grid=$('sizeGrid');
+  grid.innerHTML=SIZE_RANGE.map(s=>`
+    <div style="text-align:center">
+      <div style="font-family:var(--font-mono);font-size:11px;color:var(--muted)">${s}</div>
+      <input type="number" min="0" data-size="${s}" class="sizeQtyInput" style="width:100%;padding:6px 4px;border:1px solid var(--line);border-radius:6px;text-align:center;font-size:13px">
+    </div>`).join('');
+}
+
+function openSizeModal(orderId,outcome){
+  ensureSizeModal();
+  sizeModalOrderId=orderId;sizeModalOutcome=outcome;
+  $('sizeModalTitle').textContent = outcome==='anulirano' ? '❌ Anulirano' : '🔧 Reparacija';
+  document.querySelectorAll('.sizeQtyInput').forEach(inp=>inp.value='');
+  $('sizeNote').value='';
+  document.querySelector('input[name="sizeUnit"][value="par"]').checked=true;
+  $('sizeModal').classList.remove('hidden');
+}
+function closeSizeModal(){$('sizeModal')?.classList.add('hidden');sizeModalOrderId=null;sizeModalOutcome=null}
+
+async function confirmSizeModal(){
+  const id=sizeModalOrderId, outcome=sizeModalOutcome;
+  if(!id||!outcome)return;
+  const unit=document.querySelector('input[name="sizeUnit"]:checked')?.value||'par';
+  const items=[...document.querySelectorAll('.sizeQtyInput')]
+    .map(inp=>({size:parseInt(inp.dataset.size),qty:parseInt(inp.value)}))
+    .filter(it=>it.qty>0);
+  const note=$('sizeNote').value.trim();
+  if(items.length===0 && !note){alert('Unesi bar jedan broj sa količinom, ili komentar.');return}
+
+  const payload=JSON.stringify({outcome,unit,items,note});
+  const o=orders.find(x=>String(x.id)===String(id));
+  const p=o?.progress.find(x=>x.phase==='PRIJEM');
+  if(!p){closeSizeModal();return}
+  const old={status:p.status,comment:p.comment,updatedAt:p.updatedAt};
+  p.status='problem';p.comment=payload;p.updatedAt=new Date().toISOString();
+  closeSizeModal();
+  renderModal(o);
+  try{
+    const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase:'PRIJEM',status:'problem',comment:payload})});
+    p.updatedAt=d.updatedAt;renderModal(o);
+  }catch(e){Object.assign(p,old);renderModal(o);alert('❌ '+e.message)}
 }
 
 // ============ SAVE COMMENT ============
@@ -285,4 +435,4 @@ function date(v) {
 
 function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
 function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
-window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;
+window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;window.resetPassword=resetPassword;
