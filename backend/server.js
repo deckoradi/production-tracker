@@ -535,6 +535,12 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
 
         // ============ ZAKLJUČAVANJE PO DANU (samo za klijente, admin nema ograničenja) ============
         if (req.user.role !== 'admin') {
+            // "Nema" (samo Serigrafija/Vez) se zaključava ODMAH i TRAJNO, bez izuzetka
+            if (oldStatus === 'nema') {
+                return res.status(403).json({
+                    error: '🔒 Ova faza je označena kao "Nema" i trajno je zaključana. Obratite se administratoru.'
+                });
+            }
             const hasPriorActivity = oldStatus !== 'pending' || oldComment.trim() !== '';
             let sameDay = true;
             if (hasPriorActivity && oldUpdatedAt) {
@@ -760,7 +766,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             try {
                 const d = JSON.parse(entry.comment || '{}');
                 const icon = d.outcome === 'anulirano' ? '❌ ANULIRANO' : '🔧 REPARACIJA';
-                const items = (d.items || []).map(it => `${it.size}/${d.unit || 'par'}×${it.qty}`).join(', ');
+                const items = (d.items || []).map(it => `vel.${it.size} - ${it.qty} pa.`).join(', ');
                 return [`${icon} ${dateStr}`, items, d.note].filter(Boolean).join('  —  ');
             } catch (_) {
                 return [`⚠️ ${dateStr}`, entry.comment].filter(Boolean).join('  ');
@@ -782,6 +788,8 @@ app.get('/api/history/export', authenticate, async (req, res) => {
 
             if (entry.status === 'completed') {
                 lines.push(dateStr ? `✅ ${dateStr}` : '✅');
+            } else if (entry.status === 'nema') {
+                lines.push('🚫 Nema');
             } else if (entry.status === 'problem') {
                 lines.push([`⚠️ ${dateStr}`, comment].filter(Boolean).join('  '));
             } else if (comment) {
@@ -909,14 +917,14 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
         const result = await pool.query(
             `SELECT DISTINCT ON (order_number) order_number, new_status, comment, changed_at
              FROM order_history
-             WHERE company = $1 AND phase = 'PRIJEM'
+             WHERE company = $1 AND phase = 'PRIJEM' AND new_status = 'problem'
                AND changed_at >= $2::date AND changed_at < ($2::date + INTERVAL '1 day')
              ORDER BY order_number, changed_at DESC`,
             [company, targetDate]
         );
 
         if (result.rows.length === 0) {
-            return res.json({ text: `Nema Prijem aktivnosti za "${company}" na dan ${targetDate}.` });
+            return res.json({ text: `Nema Reparacija/Anulirano stavki za "${company}" na dan ${targetDate}.` });
         }
 
         // Uzmi naziv/artikal naloga radi čitljivosti
@@ -927,34 +935,36 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
         );
         const nameMap = new Map(infoResult.rows.map(r => [r.order_number, r.name]));
 
-        const lines = [];
-        lines.push(`IZVEŠTAJ PRIJEMA — ${company}`);
-        lines.push(`Datum: ${new Date(targetDate).toLocaleDateString('sr-RS')}`);
-        lines.push('');
-
+        let hasReparacija = false;
+        const itemLines = [];
         result.rows.forEach(r => {
             const naziv = nameMap.get(r.order_number) || '';
-            lines.push(`Nalog #${r.order_number}${naziv ? ' — ' + naziv : ''}`);
-            if (r.new_status === 'completed') {
-                lines.push('✅ Sve u redu');
-            } else {
-                try {
-                    const d = JSON.parse(r.comment || '{}');
-                    const icon = d.outcome === 'anulirano' ? '❌ ANULIRANO' : '🔧 REPARACIJA';
-                    lines.push(icon);
-                    const items = (d.items || []).map(it => `${it.size} (${d.unit || 'par'}) x${it.qty}`).join(', ');
-                    if (items) lines.push(`Brojevi: ${items}`);
-                    if (d.note) lines.push(`Napomena: ${d.note}`);
-                } catch (_) {
-                    lines.push('⚠️ Problem');
-                    if (r.comment) lines.push(r.comment);
-                }
-            }
-            lines.push('');
+            let d = {};
+            try { d = JSON.parse(r.comment || '{}'); } catch (_) {}
+            const isAnulirano = d.outcome === 'anulirano';
+            if (!isAnulirano) hasReparacija = true;
+            const icon = isAnulirano ? '❌ ANULIRANO' : '🔧 REPARACIJA';
+            const items = (d.items || []).map(it => `vel.${it.size} - ${it.qty} pa.`).join(', ');
+
+            itemLines.push(`Nalog #${r.order_number}${naziv ? ' — ' + naziv : ''}`);
+            itemLines.push(icon);
+            if (items) itemLines.push(items);
+            if (d.note) itemLines.push(`Napomena: ${d.note}`);
+            itemLines.push('');
         });
 
-        lines.push('—');
-        lines.push(`Generisano: ${new Date().toLocaleString('sr-RS')}`);
+        const lines = [];
+        lines.push('Poštovani,');
+        lines.push('');
+        lines.push('danas Vam vraćamo po otpremnici br. ----- sledeće artikle:');
+        lines.push('');
+        lines.push(...itemLines);
+        if (hasReparacija) {
+            lines.push('Molimo Vas da uradite reparacije što pre, kako ne bismo kasnili sa isporukama.');
+            lines.push('');
+        }
+        lines.push('Hvala,');
+        lines.push('pozdrav.');
 
         res.json({ text: lines.join('\n') });
     } catch (e) {

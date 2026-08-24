@@ -238,6 +238,7 @@ function isSameLocalDay(iso){
 }
 function phaseLockState(p){
   if(currentUser?.role==='admin') return {locked:false, onlyCompleteAllowed:false};
+  if(p.status==='nema') return {locked:true, onlyCompleteAllowed:false};
   const hasActivity=(p.status && p.status!=='pending') || (p.comment && p.comment.trim()!=='');
   if(!hasActivity) return {locked:false, onlyCompleteAllowed:false};
   if(isSameLocalDay(p.updatedAt)) return {locked:false, onlyCompleteAllowed:false};
@@ -274,7 +275,11 @@ function renderModal(o){
       badge=`<span class="phase-state">✅${dateStr?` ${dateStr}`:''}</span>`;
     } else if(p.status==='problem'){
       badge=`<span class="phase-state">⚠️${dateStr?` ${dateStr}`:''}${comment?` — ${esc(comment)}`:''}</span>`;
+    } else if(p.status==='nema'){
+      badge=`<span class="phase-state">🚫 Nema</span>`;
     }
+    // Dugme "Nema" - samo za Serigrafiju (200) i Vez (300), za artikle koji tu operaciju nemaju
+    const showNemaBtn = (p.phase==='200' || p.phase==='300');
     // Trajna istorija "Problem" (ostaje vidljivo i posle prelaska na Urađeno), sa tekstom koji ga je pratio
     const problemDateStr = p.lastProblemAt && p.status!=='problem' ? date(p.lastProblemAt) : null;
     const problemComment = (p.lastProblemComment||'').trim();
@@ -292,6 +297,7 @@ function renderModal(o){
       bodyHtml=`<div class="phase-actions">
           <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button>
           <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ Problem</button>
+          ${showNemaBtn ? `<button class="btn-tag btn-tag--reset" onclick="if(confirm('Označi da ova faza ne postoji za ovaj artikal? Trajno se zaključava.'))updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 Nema</button>` : ''}
           ${isAdmin ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">⬜ Reset</button>` : ''}
         </div>
         <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea>`;
@@ -318,7 +324,7 @@ function renderModal(o){
   h+='</div>';
 
   // ============ NAPOMENA (opšte polje, van faza, ista logika zaključavanja) ============
-  const nLock = napomena ? phaseLockState(napomena) : {locked:false};
+  const nLock = napomena ? (isKontrola ? {locked:true, onlyCompleteAllowed:false} : phaseLockState(napomena)) : {locked:false};
   const nComment = napomena?.comment || '';
   const nDate = napomena?.updatedAt && (nComment.trim()!=='') ? date(napomena.updatedAt) : null;
   h+=`<div class="phase-row" style="margin-top:6px">
@@ -332,7 +338,7 @@ function renderModal(o){
           ${nLock.locked ? `<span class="phase-lock" title="Zaključano — obratite se administratoru">🔒</span>` : ''}
         </div>
         ${nLock.locked
-          ? (nComment ? `<div class="phase-note" style="background:var(--paper);cursor:default;margin-top:8px">${esc(nComment)}</div>` : '')
+          ? (nComment ? `<div class="phase-date" style="margin-top:2px">${esc(nComment)}</div>` : '')
           : `<textarea class="phase-note" style="margin-top:8px" onblur="saveComment(${o.id},'NAPOMENA',this.value)" placeholder="Napomena...">${esc(nComment)}</textarea>`}
       </div>
     </div>`;
@@ -349,7 +355,7 @@ function renderModal(o){
       const parsed = parsePrijemData(prijem.comment);
       const d = prijem.updatedAt ? date(prijem.updatedAt) : null;
       const icon = parsed.outcome==='anulirano' ? '❌ ANULIRANO' : '🔧 REPARACIJA';
-      const items = (parsed.items||[]).map(it=>`${it.size}/${parsed.unit||'par'}×${it.qty}`).join(', ');
+      const items = formatPrijemItems(parsed.items);
       pBadge = `<span class="phase-state">${icon}${d?` ${d}`:''}${items?` — ${esc(items)}`:''}${parsed.note?` — ${esc(parsed.note)}`:''}</span>`;
     }
     const pLockIcon = (pLock.locked && !pLock.onlyCompleteAllowed) ? `<span class="phase-lock" title="Zaključano — obratite se administratoru">🔒</span>` : '';
@@ -411,7 +417,7 @@ async function submitPrijemOk(id){
   }catch(e){Object.assign(p,old);renderModal(o);alert('❌ '+e.message)}
 }
 
-// ============ SIZE MODAL (Reparacija / Anulirano) ============
+// ============ SIZE MODAL (Reparacija / Anulirano) - kućice 18-46, klik i upiši, uvek "par" ============
 const SIZE_RANGE=Array.from({length:46-18+1},(_,i)=>18+i);
 let sizeModalOrderId=null, sizeModalOutcome=null;
 
@@ -422,12 +428,8 @@ function ensureSizeModal(){
   div.innerHTML=`<div class="modal-content" style="max-width:460px">
     <span class="close-modal" onclick="closeSizeModal()">&times;</span>
     <h2 id="sizeModalTitle" style="font-size:18px"></h2>
-    <p style="color:var(--muted);font-size:13px;margin-top:8px">Unesi količinu za brojeve koji su u pitanju.</p>
-    <div style="display:flex;gap:14px;align-items:center;margin:10px 0">
-      <label style="font-size:13px;font-weight:600"><input type="radio" name="sizeUnit" value="par" checked> Par</label>
-      <label style="font-size:13px;font-weight:600"><input type="radio" name="sizeUnit" value="komad"> Komad</label>
-    </div>
-    <div id="sizeGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:8px;margin:10px 0"></div>
+    <p style="color:var(--muted);font-size:13px;margin-top:8px">Klikni na broj i upiši količinu (par).</p>
+    <div id="sizeGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(56px,1fr));gap:8px;margin:10px 0"></div>
     <textarea id="sizeNote" class="phase-note" placeholder="Komentar..." style="margin-top:6px"></textarea>
     <div class="phase-actions" style="margin-top:12px">
       <button class="btn-tag btn-tag--done" onclick="confirmSizeModal()">✅ Potvrdi</button>
@@ -449,22 +451,25 @@ function openSizeModal(orderId,outcome){
   $('sizeModalTitle').textContent = outcome==='anulirano' ? '❌ Anulirano' : '🔧 Reparacija';
   document.querySelectorAll('.sizeQtyInput').forEach(inp=>inp.value='');
   $('sizeNote').value='';
-  document.querySelector('input[name="sizeUnit"][value="par"]').checked=true;
   $('sizeModal').classList.remove('hidden');
 }
 function closeSizeModal(){$('sizeModal')?.classList.add('hidden');sizeModalOrderId=null;sizeModalOutcome=null}
 
+// Format kao "vel.18 - 2 pa." - koristi se u modulu, Excelu i mail sablonu
+function formatPrijemItems(items){
+  return (items||[]).map(it=>`vel.${it.size} - ${it.qty} pa.`).join(', ');
+}
+
 async function confirmSizeModal(){
   const id=sizeModalOrderId, outcome=sizeModalOutcome;
   if(!id||!outcome)return;
-  const unit=document.querySelector('input[name="sizeUnit"]:checked')?.value||'par';
   const items=[...document.querySelectorAll('.sizeQtyInput')]
     .map(inp=>({size:parseInt(inp.dataset.size),qty:parseInt(inp.value)}))
     .filter(it=>it.qty>0);
   const note=$('sizeNote').value.trim();
   if(items.length===0 && !note){alert('Unesi bar jedan broj sa količinom, ili komentar.');return}
 
-  const payload=JSON.stringify({outcome,unit,items,note});
+  const payload=JSON.stringify({outcome,unit:'par',items,note});
   const o=orders.find(x=>String(x.id)===String(id));
   const p=o?.progress.find(x=>x.phase==='PRIJEM');
   if(!p){closeSizeModal();return}
