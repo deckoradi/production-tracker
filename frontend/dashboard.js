@@ -95,6 +95,8 @@ async function exportMyHistory(){
 }
 
 // ============ KONTROLA - PANEL SA ŠABLONOM ZA MAIL (Prijem, po firmi/danu) ============
+let prijemEmails = []; // globalna promenljiva za email adrese
+
 async function addKontrolaControls(){
   if($('kontrolaPanel'))return;
   const div=document.createElement('div');div.id='kontrolaPanel';div.className='panel';
@@ -106,6 +108,7 @@ async function addKontrolaControls(){
         </select>
         <input type="date" id="prijemTplDate" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
         <button id="prijemTplGenBtn" class="btn-success">📋 Generiši</button>
+        <button id="prijemTplSendBtn" class="btn-primary" disabled>📧 Pošalji email</button>
       </div>
       <textarea id="prijemTplResult" class="phase-note" readonly style="margin-top:10px;min-height:180px;font-family:var(--font-mono);font-size:12.5px" placeholder="Ovde će se pojaviti tekst spreman za copy-paste u mail..."></textarea>
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
@@ -127,6 +130,7 @@ async function addKontrolaControls(){
 
   $('prijemTplGenBtn').onclick=generatePrijemTemplate;
   $('prijemTplCopyBtn').onclick=copyPrijemTemplate;
+  $('prijemTplSendBtn').onclick=sendPrijemEmail;
 }
 
 async function generatePrijemTemplate(){
@@ -141,7 +145,10 @@ async function generatePrijemTemplate(){
     if(date)params.append('date',date);
     const d=await api(`/api/prijem-template?${params.toString()}`,{headers:headers()});
     $('prijemTplResult').value=d.text||'';
-    status.textContent='✅ Spremno - kopiraj i zalepi u mail';status.className='success';
+    prijemEmails = d.emails || [];
+    const sendBtn=$('prijemTplSendBtn');
+    if(sendBtn) sendBtn.disabled = prijemEmails.length===0;
+    status.textContent='✅ Spremno - kopiraj i zalepi u mail ili pošalji email';status.className='success';
   }catch(e){status.textContent='❌ '+e.message;status.className='error'}
 }
 
@@ -155,6 +162,28 @@ async function copyPrijemTemplate(){
   }catch(e){
     ta.select();document.execCommand('copy');
     status.textContent='✅ Tekst kopiran (fallback)';status.className='success';
+  }
+}
+
+async function sendPrijemEmail(){
+  const status=$('prijemTplStatus');
+  if (prijemEmails.length===0){
+    status.textContent='❌ Nema adresa za slanje. Prvo generiši šablon.';status.className='error';
+    return;
+  }
+  if(!confirm(`Poslati email na sledeće adrese: ${prijemEmails.join(', ')}?`)) return;
+  status.textContent='⏳ Slanje...';status.className='';
+  try{
+    const company=$('prijemTplCompany')?.value||'';
+    const date=$('prijemTplDate')?.value||'';
+    await api('/api/send-prijem',{
+      method:'POST',
+      headers:headers(true),
+      body:JSON.stringify({company,date})
+    });
+    status.textContent='✅ Email-ovi poslati.';status.className='success';
+  }catch(e){
+    status.textContent='❌ '+e.message;status.className='error';
   }
 }
 
@@ -177,8 +206,8 @@ async function clearAll(){
 
 $('uploadForm')?.addEventListener('submit',async e=>{e.preventDefault();const f=$('fileInput'),s=$('uploadStatus');if(!f?.files?.[0]){s.textContent='Molimo izaberite Excel fajl';s.className='error';return}s.textContent='⏳ Analiziram Excel i sinhronizujem...';s.className='';const fd=new FormData();fd.append('file',f.files[0]);try{const r=await fetch('/api/upload',{method:'POST',headers:headers(),body:fd});const d=await r.json();if(!r.ok)throw Error(d.error);s.className='success';s.innerHTML=`✅ Sinhronizovano: 🟢 ${d.updated} postojećih, 🔵 ${d.inserted} novih, 🔴 ${d.removed} uklonjeno. Istorija sačuvana.`;f.value='';await loadOrders('',1)}catch(e){s.textContent='❌ '+e.message;s.className='error'}});
 
-$('createUserForm')?.addEventListener('submit',async e=>{e.preventDefault();try{const d=await api('/api/users',{method:'POST',headers:headers(true),body:JSON.stringify({username:$('newUsername').value.trim(),company:$('newCompany').value.trim(),role:$('newRole')?.value||'user'})});$('userStatus').textContent=`✅ Korisnik ${d.user.username} kreiran (${d.user.role==='kontrola'?'Kontrola':'Klijent'})`;$('userStatus').className='success';$('newUsername').value='';$('newCompany').value='';loadUsers();alert(`✅ Korisnik "${d.user.username}" kreiran.\n\n🔑 Lozinka: ${d.password}\n\nZapiši je i prosledi korisniku - prikazuje se samo ovaj put!`)}catch(e){$('userStatus').textContent='❌ '+e.message;$('userStatus').className='error'}});
-async function loadUsers(){try{const u=await api('/api/users',{headers:headers()});const x=$('usersList');if(x)x.innerHTML=u.map(a=>`<div class="user-item" style="grid-template-columns:1fr 1fr auto auto auto"><span>${esc(a.username)}</span><span>${esc(a.company)}</span><span>${esc(a.role)}</span><span class="clickable" style="color:var(--denim);font-weight:700" onclick="resetPassword(${a.id},'${js(a.username)}')" title="Resetuj lozinku">🔑</span>${a.role!=='admin'?`<span class="clickable" style="color:var(--red);font-weight:700" onclick="deleteUser(${a.id},'${js(a.username)}')" title="Obriši korisnika">🗑️</span>`:'<span></span>'}</div>`).join('')||'Nema korisnika';const sel=$('historyCompany');if(sel){const companies=[...new Set(u.map(a=>a.company).filter(Boolean))].sort();sel.innerHTML='<option value="">Sve firme</option>'+companies.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}}catch(e){console.error(e)}}
+$('createUserForm')?.addEventListener('submit',async e=>{e.preventDefault();try{const d=await api('/api/users',{method:'POST',headers:headers(true),body:JSON.stringify({username:$('newUsername').value.trim(),company:$('newCompany').value.trim(),role:$('newRole')?.value||'user',email:$('newEmail')?.value.trim()||''})});$('userStatus').textContent=`✅ Korisnik ${d.user.username} kreiran (${d.user.role==='kontrola'?'Kontrola':'Klijent'})`;$('userStatus').className='success';$('newUsername').value='';$('newCompany').value='';if($('newEmail'))$('newEmail').value='';loadUsers();alert(`✅ Korisnik "${d.user.username}" kreiran.\n\n🔑 Lozinka: ${d.password}\n\nZapiši je i prosledi korisniku - prikazuje se samo ovaj put!`)}catch(e){$('userStatus').textContent='❌ '+e.message;$('userStatus').className='error'}});
+async function loadUsers(){try{const u=await api('/api/users',{headers:headers()});const x=$('usersList');if(x)x.innerHTML=u.map(a=>`<div class="user-item" style="grid-template-columns:1fr 1fr 1fr auto auto auto"><span>${esc(a.username)}</span><span>${esc(a.company)}</span><span>${esc(a.email||'')}</span><span>${esc(a.role)}</span><span class="clickable" style="color:var(--denim);font-weight:700" onclick="resetPassword(${a.id},'${js(a.username)}')" title="Resetuj lozinku">🔑</span>${a.role!=='admin'?`<span class="clickable" style="color:var(--red);font-weight:700" onclick="deleteUser(${a.id},'${js(a.username)}')" title="Obriši korisnika">🗑️</span>`:'<span></span>'}</div>`).join('')||'Nema korisnika';const sel=$('historyCompany');if(sel){const companies=[...new Set(u.map(a=>a.company).filter(Boolean))].sort();sel.innerHTML='<option value="">Sve firme</option>'+companies.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}}catch(e){console.error(e)}}
 
 async function resetPassword(id,username){
   if(!confirm(`Generisati novu lozinku za "${username}"? Stara prestaje da važi.`))return;
@@ -222,15 +251,11 @@ function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)r
 const PHASE_LABELS={'100':'Krojenje','200':'Serigrafija','300':'Vez','400':'Šivenje','500':'Poslato'};
 function phaseLabel(p){return PHASE_LABELS[String(p)]||`Faza ${p}`}
 
-// ============ IKONICE FAZA (medaljoni na "prošivenoj" liniji) ============
+// ============ IKONICE FAZA ============
 const PHASE_ICONS={'100':'✂️','200':'🖨️','300':'🧵','400':'🪡','500':'📦'};
 function phaseIcon(p){return PHASE_ICONS[String(p)]||'●'}
 
-// ============ ZAKLJUČAVANJE PO DANU (isto pravilo kao na serveru) ============
-// - Ako faza nikad nije dirana ILI je zadnji put dirana DANAS -> otvorena za klijenta.
-// - Ako je zadnja izmena bila ranijeg dana:
-//     - status 'problem' -> jedino dozvoljeno dugme "Urađeno" (ostalo zaključano)
-//     - svaki drugi status -> potpuno zaključano
+// ============ ZAKLJUČAVANJE PO DANU ============
 function isSameLocalDay(iso){
   if(!iso) return false;
   const d=new Date(iso), n=new Date();
@@ -238,7 +263,8 @@ function isSameLocalDay(iso){
 }
 function phaseLockState(p){
   if(currentUser?.role==='admin') return {locked:false, onlyCompleteAllowed:false};
-  if(p.status==='nema') return {locked:true, onlyCompleteAllowed:false};
+  // NEMA više specijalnog tretmana za status 'nema' – tretira se kao i ostali
+  if(p.status==='nema') return {locked:false, onlyCompleteAllowed:false}; // dozvoli promenu, ali će zaključavanje po danu važiti
   const hasActivity=(p.status && p.status!=='pending') || (p.comment && p.comment.trim()!=='');
   if(!hasActivity) return {locked:false, onlyCompleteAllowed:false};
   if(isSameLocalDay(p.updatedAt)) return {locked:false, onlyCompleteAllowed:false};
@@ -246,7 +272,7 @@ function phaseLockState(p){
   return {locked:true, onlyCompleteAllowed:false};
 }
 
-// ============ RENDER MODAL – prošivena linija kroz faze, zaključavanje po danu, Napomena, Prijem ============
+// ============ RENDER MODAL ============
 function renderModal(o){
   modalOrderNumber.textContent=o.orderNumber||'N/A';
   const isAdmin=currentUser?.role==='admin';
@@ -254,7 +280,11 @@ function renderModal(o){
   const isPrivileged=isAdmin||isKontrola;
   const isOwnCompany=o.company===currentUser?.company;
   const firmaLine=(isPrivileged||isOwnCompany)?`<p><b>Firma:</b> ${esc(o.company)}</p>`:'';
-  modalOrderInfo.innerHTML=`${firmaLine}<p><b>Artikal:</b> ${esc(o.name)}</p><p><b>Šifra:</b> ${esc(o.code)}</p><p><b>Količina:</b> ${o.quantity||0}</p><p><b>Datum isporuke:</b> ${esc(o.deliveryDate||'-')}</p>`;
+  let extraLine = '';
+  if (o.lastClientChangedBy && o.lastClientChangedBy !== o.company) {
+    extraLine = `<p><b>Poslednji radio:</b> ${esc(o.lastClientChangedBy)}</p>`;
+  }
+  modalOrderInfo.innerHTML=`${firmaLine}${extraLine}<p><b>Artikal:</b> ${esc(o.name)}</p><p><b>Šifra:</b> ${esc(o.code)}</p><p><b>Količina:</b> ${o.quantity||0}</p><p><b>Datum isporuke:</b> ${esc(o.deliveryDate||'-')}</p>`;
 
   const progress=o.progress||[];
   const phases=progress.filter(p=>p.phase!=='NAPOMENA' && p.phase!=='PRIJEM');
@@ -269,7 +299,6 @@ function renderModal(o){
     const comment = (p.comment||'').trim();
     const lock = isKontrola ? {locked:true, onlyCompleteAllowed:false} : phaseLockState(p);
 
-    // Bedž: samo ikonica + datum (bez reči "Urađeno"/"Problem"). Za Problem: ikonica+datum+tekst u jednoj liniji.
     let badge='';
     if(p.status==='completed'){
       badge=`<span class="phase-state">✅${dateStr?` ${dateStr}`:''}</span>`;
@@ -278,16 +307,13 @@ function renderModal(o){
     } else if(p.status==='nema'){
       badge=`<span class="phase-state">🚫 Nema</span>`;
     }
-    // Dugme "Nema" - samo za Serigrafiju (200) i Vez (300), za artikle koji tu operaciju nemaju
     const showNemaBtn = (p.phase==='200' || p.phase==='300');
-    // Trajna istorija "Problem" (ostaje vidljivo i posle prelaska na Urađeno), sa tekstom koji ga je pratio
     const problemDateStr = p.lastProblemAt && p.status!=='problem' ? date(p.lastProblemAt) : null;
     const problemComment = (p.lastProblemComment||'').trim();
     const problemLine = problemDateStr ? `<div class="phase-date" style="margin-top:-4px;margin-bottom:6px">⚠️ ${problemDateStr}${problemComment?` — ${esc(problemComment)}`:''}</div>` : '';
 
     let bodyHtml='';
     if(lock.locked){
-      // Zaključano: kompaktan prikaz, katanac je već u naslovnoj liniji (bez teksta).
       const lockedExtra = (p.status==='completed' && comment) ? `<div class="phase-date" style="margin-top:2px">${esc(comment)}</div>` : '';
       bodyHtml=`${lockedExtra}
         ${lock.onlyCompleteAllowed
@@ -297,7 +323,7 @@ function renderModal(o){
       bodyHtml=`<div class="phase-actions">
           <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button>
           <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ Problem</button>
-          ${showNemaBtn ? `<button class="btn-tag btn-tag--reset" onclick="if(confirm('Označi da ova faza ne postoji za ovaj artikal? Trajno se zaključava.'))updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 Nema</button>` : ''}
+          ${showNemaBtn ? `<button class="btn-tag btn-tag--reset" onclick="if(confirm('Označi da ova faza ne postoji za ovaj artikal?'))updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 Nema</button>` : ''}
           ${isAdmin ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">⬜ Reset</button>` : ''}
         </div>
         <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea>`;
@@ -323,7 +349,7 @@ function renderModal(o){
   });
   h+='</div>';
 
-  // ============ NAPOMENA (opšte polje, van faza, ista logika zaključavanja) ============
+  // ============ NAPOMENA ============
   const nLock = napomena ? (isKontrola ? {locked:true, onlyCompleteAllowed:false} : phaseLockState(napomena)) : {locked:false};
   const nComment = napomena?.comment || '';
   const nDate = napomena?.updatedAt && (nComment.trim()!=='') ? date(napomena.updatedAt) : null;
@@ -343,7 +369,7 @@ function renderModal(o){
       </div>
     </div>`;
 
-  // ============ PRIJEM (samo admin i Kontrola) ============
+  // ============ PRIJEM ============
   if(isPrivileged && prijem){
     const pLock = isAdmin ? {locked:false,onlyCompleteAllowed:false} : phaseLockState(prijem);
     let pBadge='';
@@ -417,7 +443,7 @@ async function submitPrijemOk(id){
   }catch(e){Object.assign(p,old);renderModal(o);alert('❌ '+e.message)}
 }
 
-// ============ SIZE MODAL (Reparacija / Anulirano) - kućice 18-46, klik i upiši, uvek "par" ============
+// ============ SIZE MODAL ============
 const SIZE_RANGE=Array.from({length:46-18+1},(_,i)=>18+i);
 let sizeModalOrderId=null, sizeModalOutcome=null;
 
@@ -455,7 +481,6 @@ function openSizeModal(orderId,outcome){
 }
 function closeSizeModal(){$('sizeModal')?.classList.add('hidden');sizeModalOrderId=null;sizeModalOutcome=null}
 
-// Format kao "vel.18 - 2 pa." - koristi se u modulu, Excelu i mail sablonu
 function formatPrijemItems(items){
   return (items||[]).map(it=>`vel.${it.size} - ${it.qty} pa.`).join(', ');
 }
@@ -490,7 +515,7 @@ async function saveComment(id, phase, comment) {
   if (!p) return;
   const oldComment = p.comment, oldUpdated = p.updatedAt;
   p.comment = comment;
-  p.updatedAt = new Date().toISOString(); // privremeno za prikaz
+  p.updatedAt = new Date().toISOString();
   try {
     const res = await api('/api/update-phase', {
       method: 'POST',
@@ -508,7 +533,7 @@ async function saveComment(id, phase, comment) {
 
 async function updatePhase(id,phase,status){const o=orders.find(x=>String(x.id)===String(id)),p=o?.progress.find(x=>String(x.phase)===String(phase));if(!p)return;const old={status:p.status,comment:p.comment,updatedAt:p.updatedAt};p.status=status;p.updatedAt=new Date().toISOString();renderOrders();renderModal(o);try{const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,status,comment:p.comment||''})});p.updatedAt=d.updatedAt;renderOrders();renderModal(o)}catch(e){Object.assign(p,old);renderOrders();renderModal(o);alert('❌ '+e.message)}}
 
-// ============ DATE function (samo datum) ============
+// ============ DATE function ============
 function date(v) {
   const d = new Date(v);
   if (isNaN(d)) return String(v);
@@ -518,3 +543,5 @@ function date(v) {
 function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
 function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
 window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;window.resetPassword=resetPassword;
+window.generatePrijemTemplate = generatePrijemTemplate;
+window.sendPrijemEmail = sendPrijemEmail;
