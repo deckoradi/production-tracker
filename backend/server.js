@@ -7,12 +7,16 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const ExcelJS = require('exceljs');
+const nodemailer = require('nodemailer');
 const { Pool } = require('pg');
 
 const dotenv = require('dotenv');
 dotenv.config({ path: path.join(__dirname, '.env') });
 
-console.log('📧 RESEND_API_KEY:', process.env.RESEND_API_KEY ? '✅' : '❌');
+const hasResend = !!process.env.RESEND_API_KEY;
+const hasSmtp = !!(process.env.EMAIL_USER && process.env.EMAIL_PASS);
+console.log('📧 RESEND_API_KEY:', hasResend ? '✅' : '❌');
+console.log('📧 EMAIL_USER/EMAIL_PASS (SMTP):', hasSmtp ? '✅' : '❌');
 console.log('📧 ADMIN_EMAIL:', process.env.ADMIN_EMAIL ? '✅' : '❌');
 console.log('🗄️ DATABASE_URL:', process.env.DATABASE_URL ? '✅' : '❌');
 
@@ -143,31 +147,52 @@ const authenticate = (req, res, next) => {
     }
 };
 
-// ============ EMAIL (Resend HTTP API - radi na Render free planu, SMTP je blokiran) ============
+// ============ EMAIL ============
+// Prvo pokušava Resend (HTTP API - radi i kad je SMTP blokiran, npr. na Render free planu).
+// Ako RESEND_API_KEY nije podešen, prelazi na SMTP (nodemailer) sa EMAIL_USER/EMAIL_PASS
+// (npr. Gmail: EMAIL_USER=tvoj@gmail.com, EMAIL_PASS=app password sa 16 karaktera).
+let smtpTransporter = null;
+if (hasSmtp) {
+    smtpTransporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+    });
+}
+
 async function sendEmail({ to, subject, html }) {
-    if (!process.env.RESEND_API_KEY) {
-        throw new Error('Email nije podešen (RESEND_API_KEY nedostaje na serveru).');
+    if (hasResend) {
+        const r = await fetch('https://api.resend.com/emails', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                from: 'Production Tracker <onboarding@resend.dev>',
+                to: [to],
+                subject,
+                html
+            })
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            throw new Error(data.message || `Resend greška (HTTP ${r.status})`);
+        }
+        return data;
     }
-    const r = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            from: 'Production Tracker <onboarding@resend.dev>',
-            to: [to],
+
+    if (smtpTransporter) {
+        return smtpTransporter.sendMail({
+            from: `Production Tracker <${process.env.EMAIL_USER}>`,
+            to,
             subject,
             html
-        })
-    });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) {
-        throw new Error(data.message || `Resend greška (HTTP ${r.status})`);
+        });
     }
-    return data;
+
+    throw new Error('Email nije podešen (nedostaje RESEND_API_KEY ili EMAIL_USER/EMAIL_PASS na serveru).');
 }
-console.log('📧 Email (Resend): ' + (process.env.RESEND_API_KEY ? '✅' : '❌'));
+console.log('📧 Email spreman preko: ' + (hasResend ? 'Resend' : hasSmtp ? 'SMTP (nodemailer)' : '❌ NIJE PODEŠEN'));
 
 // ============ ROUTES ============
 
@@ -1084,5 +1109,5 @@ app.post('/api/send-report', authenticate, async (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`🗄️ PostgreSQL: ${process.env.DATABASE_URL ? '✅' : '❌'}`);
-    console.log(`📧 Email (Resend): ${process.env.RESEND_API_KEY ? '✅' : '❌'}`);
+    console.log(`📧 Email spreman preko: ${hasResend ? 'Resend' : hasSmtp ? 'SMTP (nodemailer)' : '❌ NIJE PODEŠEN'}`);
 });
