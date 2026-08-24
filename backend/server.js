@@ -977,12 +977,7 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
             const icon = isAnulirano ? '❌ ANULIRANO' : '🔧 REPARACIJA';
             const items = (d.items || []).map(it => `vel.${it.size} - ${it.qty} pa.`).join(', ');
 
-            // Ako je nalog nominalno namenjen drugoj firmi (npr. neko drugi ga je radio),
-            // dodajemo napomenu radi transparentnosti - poruka i dalje ide na firmu koja ga je radila.
-            const eff = effectiveMap.get(`${r.order_number}||${r.company}`);
-            const isForeign = eff && eff.changedByCompany && eff.changedByCompany !== r.company;
-
-            itemLines.push(`Nalog #${r.order_number}${naziv ? ' — ' + naziv : ''}${isForeign ? ` (nalog firme "${r.company}", radio: ${eff.changedBy})` : ''}`);
+            itemLines.push(`Nalog #${r.order_number}${naziv ? ' — ' + naziv : ''}`);
             itemLines.push(icon);
             if (items) itemLines.push(items);
             if (d.note) itemLines.push(`Napomena: ${d.note}`);

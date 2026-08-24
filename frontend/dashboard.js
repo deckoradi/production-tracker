@@ -316,7 +316,7 @@ function renderModal(o){
       bodyHtml=`<div class="phase-actions">
           <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button>
           <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ Problem</button>
-          ${showNemaBtn ? `<button class="btn-tag btn-tag--reset" onclick="if(confirm('Označi da ova faza ne postoji za ovaj artikal? Zaključava se do kraja dana, kao i ostale faze.'))updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 Nema</button>` : ''}
+          ${showNemaBtn ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 Nema</button>` : ''}
           ${isAdmin ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">⬜ Reset</button>` : ''}
         </div>
         <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea>`;
