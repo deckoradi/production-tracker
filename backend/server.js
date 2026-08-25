@@ -684,7 +684,7 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
                         // i resetujemo klijentovu potvrdu jer se sadržaj promenio.
                         await pool.query(
                             `UPDATE reparacije SET items = $1, note = $2, deadline_days = $3,
-                             deadline_date = NOW() + ($3 || ' days')::interval, created_at = NOW(), created_by = $4,
+                             deadline_date = NOW() + make_interval(days => $3), created_at = NOW(), created_by = $4,
                              client_confirmed_at = NULL, client_confirmed_by = NULL, client_confirmed_by_company = NULL
                              WHERE id = $5`,
                             [JSON.stringify(parsedPrijem.items || []), parsedPrijem.note || '', deadlineDays, req.user.username, existingRep.rows[0].id]
@@ -692,7 +692,7 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
                     } else {
                         await pool.query(
                             `INSERT INTO reparacije (order_id, items, note, deadline_days, deadline_date, created_by)
-                             VALUES ($1, $2, $3, $4, NOW() + ($4 || ' days')::interval, $5)`,
+                             VALUES ($1, $2, $3, $4, NOW() + make_interval(days => $4), $5)`,
                             [orderId, JSON.stringify(parsedPrijem.items || []), parsedPrijem.note || '', deadlineDays, req.user.username]
                         );
                     }
