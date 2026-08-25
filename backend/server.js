@@ -85,6 +85,26 @@ const initDb = async () => {
         // Firma korisnika koji je STVARNO izvršio izmenu (može se razlikovati od "company" - firme kojoj nalog pripada)
         await pool.query(`ALTER TABLE order_history ADD COLUMN IF NOT EXISTS changed_by_company VARCHAR(255)`);
 
+        // ============ REPARACIJE (tro-fazni tok: obeleženo -> klijent urađeno -> kontrola potvrda) ============
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS reparacije (
+                id SERIAL PRIMARY KEY,
+                order_id BIGINT NOT NULL,
+                items JSONB DEFAULT '[]',
+                note TEXT DEFAULT '',
+                deadline_days INT DEFAULT 7,
+                created_at TIMESTAMP DEFAULT NOW(),
+                created_by VARCHAR(100),
+                deadline_date TIMESTAMP,
+                client_confirmed_at TIMESTAMP,
+                client_confirmed_by VARCHAR(100),
+                client_confirmed_by_company VARCHAR(255),
+                kontrola_confirmed_at TIMESTAMP,
+                kontrola_confirmed_by VARCHAR(100)
+            )
+        `);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_reparacije_order ON reparacije(order_id)`);
+
         const adminCheck = await pool.query('SELECT * FROM users WHERE username = $1', ['admin']);
         if (adminCheck.rows.length === 0) {
             const hashedPassword = await bcrypt.hash('admin123', 10);
@@ -496,7 +516,12 @@ app.get('/api/orders', authenticate, async (req, res) => {
                         'updatedBy', p.updated_by, 'updatedByCompany', p.updated_by_company,
                         'lastProblemAt', lastprob.changed_at, 'lastProblemComment', lastprob.comment
                    ) ORDER BY p.phase) 
-                   FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
+                   FILTER (WHERE p.phase IS NOT NULL), '[]') as progress,
+                   rep.id as rep_id, rep.items as rep_items, rep.note as rep_note,
+                   rep.deadline_date as rep_deadline_date, rep.created_at as rep_created_at,
+                   rep.client_confirmed_at as rep_client_confirmed_at, rep.client_confirmed_by as rep_client_confirmed_by,
+                   rep.client_confirmed_by_company as rep_client_confirmed_by_company,
+                   rep.kontrola_confirmed_at as rep_kontrola_confirmed_at, rep.kontrola_confirmed_by as rep_kontrola_confirmed_by
             FROM orders o
             LEFT JOIN progress p ON o.id = p.order_id ${isPrivileged ? '' : "AND p.phase != 'PRIJEM'"}
             LEFT JOIN LATERAL (
@@ -505,8 +530,15 @@ app.get('/api/orders', authenticate, async (req, res) => {
                   AND oh.phase = p.phase AND oh.new_status = 'problem'
                 ORDER BY oh.changed_at DESC LIMIT 1
             ) lastprob ON true
+            LEFT JOIN LATERAL (
+                SELECT * FROM reparacije r
+                WHERE r.order_id = o.id AND r.kontrola_confirmed_at IS NULL
+                ORDER BY r.created_at DESC LIMIT 1
+            ) rep ON true
             ${whereClause}
-            GROUP BY o.id
+            GROUP BY o.id, rep.id, rep.items, rep.note, rep.deadline_date, rep.created_at,
+                     rep.client_confirmed_at, rep.client_confirmed_by, rep.client_confirmed_by_company,
+                     rep.kontrola_confirmed_at, rep.kontrola_confirmed_by
             ORDER BY o.id DESC
             LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
         `;
@@ -522,7 +554,19 @@ app.get('/api/orders', authenticate, async (req, res) => {
             orderNumber: row.order_number,
             quantity: row.quantity,
             deliveryDate: row.delivery_date,
-            progress: row.progress || []
+            progress: row.progress || [],
+            reparacija: row.rep_id ? {
+                id: row.rep_id,
+                items: row.rep_items || [],
+                note: row.rep_note || '',
+                deadlineDate: row.rep_deadline_date,
+                createdAt: row.rep_created_at,
+                clientConfirmedAt: row.rep_client_confirmed_at,
+                clientConfirmedBy: row.rep_client_confirmed_by,
+                clientConfirmedByCompany: row.rep_client_confirmed_by_company,
+                kontrolaConfirmedAt: row.rep_kontrola_confirmed_at,
+                kontrolaConfirmedBy: row.rep_kontrola_confirmed_by
+            } : null
         }));
 
         res.json({
@@ -623,6 +667,45 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
         }
 
+        // ============ REPARACIJE - tro-fazni tok (obeleženo -> klijent urađeno -> kontrola potvrda) ============
+        // Samo kad Kontrola/Admin menja PRIJEM fazu.
+        if (phase === 'PRIJEM') {
+            if (status === 'problem') {
+                let parsedPrijem = {};
+                try { parsedPrijem = JSON.parse(finalComment || '{}'); } catch (_) {}
+                if (parsedPrijem.outcome === 'reparacija') {
+                    const deadlineDays = parseInt(req.body.deadlineDays) > 0 ? parseInt(req.body.deadlineDays) : 7;
+                    const existingRep = await pool.query(
+                        `SELECT id FROM reparacije WHERE order_id = $1 AND kontrola_confirmed_at IS NULL ORDER BY created_at DESC LIMIT 1`,
+                        [orderId]
+                    );
+                    if (existingRep.rows.length > 0) {
+                        // Već postoji otvorena reparacija za ovaj nalog - ažuriramo je (nova stavka/napomena/rok),
+                        // i resetujemo klijentovu potvrdu jer se sadržaj promenio.
+                        await pool.query(
+                            `UPDATE reparacije SET items = $1, note = $2, deadline_days = $3,
+                             deadline_date = NOW() + ($3 || ' days')::interval, created_at = NOW(), created_by = $4,
+                             client_confirmed_at = NULL, client_confirmed_by = NULL, client_confirmed_by_company = NULL
+                             WHERE id = $5`,
+                            [JSON.stringify(parsedPrijem.items || []), parsedPrijem.note || '', deadlineDays, req.user.username, existingRep.rows[0].id]
+                        );
+                    } else {
+                        await pool.query(
+                            `INSERT INTO reparacije (order_id, items, note, deadline_days, deadline_date, created_by)
+                             VALUES ($1, $2, $3, $4, NOW() + ($4 || ' days')::interval, $5)`,
+                            [orderId, JSON.stringify(parsedPrijem.items || []), parsedPrijem.note || '', deadlineDays, req.user.username]
+                        );
+                    }
+                } else if (parsedPrijem.outcome === 'anulirano') {
+                    // Anulirano ne prolazi kroz reparacija tok - ukloni eventualnu otvorenu reparaciju za ovaj nalog
+                    await pool.query(`DELETE FROM reparacije WHERE order_id = $1 AND kontrola_confirmed_at IS NULL`, [orderId]);
+                }
+            } else if (status === 'completed') {
+                // Kontrola je Prijem vratila na "Sve u redu" - ukloni eventualnu otvorenu reparaciju
+                await pool.query(`DELETE FROM reparacije WHERE order_id = $1 AND kontrola_confirmed_at IS NULL`, [orderId]);
+            }
+        }
+
         // Vrati ažurirani updated_at
         const updated = await pool.query(
             'SELECT updated_at FROM progress WHERE order_id = $1 AND phase = $2',
@@ -643,12 +726,106 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
     }
 });
 
+// ============ REPARACIJA: KLIJENT POTVRĐUJE "URAĐENO" ============
+app.post('/api/reparacija/:id/client-confirm', authenticate, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const r = await pool.query(
+            `UPDATE reparacije SET client_confirmed_at = NOW(), client_confirmed_by = $1, client_confirmed_by_company = $2
+             WHERE id = $3 AND client_confirmed_at IS NULL AND kontrola_confirmed_at IS NULL
+             RETURNING *`,
+            [req.user.username, req.user.company, id]
+        );
+        if (r.rows.length === 0) {
+            return res.status(404).json({ error: 'Reparacija nije pronađena ili je već potvrđena.' });
+        }
+        console.log(`🔧 Reparacija #${id} potvrđena od klijenta: ${req.user.username} (${req.user.company})`);
+        res.json(r.rows[0]);
+    } catch (e) {
+        console.error('❌ Reparacija client-confirm error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ REPARACIJA: KONTROLA POTVRĐUJE "SVE U REDU" ============
+app.post('/api/reparacija/:id/kontrola-confirm', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
+        return res.status(403).json({ error: 'Nemate dozvolu za ovu akciju.' });
+    }
+    try {
+        const { id } = req.params;
+        const check = await pool.query('SELECT client_confirmed_at, kontrola_confirmed_at FROM reparacije WHERE id = $1', [id]);
+        if (check.rows.length === 0) return res.status(404).json({ error: 'Reparacija nije pronađena.' });
+        if (check.rows[0].kontrola_confirmed_at) return res.status(400).json({ error: 'Reparacija je već zatvorena.' });
+        if (!check.rows[0].client_confirmed_at) return res.status(400).json({ error: 'Klijent još nije potvrdio da je urađeno.' });
+
+        const r = await pool.query(
+            `UPDATE reparacije SET kontrola_confirmed_at = NOW(), kontrola_confirmed_by = $1 WHERE id = $2 RETURNING *`,
+            [req.user.username, id]
+        );
+        console.log(`✅ Reparacija #${id} zatvorena od kontrole: ${req.user.username}`);
+        res.json(r.rows[0]);
+    } catch (e) {
+        console.error('❌ Reparacija kontrola-confirm error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ PODSETNICI (REPARACIJE ČIJI JE ROK ISTEKAO) ============
+app.get('/api/reminders', authenticate, async (req, res) => {
+    try {
+        const isPrivileged = req.user.role === 'admin' || req.user.role === 'kontrola';
+        let rows;
+        if (isPrivileged) {
+            // Kontrola/Admin - sve reparacije čiji je rok istekao, a kontrola ih još nije zatvorila
+            const result = await pool.query(
+                `SELECT r.*, o.order_number, o.company, o.name
+                 FROM reparacije r
+                 JOIN orders o ON o.id = r.order_id
+                 WHERE r.kontrola_confirmed_at IS NULL AND r.deadline_date < NOW()
+                 ORDER BY r.deadline_date ASC`
+            );
+            rows = result.rows.map(r => ({
+                id: r.id, orderId: r.order_id, orderNumber: r.order_number, company: r.company, name: r.name,
+                deadlineDate: r.deadline_date, clientConfirmedAt: r.client_confirmed_at,
+                waitingOn: r.client_confirmed_at ? 'kontrola' : 'klijent i kontrola'
+            }));
+        } else {
+            // Klijent - reparacije vezane za njegovu firmu ILI koje je on lično poslednji radio,
+            // gde ON još nije potvrdio "Urađeno", a rok je istekao
+            const result = await pool.query(
+                `SELECT r.*, o.order_number, o.company, o.name
+                 FROM reparacije r
+                 JOIN orders o ON o.id = r.order_id
+                 LEFT JOIN LATERAL (
+                     SELECT updated_by_company FROM progress p
+                     WHERE p.order_id = o.id AND p.phase IN ('100','200','300','400')
+                     ORDER BY p.updated_at DESC LIMIT 1
+                 ) lastEditor ON true
+                 WHERE r.kontrola_confirmed_at IS NULL AND r.client_confirmed_at IS NULL AND r.deadline_date < NOW()
+                   AND (o.company = $1 OR lastEditor.updated_by_company = $1)
+                 ORDER BY r.deadline_date ASC`,
+                [req.user.company]
+            );
+            rows = result.rows.map(r => ({
+                id: r.id, orderId: r.order_id, orderNumber: r.order_number, company: r.company, name: r.name,
+                deadlineDate: r.deadline_date, waitingOn: 'klijent'
+            }));
+        }
+        res.json({ reminders: rows });
+    } catch (e) {
+        console.error('❌ Reminders error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ============ OBRISI AKTIVNE NALOGE (ISTORIJA OSTAJE) ============
 app.post('/api/clear-orders', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Samo admin može' });
     }
     try {
+        await pool.query('DELETE FROM reparacije');
         const deletedOrders = await pool.query('DELETE FROM orders RETURNING id');
         const deletedProgress = await pool.query('DELETE FROM progress RETURNING id');
         
@@ -669,6 +846,7 @@ app.post('/api/clear-all', authenticate, async (req, res) => {
         return res.status(403).json({ error: 'Samo admin može' });
     }
     try {
+        await pool.query('DELETE FROM reparacije');
         const deletedOrders = await pool.query('DELETE FROM orders RETURNING id');
         const deletedProgress = await pool.query('DELETE FROM progress RETURNING id');
         const deletedHistory = await pool.query('DELETE FROM order_history RETURNING id');
@@ -763,6 +941,33 @@ app.get('/api/history/export', authenticate, async (req, res) => {
              WHERE new_status = 'problem'
              ORDER BY order_number, company, phase, changed_at DESC`
         );
+
+        // 3b) Reparacije - SAMO poslednje stanje po nalogu (ne cela istorija tri koraka), vidljivo svim ulogama
+        const repairResult = await pool.query(
+            `SELECT o.order_number, o.company, r.items, r.note, r.created_at,
+                    r.client_confirmed_at, r.client_confirmed_by, r.client_confirmed_by_company,
+                    r.kontrola_confirmed_at, r.kontrola_confirmed_by
+             FROM reparacije r
+             JOIN orders o ON o.id = r.order_id
+             ORDER BY r.created_at DESC`
+        );
+        const repairMap = new Map(); // key: order_number||company -> najnovija reparacija (prvi upis pošto je DESC)
+        repairResult.rows.forEach(r => {
+            const key = `${r.order_number}||${r.company}`;
+            if (!repairMap.has(key)) repairMap.set(key, r);
+        });
+        const reparacijaCellText = (entry) => {
+            if (!entry) return '';
+            const items = (entry.items || []).map(it => `vel.${it.size} - ${it.qty} pa.`).join(', ');
+            if (entry.kontrola_confirmed_at) {
+                return `✅ Zatvoreno ${new Date(entry.kontrola_confirmed_at).toLocaleDateString('sr-RS')}`;
+            }
+            if (entry.client_confirmed_at) {
+                return `⏳ Čeka potvrdu Kontrole (klijent potvrdio ${new Date(entry.client_confirmed_at).toLocaleDateString('sr-RS')})`;
+            }
+            const dateStr = entry.created_at ? new Date(entry.created_at).toLocaleDateString('sr-RS') : '';
+            return [`🔧 REPARACIJA ${dateStr}`, items, entry.note].filter(Boolean).join('  —  ');
+        };
         const problemMap = new Map(); // key: order_number||company||phase -> {comment, changedAt}
         lastProblemResult.rows.forEach(r => {
             problemMap.set(`${r.order_number}||${r.company}||${r.phase}`, { comment: r.comment || '', changedAt: r.changed_at });
@@ -854,6 +1059,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         const phaseCols = finalPhases.map(p => ({ key: 'phase_' + p, width: 26 }));
         const tailCols = [
             ...(showPrijem ? [{ key: 'prijem', width: 36 }] : []),
+            { key: 'reparacija', width: 36 },
             { key: 'napomena', width: 30 },
             { key: 'changed_by', width: 16 }
         ];
@@ -877,6 +1083,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             'Datum i vreme', 'Firma', 'Nalog',
             ...finalPhases.map(p => phaseLabel(p)),
             ...(showPrijem ? ['Prijem'] : []),
+            'Reparacija',
             'Napomena', 'Izmenio'
         ];
         headerRow.eachCell(cell => {
@@ -898,6 +1105,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
                 company: visibleCompany,
                 order_number: r.order_number,
                 ...(showPrijem ? { prijem: prijemCellText(prijemMap.get(key)) } : {}),
+                reparacija: reparacijaCellText(repairMap.get(key)),
                 napomena: napomena && napomena.comment ? napomena.comment : '',
                 changed_by: r.changed_by || ''
             };

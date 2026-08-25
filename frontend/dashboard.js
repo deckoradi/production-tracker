@@ -9,7 +9,41 @@ if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
 const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
 async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error('Sesija je istekla.')}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
 
-document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers()}addClientExportControls();if(currentUser?.role==='kontrola'){addKontrolaControls()}loadOrders()});
+document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers()}addClientExportControls();if(currentUser?.role==='kontrola'){addKontrolaControls()}loadOrders();checkReminders()});
+
+// ============ PODSETNICI (reparacije čiji je rok istekao) ============
+async function checkReminders(){
+  try{
+    const d=await api('/api/reminders',{headers:headers()});
+    const list=d.reminders||[];
+    if(list.length===0)return;
+    showRemindersModal(list);
+  }catch(e){console.error('Reminders error:',e.message)}
+}
+
+function showRemindersModal(list){
+  let div=$('remindersModal');
+  if(!div){
+    div=document.createElement('div');
+    div.id='remindersModal';div.className='modal';
+    document.body.appendChild(div);
+  }
+  const rows=list.map(r=>{
+    const days=Math.floor((Date.now()-new Date(r.deadlineDate).getTime())/86400000);
+    const waitLabel=r.waitingOn==='kontrola'?'čeka potvrdu Kontrole':r.waitingOn==='klijent'?'čeka Vašu potvrdu':'čeka potvrdu obe strane';
+    return `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer" onclick="closeRemindersModal();openOrder(${r.orderId})">
+      <b>Nalog #${esc(r.orderNumber)}</b>${r.name?` — ${esc(r.name)}`:''}<br>
+      <span style="color:var(--muted);font-size:13px">${esc(r.company)} — kasni ${days} ${days===1?'dan':'dana'} — ${waitLabel}</span>
+    </div>`;
+  }).join('');
+  div.innerHTML=`<div class="modal-content" style="max-width:520px">
+    <span class="close-modal" onclick="closeRemindersModal()">&times;</span>
+    <h2 style="font-size:18px">⏰ Podsetnik — reparacije čiji je rok istekao</h2>
+    <div style="margin-top:12px;max-height:60vh;overflow-y:auto">${rows}</div>
+  </div>`;
+  div.classList.remove('hidden');
+}
+function closeRemindersModal(){$('remindersModal')?.classList.add('hidden')}
 let searchDebounce=null;
 searchInput?.addEventListener('input',()=>{clearTimeout(searchDebounce);searchDebounce=setTimeout(()=>loadOrders(searchInput.value,1),300)});
 searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>phaseModal?.classList.add('hidden'));window.addEventListener('click',e=>{if(e.target===phaseModal)phaseModal.classList.add('hidden')});
@@ -364,6 +398,46 @@ function renderModal(o){
       </div>
     </div>`;
 
+  // ============ REPARACIJA (tro-fazni tok) - vidljivo SAMO kad nalog ima aktivnu reparaciju ============
+  const rep=o.reparacija;
+  if(rep){
+    const items=formatPrijemItems(rep.items);
+    const clientDone=!!rep.clientConfirmedAt;
+    const kontrolaDone=!!rep.kontrolaConfirmedAt; // uvek false ovde jer se zatvorene reparacije ne šalju sa servera, ali čuvamo radi jasnoće
+    let repBody=`<div class="phase-date" style="margin-top:-4px;margin-bottom:6px">🔧 ${date(rep.createdAt)}${items?` — ${esc(items)}`:''}${rep.note?` — ${esc(rep.note)}`:''}</div>`;
+
+    // Red 2: klijent potvrdio
+    if(clientDone){
+      repBody+=`<div class="phase-date" style="margin-bottom:6px">✅ Klijent potvrdio: ${esc(rep.clientConfirmedBy||'?')} — ${date(rep.clientConfirmedAt)}</div>`;
+    } else if(!isPrivileged){
+      repBody+=`<div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="confirmReparacijaClient(${rep.id})">✅ Urađeno</button></div>`;
+    } else {
+      repBody+=`<div class="phase-date" style="margin-bottom:6px;color:var(--muted)">⏳ Čeka potvrdu klijenta</div>`;
+    }
+
+    // Red 3: kontrola potvrđuje (samo Kontrola/Admin, i samo pošto je klijent potvrdio)
+    if(isPrivileged){
+      if(clientDone){
+        repBody+=`<div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="confirmReparacijaKontrola(${rep.id})">✅ Sve u redu</button></div>`;
+      } else {
+        repBody+=`<div class="phase-actions"><button class="btn-tag btn-tag--done" disabled style="opacity:.5;cursor:not-allowed" title="Klijent još nije potvrdio">✅ Sve u redu</button></div>`;
+      }
+    }
+
+    h+=`<div class="phase-row" style="margin-top:6px">
+      <div class="phase-spine">
+        <div class="phase-medallion">🔧</div>
+      </div>
+      <div class="phase-content" style="border-bottom:none">
+        <div class="phase-head">
+          <span class="phase-name">Reparacija</span>
+          <span class="phase-date">Rok: ${rep.deadlineDate?date(rep.deadlineDate):'-'}</span>
+        </div>
+        ${repBody}
+      </div>
+    </div>`;
+  }
+
   // ============ PRIJEM (samo admin i Kontrola) ============
   if(isPrivileged && prijem){
     const pLock = isAdmin ? {locked:false,onlyCompleteAllowed:false} : phaseLockState(prijem);
@@ -416,6 +490,20 @@ function renderModal(o){
   phasesContainer.innerHTML=phases.length ? h : 'Nema faza';
 }
 
+// ============ REPARACIJA - potvrde ============
+async function confirmReparacijaClient(repId){
+  try{
+    await api(`/api/reparacija/${repId}/client-confirm`,{method:'POST',headers:headers(true)});
+    await loadOrders(searchInput?.value||'',currentPage);
+  }catch(e){alert('❌ '+e.message)}
+}
+async function confirmReparacijaKontrola(repId){
+  try{
+    await api(`/api/reparacija/${repId}/kontrola-confirm`,{method:'POST',headers:headers(true)});
+    await loadOrders(searchInput?.value||'',currentPage);
+  }catch(e){alert('❌ '+e.message)}
+}
+
 function parsePrijemData(comment){
   try{ return JSON.parse(comment||'{}') }catch(_){ return {} }
 }
@@ -452,6 +540,10 @@ function ensureSizeModal(){
     <p style="color:var(--muted);font-size:13px;margin-top:8px">Klikni na broj i upiši količinu (par).</p>
     <div id="sizeGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(56px,1fr));gap:8px;margin:10px 0"></div>
     <textarea id="sizeNote" class="phase-note" placeholder="Komentar..." style="margin-top:6px"></textarea>
+    <div id="sizeDeadlineWrap" class="hidden" style="margin-top:10px">
+      <label style="font-size:13px;color:var(--muted)">Rok za podsetnik (dana):</label>
+      <input type="number" id="sizeDeadlineDays" min="1" value="7" style="width:70px;margin-left:8px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;text-align:center">
+    </div>
     <div class="phase-actions" style="margin-top:12px">
       <button class="btn-tag btn-tag--done" onclick="confirmSizeModal()">✅ Potvrdi</button>
       <button class="btn-tag btn-tag--reset" onclick="closeSizeModal()">Otkaži</button>
@@ -472,6 +564,9 @@ function openSizeModal(orderId,outcome){
   $('sizeModalTitle').textContent = outcome==='anulirano' ? '❌ Anulirano' : '🔧 Reparacija';
   document.querySelectorAll('.sizeQtyInput').forEach(inp=>inp.value='');
   $('sizeNote').value='';
+  const deadlineWrap=$('sizeDeadlineWrap');
+  if(outcome==='reparacija'){deadlineWrap.classList.remove('hidden');$('sizeDeadlineDays').value='7'}
+  else{deadlineWrap.classList.add('hidden')}
   $('sizeModal').classList.remove('hidden');
 }
 function closeSizeModal(){$('sizeModal')?.classList.add('hidden');sizeModalOrderId=null;sizeModalOutcome=null}
@@ -490,6 +585,7 @@ async function confirmSizeModal(){
   const note=$('sizeNote').value.trim();
   if(items.length===0 && !note){alert('Unesi bar jedan broj sa količinom, ili komentar.');return}
 
+  const deadlineDays=outcome==='reparacija' ? (parseInt($('sizeDeadlineDays').value)||7) : undefined;
   const payload=JSON.stringify({outcome,unit:'par',items,note});
   const o=orders.find(x=>String(x.id)===String(id));
   const p=o?.progress.find(x=>x.phase==='PRIJEM');
@@ -499,8 +595,11 @@ async function confirmSizeModal(){
   closeSizeModal();
   renderModal(o);
   try{
-    const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase:'PRIJEM',status:'problem',comment:payload})});
-    p.updatedAt=d.updatedAt;renderModal(o);
+    const body={orderId:id,phase:'PRIJEM',status:'problem',comment:payload};
+    if(deadlineDays)body.deadlineDays=deadlineDays;
+    const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify(body)});
+    p.updatedAt=d.updatedAt;
+    await loadOrders(searchInput?.value||'',currentPage);
   }catch(e){Object.assign(p,old);renderModal(o);alert('❌ '+e.message)}
 }
 
