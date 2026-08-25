@@ -398,32 +398,22 @@ function renderModal(o){
       </div>
     </div>`;
 
-  // ============ REPARACIJA (tro-fazni tok) - vidljivo SAMO kad nalog ima aktivnu reparaciju ============
+  // ============ REPARACIJA - poseban blok SAMO za klijenta (nema pristup kartici Prijem) ============
   const rep=o.reparacija;
-  if(rep){
+  if(!isPrivileged && rep){
     const items=formatPrijemItems(rep.items);
     const clientDone=!!rep.clientConfirmedAt;
-    const kontrolaDone=!!rep.kontrolaConfirmedAt; // uvek false ovde jer se zatvorene reparacije ne šalju sa servera, ali čuvamo radi jasnoće
-    let repBody=`<div class="phase-date" style="margin-top:-4px;margin-bottom:6px">🔧 ${date(rep.createdAt)}${items?` — ${esc(items)}`:''}${rep.note?` — ${esc(rep.note)}`:''}</div>`;
-
-    // Red 2: klijent potvrdio
-    if(clientDone){
-      repBody+=`<div class="phase-date" style="margin-bottom:6px">✅ Klijent potvrdio: ${esc(rep.clientConfirmedBy||'?')} — ${date(rep.clientConfirmedAt)}</div>`;
-    } else if(!isPrivileged){
-      repBody+=`<div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="confirmReparacijaClient(${rep.id})">✅ Urađeno</button></div>`;
+    const kontrolaDone=!!rep.kontrolaConfirmedAt;
+    let repBody;
+    if(kontrolaDone){
+      repBody=`<div class="phase-date">✅ Zatvoreno ${date(rep.kontrolaConfirmedAt)}</div>`;
+    } else if(clientDone){
+      repBody=`<div class="phase-date" style="margin-bottom:4px">✅ Potvrđeno: ${esc(rep.clientConfirmedBy||'?')} — ${date(rep.clientConfirmedAt)}</div>
+        <div class="phase-date" style="color:var(--muted)">⏳ Čeka potvrdu Kontrole</div>`;
     } else {
-      repBody+=`<div class="phase-date" style="margin-bottom:6px;color:var(--muted)">⏳ Čeka potvrdu klijenta</div>`;
+      repBody=`<div class="phase-date" style="margin-bottom:6px">🔧 ${date(rep.createdAt)}${items?` — ${esc(items)}`:''}${rep.note?` — ${esc(rep.note)}`:''}</div>
+        <div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="confirmReparacijaClient(${rep.id})">✅ Urađeno</button></div>`;
     }
-
-    // Red 3: kontrola potvrđuje (samo Kontrola/Admin, i samo pošto je klijent potvrdio)
-    if(isPrivileged){
-      if(clientDone){
-        repBody+=`<div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="confirmReparacijaKontrola(${rep.id})">✅ Sve u redu</button></div>`;
-      } else {
-        repBody+=`<div class="phase-actions"><button class="btn-tag btn-tag--done" disabled style="opacity:.5;cursor:not-allowed" title="Klijent još nije potvrdio">✅ Sve u redu</button></div>`;
-      }
-    }
-
     h+=`<div class="phase-row" style="margin-top:6px">
       <div class="phase-spine">
         <div class="phase-medallion">🔧</div>
@@ -431,27 +421,28 @@ function renderModal(o){
       <div class="phase-content" style="border-bottom:none">
         <div class="phase-head">
           <span class="phase-name">Reparacija</span>
-          <span class="phase-date">Rok: ${rep.deadlineDate?date(rep.deadlineDate):'-'}</span>
+          ${!kontrolaDone ? `<span class="phase-date">Rok: ${rep.deadlineDate?date(rep.deadlineDate):'-'}</span>` : ''}
         </div>
         ${repBody}
       </div>
     </div>`;
   }
 
-  // ============ PRIJEM (samo admin i Kontrola) ============
+  // ============ PRIJEM (samo admin i Kontrola) - reparacija tok je integrisan direktno ovde, bez posebne kartice ============
   if(isPrivileged && prijem){
     const pLock = isAdmin ? {locked:false,onlyCompleteAllowed:false} : phaseLockState(prijem);
     let pBadge='';
     let pBody='';
+    let pParsed=null;
     if(prijem.status==='completed'){
       const d = prijem.updatedAt ? date(prijem.updatedAt) : null;
       pBadge = `<span class="phase-state">✅${d?` ${d}`:''}</span>`;
     } else if(prijem.status==='problem'){
-      const parsed = parsePrijemData(prijem.comment);
+      pParsed = parsePrijemData(prijem.comment);
       const d = prijem.updatedAt ? date(prijem.updatedAt) : null;
-      const icon = parsed.outcome==='anulirano' ? '❌ ANULIRANO' : '🔧 REPARACIJA';
-      const items = formatPrijemItems(parsed.items);
-      pBadge = `<span class="phase-state">${icon}${d?` ${d}`:''}${items?` — ${esc(items)}`:''}${parsed.note?` — ${esc(parsed.note)}`:''}</span>`;
+      const icon = pParsed.outcome==='anulirano' ? '❌ ANULIRANO' : '🔧 REPARACIJA';
+      const items = formatPrijemItems(pParsed.items);
+      pBadge = `<span class="phase-state">${icon}${d?` ${d}`:''}${items?` — ${esc(items)}`:''}${pParsed.note?` — ${esc(pParsed.note)}`:''}</span>`;
     }
     const pLockIcon = (pLock.locked && !pLock.onlyCompleteAllowed) ? `<span class="phase-lock" title="Zaključano — obratite se administratoru">🔒</span>` : '';
 
@@ -472,6 +463,19 @@ function renderModal(o){
         </div>`;
     }
 
+    // Reparacija - kompletna logika toka (klijent urađeno -> kontrola sve u redu) prikazana direktno ispod Prijema
+    let repSection='';
+    if(pParsed && pParsed.outcome==='reparacija' && rep){
+      if(rep.kontrolaConfirmedAt){
+        repSection=`<div class="phase-date" style="margin-top:8px">✅ Potvrđeno ${date(rep.kontrolaConfirmedAt)}</div>`;
+      } else if(rep.clientConfirmedAt){
+        repSection=`<div class="phase-date" style="margin-top:8px">${date(rep.clientConfirmedAt)} — ${esc(rep.clientConfirmedBy||'')}</div>
+          <div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="confirmReparacijaKontrola(${rep.id})">✅ Sve u redu</button></div>`;
+      } else {
+        repSection=`<div class="phase-date" style="margin-top:8px;color:var(--muted)">⏳ Čeka potvrdu klijenta (rok: ${rep.deadlineDate?date(rep.deadlineDate):'-'})</div>`;
+      }
+    }
+
     h+=`<div class="phase-row" style="margin-top:6px">
       <div class="phase-spine">
         <div class="phase-medallion">📥</div>
@@ -483,6 +487,7 @@ function renderModal(o){
           ${pLockIcon}
         </div>
         ${pBody}
+        ${repSection}
       </div>
     </div>`;
   }

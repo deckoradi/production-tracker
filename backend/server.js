@@ -532,7 +532,7 @@ app.get('/api/orders', authenticate, async (req, res) => {
             ) lastprob ON true
             LEFT JOIN LATERAL (
                 SELECT * FROM reparacije r
-                WHERE r.order_id = o.id AND r.kontrola_confirmed_at IS NULL
+                WHERE r.order_id = o.id
                 ORDER BY r.created_at DESC LIMIT 1
             ) rep ON true
             ${whereClause}
@@ -942,7 +942,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
              ORDER BY order_number, company, phase, changed_at DESC`
         );
 
-        // 3b) Reparacije - SAMO poslednje stanje po nalogu (ne cela istorija tri koraka), vidljivo svim ulogama
+        // 3b) Reparacije - najnovije stanje po nalogu, koristi se da obogati "Prijem" kolonu
         const repairResult = await pool.query(
             `SELECT o.order_number, o.company, r.items, r.note, r.created_at,
                     r.client_confirmed_at, r.client_confirmed_by, r.client_confirmed_by_company,
@@ -956,18 +956,6 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             const key = `${r.order_number}||${r.company}`;
             if (!repairMap.has(key)) repairMap.set(key, r);
         });
-        const reparacijaCellText = (entry) => {
-            if (!entry) return '';
-            const items = (entry.items || []).map(it => `vel.${it.size} - ${it.qty} pa.`).join(', ');
-            if (entry.kontrola_confirmed_at) {
-                return `✅ Zatvoreno ${new Date(entry.kontrola_confirmed_at).toLocaleDateString('sr-RS')}`;
-            }
-            if (entry.client_confirmed_at) {
-                return `⏳ Čeka potvrdu Kontrole (klijent potvrdio ${new Date(entry.client_confirmed_at).toLocaleDateString('sr-RS')})`;
-            }
-            const dateStr = entry.created_at ? new Date(entry.created_at).toLocaleDateString('sr-RS') : '';
-            return [`🔧 REPARACIJA ${dateStr}`, items, entry.note].filter(Boolean).join('  —  ');
-        };
         const problemMap = new Map(); // key: order_number||company||phase -> {comment, changedAt}
         lastProblemResult.rows.forEach(r => {
             problemMap.set(`${r.order_number}||${r.company}||${r.phase}`, { comment: r.comment || '', changedAt: r.changed_at });
@@ -993,18 +981,33 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         });
         const phases = [...phaseSet].sort((a, b) => parseInt(a) - parseInt(b));
         const finalPhases = phases.length ? phases : ['100', '200', '300', '400', '500'];
-        const showPrijem = req.user.role === 'admin' || req.user.role === 'kontrola';
 
-        // Formatiranje PRIJEM podatka: JSON {outcome, unit, items:[{size,qty}], note} sačuvan u comment koloni
-        const prijemCellText = (entry) => {
+        // Formatiranje PRIJEM podatka za kolonu "Prijem" - vidljivo SVIM ulogama.
+        // JSON {outcome, unit, items:[{size,qty}], note} sačuvan u comment koloni.
+        // Za reparaciju, prati trenutni korak toka (obeleženo -> klijent urađeno -> kontrola potvrdila):
+        //  - dok čeka klijenta: pun opis (ikona, datum, stavke, napomena)
+        //  - klijent potvrdio (kontrola još nije): SAMO datum + ime klijenta
+        //  - kontrola potvrdila (zatvoreno): SAMO datum + ikona
+        const prijemCellText = (entry, key) => {
             if (!entry || entry.status === 'pending') return '';
             const dateStr = entry.changedAt ? new Date(entry.changedAt).toLocaleDateString('sr-RS') : '';
             if (entry.status === 'completed') return [`✅ ${dateStr}`].filter(Boolean).join('  ');
             try {
                 const d = JSON.parse(entry.comment || '{}');
-                const icon = d.outcome === 'anulirano' ? '❌ ANULIRANO' : '🔧 REPARACIJA';
+                if (d.outcome === 'anulirano') {
+                    const items = (d.items || []).map(it => `vel.${it.size} - ${it.qty} pa.`).join(', ');
+                    return [`❌ ANULIRANO ${dateStr}`, items, d.note].filter(Boolean).join('  —  ');
+                }
+                // Reparacija - proveri u kom je koraku toka
+                const rep = repairMap.get(key);
+                if (rep && rep.kontrola_confirmed_at) {
+                    return `✅ ${new Date(rep.kontrola_confirmed_at).toLocaleDateString('sr-RS')}`;
+                }
+                if (rep && rep.client_confirmed_at) {
+                    return `${new Date(rep.client_confirmed_at).toLocaleDateString('sr-RS')} — ${rep.client_confirmed_by || ''}`;
+                }
                 const items = (d.items || []).map(it => `vel.${it.size} - ${it.qty} pa.`).join(', ');
-                return [`${icon} ${dateStr}`, items, d.note].filter(Boolean).join('  —  ');
+                return [`🔧 REPARACIJA ${dateStr}`, items, d.note].filter(Boolean).join('  —  ');
             } catch (_) {
                 return [`⚠️ ${dateStr}`, entry.comment].filter(Boolean).join('  ');
             }
@@ -1058,8 +1061,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         ];
         const phaseCols = finalPhases.map(p => ({ key: 'phase_' + p, width: 26 }));
         const tailCols = [
-            ...(showPrijem ? [{ key: 'prijem', width: 36 }] : []),
-            { key: 'reparacija', width: 36 },
+            { key: 'prijem', width: 36 },
             { key: 'napomena', width: 30 },
             { key: 'changed_by', width: 16 }
         ];
@@ -1082,8 +1084,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         headerRow.values = [
             'Datum i vreme', 'Firma', 'Nalog',
             ...finalPhases.map(p => phaseLabel(p)),
-            ...(showPrijem ? ['Prijem'] : []),
-            'Reparacija',
+            'Prijem',
             'Napomena', 'Izmenio'
         ];
         headerRow.eachCell(cell => {
@@ -1104,8 +1105,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
                 changed_at: new Date(r.changed_at).toLocaleString('sr-RS'),
                 company: visibleCompany,
                 order_number: r.order_number,
-                ...(showPrijem ? { prijem: prijemCellText(prijemMap.get(key)) } : {}),
-                reparacija: reparacijaCellText(repairMap.get(key)),
+                prijem: prijemCellText(prijemMap.get(key), key),
                 napomena: napomena && napomena.comment ? napomena.comment : '',
                 changed_by: r.changed_by || ''
             };
