@@ -247,7 +247,41 @@ changePasswordBtn?.addEventListener('click',async()=>{
 });
 
 async function loadOrders(search='',page=1){try{const u=search?`/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}`:`/api/orders?page=${page}&limit=${LIMIT}`;ordersContainer.innerHTML='<div class="loading">⏳ Učitavanje...</div>';const d=await api(u,{headers:headers()});orders=d.data||[];totalOrders=d.total||0;currentPage=d.page||1;totalPages=d.totalPages||1;if(orderCount)orderCount.textContent=`${totalOrders} naloga`;renderOrders();if(selectedOrderId&&!phaseModal?.classList.contains('hidden')){const o=orders.find(x=>String(x.id)===String(selectedOrderId));if(o)renderModal(o);else phaseModal.classList.add('hidden')}}catch(e){ordersContainer.innerHTML=`<div class="error">❌ ${esc(e.message)}</div>`}}
-function renderOrders(){if(!orders.length){ordersContainer.innerHTML='<p style="text-align:center;padding:40px;color:var(--muted)">📭 Nema naloga za prikaz</p>';return}const admin=currentUser?.role==='admin'||currentUser?.role==='kontrola';let h='<table><thead><tr>'+(admin?'<th>Firma</th><th>Šifra</th><th>Naziv</th><th>Nalog</th><th>Količina</th><th>Datum</th><th>Status</th>':'<th>Nalog</th><th>Naziv</th><th>Količina</th><th>Status</th>')+'</tr></thead><tbody>';orders.forEach((o,i)=>{const p=o.progress||[],c=p.filter(x=>x.status==='completed').length,pr=p.filter(x=>x.status==='problem').length,t=p.length;const st=t&&c===t?['✅ Završeno','status-completed']:pr?['⚠️ Problem','status-problem']:c?[`${c}/${t}`,'status-pending']:['U toku','status-pending'];h+=`<tr style="${i%2===0?'background:var(--paper)':''}">`;if(admin)h+=`<td>${esc(o.company)}</td><td class="clickable" style="cursor:default;font-weight:600">${esc(o.code)}</td><td>${esc(o.name)}</td><td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td style="text-align:center">${o.quantity||0}</td><td>${esc(o.deliveryDate||'-')}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;else h+=`<td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td>${esc(o.name)}</td><td style="text-align:center">${o.quantity||0}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;h+='</tr>'});h+='</tbody></table>';if(totalPages>1)h+=`<div class="pagination"><button onclick="goToPage(${currentPage-1})" ${currentPage<=1?'disabled':''}>◀</button><span>${currentPage} / ${totalPages}</span><button onclick="goToPage(${currentPage+1})" ${currentPage>=totalPages?'disabled':''}>▶</button></div>`;ordersContainer.innerHTML=h}
+// ============ STATUS NALOGA (glavna lista) ============
+function computeOrderStatus(o){
+  const knownPhases=['100','200','300','400','500'];
+  const p=o.progress||[];
+  const findRow=ph=>p.find(x=>String(x.phase)===ph);
+
+  // 1) Prijem/Reparacija/Anulirano ima prioritet dok je otvoreno
+  if(o.prijem && o.prijem.status==='problem'){
+    let parsed={};
+    try{parsed=JSON.parse(o.prijem.comment||'{}')}catch(_){}
+    if(parsed.outcome==='anulirano'){
+      return ['❌ ANULIRANO','status-problem'];
+    }
+    if(parsed.outcome==='reparacija'){
+      const rep=o.reparacija;
+      if(!rep || !rep.kontrolaConfirmedAt){
+        return ['🔧 REPARACIJA','status-problem'];
+      }
+      // rep.kontrolaConfirmedAt postoji -> reparacija zatvorena, nastavi na normalnu proveru ispod
+    }
+  }
+
+  // 2) Problem u bilo kojoj od prvih 5 faza
+  const hasProblem=knownPhases.some(ph=>{const r=findRow(ph);return r && r.status==='problem'});
+  if(hasProblem)return ['⚠️ Problem','status-problem'];
+
+  // 3) Svih 5 faza završeno (Serigrafija/Vez "Nema" se računa kao završeno)
+  const doneCount=knownPhases.filter(ph=>{const r=findRow(ph);return r && (r.status==='completed'||r.status==='nema')}).length;
+  if(doneCount===knownPhases.length)return ['✅ U redu','status-completed'];
+
+  // 4) U toku
+  return doneCount>0?[`${doneCount}/${knownPhases.length}`,'status-pending']:['U toku','status-pending'];
+}
+
+function renderOrders(){if(!orders.length){ordersContainer.innerHTML='<p style="text-align:center;padding:40px;color:var(--muted)">📭 Nema naloga za prikaz</p>';return}const admin=currentUser?.role==='admin'||currentUser?.role==='kontrola';let h='<table><thead><tr>'+(admin?'<th>Firma</th><th>Šifra</th><th>Naziv</th><th>Nalog</th><th>Količina</th><th>Datum</th><th>Status</th>':'<th>Nalog</th><th>Naziv</th><th>Količina</th><th>Status</th>')+'</tr></thead><tbody>';orders.forEach((o,i)=>{const st=computeOrderStatus(o);h+=`<tr style="${i%2===0?'background:var(--paper)':''}">`;if(admin)h+=`<td>${esc(o.company)}</td><td class="clickable" style="cursor:default;font-weight:600">${esc(o.code)}</td><td>${esc(o.name)}</td><td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td style="text-align:center">${o.quantity||0}</td><td>${esc(o.deliveryDate||'-')}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;else h+=`<td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td>${esc(o.name)}</td><td style="text-align:center">${o.quantity||0}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;h+='</tr>'});h+='</tbody></table>';if(totalPages>1)h+=`<div class="pagination"><button onclick="goToPage(${currentPage-1})" ${currentPage<=1?'disabled':''}>◀</button><span>${currentPage} / ${totalPages}</span><button onclick="goToPage(${currentPage+1})" ${currentPage>=totalPages?'disabled':''}>▶</button></div>`;ordersContainer.innerHTML=h}
 function goToPage(p){if(p<1||p>totalPages)return;loadOrders(searchInput?.value||'',p)}
 
 function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)return;selectedOrderId=id;renderModal(o);phaseModal.classList.remove('hidden')}
@@ -311,12 +345,30 @@ function renderModal(o){
   }
 
   let h='<div class="phase-timeline">';
+  const knownOrder=['100','200','300','400','500'];
+  const findPhaseRow=ph=>phases.find(x=>String(x.phase)===ph);
   phases.forEach(p=>{
     const stateClass = p.status==='completed' ? 'phase-row--completed' : p.status==='problem' ? 'phase-row--problem' : '';
     const hasActivity = (p.status && p.status!=='pending') || (p.comment && p.comment.trim()!=='');
     const dateStr = hasActivity && p.updatedAt ? date(p.updatedAt) : null;
     const comment = (p.comment||'').trim();
     const lock = isKontrola ? {locked:true, onlyCompleteAllowed:false} : phaseLockState(p);
+
+    // Redosled faza (samo klijent) - ne može da obeleži fazu dok prethodne nisu rešene (Urađeno/Nema)
+    let sequenceBlockedOn=null;
+    if(!isPrivileged){
+      const idx=knownOrder.indexOf(String(p.phase));
+      if(idx>0){
+        for(let i=0;i<idx;i++){
+          const priorRow=findPhaseRow(knownOrder[i]);
+          const priorStatus=priorRow?.status;
+          if(!priorRow || priorStatus==='pending' || priorStatus==='problem'){
+            sequenceBlockedOn=knownOrder[i];
+            break;
+          }
+        }
+      }
+    }
 
     // Bedž: samo ikonica + datum (bez reči "Urađeno"/"Problem"). Za Problem: ikonica+datum+tekst u jednoj liniji.
     let badge='';
@@ -339,7 +391,9 @@ function renderModal(o){
       : '';
 
     let bodyHtml='';
-    if(lock.locked){
+    if(sequenceBlockedOn){
+      bodyHtml=`<div class="phase-date" style="color:var(--muted)">⛔ Prvo rešite fazu "${esc(phaseLabel(sequenceBlockedOn))}"</div>`;
+    } else if(lock.locked){
       // Zaključano: kompaktan prikaz, katanac je već u naslovnoj liniji (bez teksta).
       const lockedExtra = (p.status==='completed' && comment) ? `<div class="phase-date" style="margin-top:2px">${esc(comment)}</div>` : '';
       bodyHtml=`${lockedExtra}

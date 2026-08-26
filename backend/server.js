@@ -505,7 +505,24 @@ app.get('/api/orders', authenticate, async (req, res) => {
             paramIndex++;
         }
 
-        const countQuery = `SELECT COUNT(*) FROM orders ${whereClause}`;
+        if (!isPrivileged) {
+            // Nalog koji je već "preuzet" (obeležen) od strane DRUGE firme postaje nevidljiv za sve ostale
+            // klijente (samo Admin/Kontrola i dalje vide sve) - sprečava slučajno editovanje tuđeg naloga
+            // (npr. greškom u broju naloga).
+            const claimClause = `NOT EXISTS (
+                SELECT 1 FROM progress pclaim
+                WHERE pclaim.order_id = o.id
+                  AND pclaim.phase IN ('100','200','300','400','NAPOMENA')
+                  AND pclaim.updated_by_company IS NOT NULL
+                  AND pclaim.updated_by_company != $${paramIndex}
+                  AND (pclaim.status != 'pending' OR (pclaim.comment IS NOT NULL AND pclaim.comment != ''))
+            )`;
+            whereClause += whereClause ? ` AND ${claimClause}` : `WHERE ${claimClause}`;
+            params.push(req.user.company);
+            paramIndex++;
+        }
+
+        const countQuery = `SELECT COUNT(*) FROM orders o ${whereClause}`;
         const countResult = await pool.query(countQuery, params);
         const total = parseInt(countResult.rows[0].count);
 
@@ -521,7 +538,8 @@ app.get('/api/orders', authenticate, async (req, res) => {
                    rep.deadline_date as rep_deadline_date, rep.created_at as rep_created_at,
                    rep.client_confirmed_at as rep_client_confirmed_at, rep.client_confirmed_by as rep_client_confirmed_by,
                    rep.client_confirmed_by_company as rep_client_confirmed_by_company,
-                   rep.kontrola_confirmed_at as rep_kontrola_confirmed_at, rep.kontrola_confirmed_by as rep_kontrola_confirmed_by
+                   rep.kontrola_confirmed_at as rep_kontrola_confirmed_at, rep.kontrola_confirmed_by as rep_kontrola_confirmed_by,
+                   prijemSt.status as prijem_status, prijemSt.comment as prijem_comment
             FROM orders o
             LEFT JOIN progress p ON o.id = p.order_id ${isPrivileged ? '' : "AND p.phase != 'PRIJEM'"}
             LEFT JOIN LATERAL (
@@ -535,10 +553,15 @@ app.get('/api/orders', authenticate, async (req, res) => {
                 WHERE r.order_id = o.id
                 ORDER BY r.created_at DESC LIMIT 1
             ) rep ON true
+            LEFT JOIN LATERAL (
+                SELECT status, comment FROM progress p4
+                WHERE p4.order_id = o.id AND p4.phase = 'PRIJEM'
+                LIMIT 1
+            ) prijemSt ON true
             ${whereClause}
             GROUP BY o.id, rep.id, rep.items, rep.note, rep.deadline_date, rep.created_at,
                      rep.client_confirmed_at, rep.client_confirmed_by, rep.client_confirmed_by_company,
-                     rep.kontrola_confirmed_at, rep.kontrola_confirmed_by
+                     rep.kontrola_confirmed_at, rep.kontrola_confirmed_by, prijemSt.status, prijemSt.comment
             ORDER BY o.id DESC
             LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
         `;
@@ -555,6 +578,7 @@ app.get('/api/orders', authenticate, async (req, res) => {
             quantity: row.quantity,
             deliveryDate: row.delivery_date,
             progress: row.progress || [],
+            prijem: row.prijem_status ? { status: row.prijem_status, comment: row.prijem_comment } : null,
             reparacija: row.rep_id ? {
                 id: row.rep_id,
                 items: row.rep_items || [],
@@ -606,6 +630,46 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         }
         if (req.user.role !== 'admin' && req.user.role !== 'kontrola' && phase === 'PRIJEM') {
             return res.status(403).json({ error: 'Nemate dozvolu za ovu fazu.' });
+        }
+
+        // ============ ZAŠTITA: NALOG "PREUZET" OD DRUGE FIRME (samo klijenti) ============
+        // Kad god bilo koji klijent obeleži bilo koju fazu na nalogu, taj nalog postaje
+        // vezan za tu firmu - druga firma više ne može da ga menja (sprečava slučajno
+        // editovanje tuđeg naloga, npr. usled greške u broju naloga).
+        if (req.user.role === 'user' && ['100', '200', '300', '400', 'NAPOMENA'].includes(phase)) {
+            const claimCheck = await pool.query(
+                `SELECT DISTINCT updated_by_company FROM progress
+                 WHERE order_id = $1 AND phase IN ('100','200','300','400','NAPOMENA')
+                   AND updated_by_company IS NOT NULL AND updated_by_company != $2
+                   AND (status != 'pending' OR (comment IS NOT NULL AND comment != ''))
+                 LIMIT 1`,
+                [orderId, req.user.company]
+            );
+            if (claimCheck.rows.length > 0) {
+                return res.status(403).json({
+                    error: `🔒 Ovaj nalog je već preuzet od strane firme "${claimCheck.rows[0].updated_by_company}" i nije Vam dostupan.`
+                });
+            }
+        }
+
+        // ============ ZAŠTITA: REDOSLED FAZA (samo klijenti, ne mogu da preskaču faze) ============
+        if (req.user.role === 'user' && ['100', '200', '300', '400', '500'].includes(phase) && status !== 'pending') {
+            const phaseOrder = ['100', '200', '300', '400', '500'];
+            const idx = phaseOrder.indexOf(phase);
+            if (idx > 0) {
+                const priorPhases = phaseOrder.slice(0, idx);
+                const priorResult = await pool.query(
+                    `SELECT phase, status FROM progress WHERE order_id = $1 AND phase = ANY($2::text[])`,
+                    [orderId, priorPhases]
+                );
+                const statusMap = new Map(priorResult.rows.map(r => [r.phase, r.status]));
+                const unresolved = priorPhases.find(p => !statusMap.has(p) || statusMap.get(p) === 'pending' || statusMap.get(p) === 'problem');
+                if (unresolved) {
+                    return res.status(403).json({
+                        error: `⛔ Morate prvo rešiti fazu "${phaseLabel(unresolved)}" pre nego što označite "${phaseLabel(phase)}".`
+                    });
+                }
+            }
         }
 
         // ============ ZAKLJUČAVANJE PO DANU (samo za klijente, admin nema ograničenja) ============
@@ -1046,6 +1110,20 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             return lines.join('\n');
         };
 
+        // Da li je Prijem/Reparacija ZAVRŠENA (za zeleno bojenje datuma u koloni "Prijem")
+        const isPrijemFinished = (entry, key) => {
+            if (!entry || entry.status === 'pending') return false;
+            if (entry.status === 'completed') return true;
+            try {
+                const d = JSON.parse(entry.comment || '{}');
+                if (d.outcome === 'reparacija') {
+                    const rep = repairMap.get(key);
+                    return !!(rep && rep.kontrola_confirmed_at);
+                }
+            } catch (_) {}
+            return false;
+        };
+
         const workbook = new ExcelJS.Workbook();
         workbook.creator = 'Production Tracker';
         workbook.created = new Date();
@@ -1129,6 +1207,19 @@ app.get('/api/history/export', authenticate, async (req, res) => {
                 if (fill) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } };
                 if (entry && (entry.comment || '').trim()) hasComment = true;
             });
+
+            // Kolona "Prijem" - zeleno kad je Prijem/Reparacija ZAVRŠENA (potvrđeno/OK)
+            const prijemColIndex = fixedCols.length + phaseCols.length + 1;
+            const prijemCell = row.getCell(prijemColIndex);
+            prijemCell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+            if (isPrijemFinished(prijemMap.get(key), key)) {
+                prijemCell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FF276749' } };
+                prijemCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6F6D5' } };
+            } else if (prijemMap.get(key) && prijemMap.get(key).status === 'problem') {
+                prijemCell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FF9B2C2C' } };
+                prijemCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFED7D7' } };
+            }
+
             row.height = hasComment ? 34 : 18;
         });
 
