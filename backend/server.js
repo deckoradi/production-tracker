@@ -167,6 +167,35 @@ const authenticate = (req, res, next) => {
     }
 };
 
+// ============ OBNOVI REPARACIJU IZ ISTORIJE (ako trenutno ne postoji nijedan zapis za nalog) ============
+// Koristi se pri upload-u, i za NOVE naloge (posle brisanja) i za POSTOJEĆE naloge kod kojih je
+// reparacija u nekom trenutku u prošlosti izgubljena (npr. brisanje aktivnih naloga urađeno pre
+// nego što je ova logika uvedena). Bez ovoga, čim se reparacije tabela isprazni, obaveštenja za
+// taj nalog ostaju trajno ugašena i klijent/kontrola gube vezu, iako istorija jasno pokazuje da
+// je nalog i dalje "u reparaciji".
+const restoreReparacijaFromHistory = async (orderId, orderNumber, company) => {
+    const lastPrijemHist = await pool.query(
+        `SELECT new_status, comment, changed_at FROM order_history
+         WHERE order_number = $1 AND company = $2 AND phase = 'PRIJEM'
+         ORDER BY changed_at DESC LIMIT 1`,
+        [orderNumber, company]
+    );
+    if (lastPrijemHist.rows.length === 0 || lastPrijemHist.rows[0].new_status !== 'problem') return false;
+    let parsedPrijemHist = {};
+    try { parsedPrijemHist = JSON.parse(lastPrijemHist.rows[0].comment || '{}'); } catch (_) {}
+    if (parsedPrijemHist.outcome !== 'reparacija') return false;
+
+    const restoredDeadlineDays = parseInt(parsedPrijemHist.deadlineDays) > 0 ? parseInt(parsedPrijemHist.deadlineDays) : 7;
+    // Rok se računa od ORIGINALNOG datuma kad je reparacija zavedena (a ne od trenutka
+    // upload-a), tako da kašnjenje ostane tačno i posle brisanja + ponovnog uploada.
+    await pool.query(
+        `INSERT INTO reparacije (order_id, items, note, deadline_days, created_at, deadline_date, created_by)
+         VALUES ($1, $2, $3, $4, $5, $5 + make_interval(days => $4), $6)`,
+        [orderId, JSON.stringify(parsedPrijemHist.items || []), parsedPrijemHist.note || '', restoredDeadlineDays, lastPrijemHist.rows[0].changed_at, 'sistem (obnovljeno iz istorije)']
+    );
+    return true;
+};
+
 // ============ EMAIL ============
 // Prvo pokušava Resend (HTTP API - radi i kad je SMTP blokiran, npr. na Render free planu).
 // Ako RESEND_API_KEY nije podešen, prelazi na SMTP (nodemailer) sa EMAIL_USER/EMAIL_PASS
@@ -405,6 +434,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
             const existing = await pool.query('SELECT id FROM orders WHERE order_number = $1 AND company = $2', [orderNumber, company]);
 
             if (existing.rows.length > 0) {
+                const existingOrderId = existing.rows[0].id;
                 // Ažuriraj (ne diraj progress)
                 await pool.query(
                     `UPDATE orders SET 
@@ -413,6 +443,14 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                     [code, name, quantity, deliveryDate, orderNumber, company]
                 );
                 updated++;
+
+                // Ako za ovaj (postojeći) nalog trenutno NE postoji baš nijedan zapis u tabeli
+                // reparacije (npr. izgubljen ranijim brisanjem, pre nego što je uveden restore),
+                // a istorija pokazuje da je nalog i dalje "u reparaciji" - obnovi ga.
+                const hasAnyRep = await pool.query('SELECT id FROM reparacije WHERE order_id = $1 LIMIT 1', [existingOrderId]);
+                if (hasAnyRep.rows.length === 0) {
+                    await restoreReparacijaFromHistory(existingOrderId, orderNumber, company);
+                }
             } else {
                 // Dodaj novi nalog
                 const newId = Date.now() + i;
@@ -453,26 +491,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                 // "reparacija", a nalog nije naknadno vraćen na "Sve u redu" niti "Anulirano").
                 // Bez ovoga, brisanje naloga + ponovni Excel upload trajno gasi obaveštenja o
                 // reparaciji, iako je nalog i dalje suštinski "u reparaciji".
-                const lastPrijemHist = await pool.query(
-                    `SELECT new_status, comment, changed_at FROM order_history
-                     WHERE order_number = $1 AND company = $2 AND phase = 'PRIJEM'
-                     ORDER BY changed_at DESC LIMIT 1`,
-                    [orderNumber, company]
-                );
-                if (lastPrijemHist.rows.length > 0 && lastPrijemHist.rows[0].new_status === 'problem') {
-                    let parsedPrijemHist = {};
-                    try { parsedPrijemHist = JSON.parse(lastPrijemHist.rows[0].comment || '{}'); } catch (_) {}
-                    if (parsedPrijemHist.outcome === 'reparacija') {
-                        const restoredDeadlineDays = parseInt(parsedPrijemHist.deadlineDays) > 0 ? parseInt(parsedPrijemHist.deadlineDays) : 7;
-                        // Rok se računa od ORIGINALNOG datuma kad je reparacija zavedena (a ne od trenutka
-                        // upload-a), tako da kašnjenje ostane tačno i posle brisanja + ponovnog uploada.
-                        await pool.query(
-                            `INSERT INTO reparacije (order_id, items, note, deadline_days, created_at, deadline_date, created_by)
-                             VALUES ($1, $2, $3, $4, $5, $5 + make_interval(days => $4), $6)`,
-                            [newId, JSON.stringify(parsedPrijemHist.items || []), parsedPrijemHist.note || '', restoredDeadlineDays, lastPrijemHist.rows[0].changed_at, 'sistem (obnovljeno iz istorije)']
-                        );
-                    }
-                }
+                await restoreReparacijaFromHistory(newId, orderNumber, company);
 
                 if (anyRestoredForThisOrder) restored++;
                 inserted++;
