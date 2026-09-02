@@ -449,6 +449,31 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                     );
                 }
 
+                // Obnovi otvorenu reparaciju (ako je poslednji PRIJEM u istoriji bio "problem" ->
+                // "reparacija", a nalog nije naknadno vraćen na "Sve u redu" niti "Anulirano").
+                // Bez ovoga, brisanje naloga + ponovni Excel upload trajno gasi obaveštenja o
+                // reparaciji, iako je nalog i dalje suštinski "u reparaciji".
+                const lastPrijemHist = await pool.query(
+                    `SELECT new_status, comment, changed_at FROM order_history
+                     WHERE order_number = $1 AND company = $2 AND phase = 'PRIJEM'
+                     ORDER BY changed_at DESC LIMIT 1`,
+                    [orderNumber, company]
+                );
+                if (lastPrijemHist.rows.length > 0 && lastPrijemHist.rows[0].new_status === 'problem') {
+                    let parsedPrijemHist = {};
+                    try { parsedPrijemHist = JSON.parse(lastPrijemHist.rows[0].comment || '{}'); } catch (_) {}
+                    if (parsedPrijemHist.outcome === 'reparacija') {
+                        const restoredDeadlineDays = parseInt(parsedPrijemHist.deadlineDays) > 0 ? parseInt(parsedPrijemHist.deadlineDays) : 7;
+                        // Rok se računa od ORIGINALNOG datuma kad je reparacija zavedena (a ne od trenutka
+                        // upload-a), tako da kašnjenje ostane tačno i posle brisanja + ponovnog uploada.
+                        await pool.query(
+                            `INSERT INTO reparacije (order_id, items, note, deadline_days, created_at, deadline_date, created_by)
+                             VALUES ($1, $2, $3, $4, $5, $5 + make_interval(days => $4), $6)`,
+                            [newId, JSON.stringify(parsedPrijemHist.items || []), parsedPrijemHist.note || '', restoredDeadlineDays, lastPrijemHist.rows[0].changed_at, 'sistem (obnovljeno iz istorije)']
+                        );
+                    }
+                }
+
                 if (anyRestoredForThisOrder) restored++;
                 inserted++;
             }
@@ -696,6 +721,25 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
         }
 
+        // ============ PRIJEM: ugradi deadlineDays u comment JSON ============
+        // Rok reparacije (deadlineDays) je do sada stizao SAMO kroz req.body.deadlineDays i
+        // čuvao se isključivo u tabeli "reparacije". Ta tabela se briše kod "Obriši aktivne naloge"
+        // i kod ponovnog Excel upload-a se NE obnavlja (obnavlja se samo "progress" iz "order_history"),
+        // pa je rok reparacije nepovratno nestajao, a sa njim i obaveštenje/podsetnik.
+        // Zato ga sada ugrađujemo u sam comment (koji SE čuva u order_history), da bi mogao da se
+        // pouzdano obnovi kasnije.
+        let finalCommentToStore = finalComment;
+        if (phase === 'PRIJEM' && status === 'problem') {
+            try {
+                const parsedForEnrich = JSON.parse(finalComment || '{}');
+                if (parsedForEnrich.outcome === 'reparacija') {
+                    const deadlineDaysToStore = parseInt(req.body.deadlineDays) > 0 ? parseInt(req.body.deadlineDays) : 7;
+                    parsedForEnrich.deadlineDays = deadlineDaysToStore;
+                    finalCommentToStore = JSON.stringify(parsedForEnrich);
+                }
+            } catch (_) {}
+        }
+
         // Ko je STVARNO uradio ovu izmenu - upisujemo uvek, bez obzira da li se nalog
         // poklapa sa firmom korisnika. Ovo omogućava da se kasnije vidi (npr. Kontroli)
         // da je nalog bio namenjen jednoj firmi, a da ga je zapravo radio neko drugi.
@@ -708,13 +752,13 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
              updated_at = NOW(),
              updated_by = EXCLUDED.updated_by,
              updated_by_company = EXCLUDED.updated_by_company`,
-            [orderId, phase, status, finalComment, req.user.username, req.user.company]
+            [orderId, phase, status, finalCommentToStore, req.user.username, req.user.company]
         );
 
         // Upisujemo u istoriju kad god se nešto promeni (status ILI komentar),
         // ne samo kad se promeni status - inače komentar-only izmene nestaju
         // posle brisanja naloga + ponovnog Excel uploada.
-        if (status !== oldStatus || finalComment !== oldComment) {
+        if (status !== oldStatus || finalCommentToStore !== oldComment) {
             const orderInfo = await pool.query(
                 'SELECT order_number, company FROM orders WHERE id = $1',
                 [orderId]
@@ -725,7 +769,7 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
                     `INSERT INTO order_history 
                         (order_number, company, phase, old_status, new_status, comment, changed_by, changed_by_company)
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-                    [order_number, company, phase, oldStatus, status, finalComment, req.user.username, req.user.company]
+                    [order_number, company, phase, oldStatus, status, finalCommentToStore, req.user.username, req.user.company]
                 );
                 console.log('📜 Istorija sačuvana', company !== req.user.company ? `(radio je korisnik iz firme "${req.user.company}", nalog je firme "${company}")` : '');
             }
@@ -736,7 +780,7 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         if (phase === 'PRIJEM') {
             if (status === 'problem') {
                 let parsedPrijem = {};
-                try { parsedPrijem = JSON.parse(finalComment || '{}'); } catch (_) {}
+                try { parsedPrijem = JSON.parse(finalCommentToStore || '{}'); } catch (_) {}
                 if (parsedPrijem.outcome === 'reparacija') {
                     const deadlineDays = parseInt(req.body.deadlineDays) > 0 ? parseInt(req.body.deadlineDays) : 7;
                     const existingRep = await pool.query(
