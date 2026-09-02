@@ -190,7 +190,7 @@ const restoreReparacijaFromHistory = async (orderId, orderNumber, company) => {
     // upload-a), tako da kašnjenje ostane tačno i posle brisanja + ponovnog uploada.
     await pool.query(
         `INSERT INTO reparacije (order_id, items, note, deadline_days, created_at, deadline_date, created_by)
-         VALUES ($1, $2, $3, $4, $5, $5 + make_interval(days => $4), $6)`,
+         VALUES ($1, $2, $3, $4, $5::timestamp, $5::timestamp + make_interval(days => $4), $6)`,
         [orderId, JSON.stringify(parsedPrijemHist.items || []), parsedPrijemHist.note || '', restoredDeadlineDays, lastPrijemHist.rows[0].changed_at, 'sistem (obnovljeno iz istorije)']
     );
     return true;
