@@ -180,10 +180,23 @@ const restoreReparacijaFromHistory = async (orderId, orderNumber, company) => {
          ORDER BY changed_at DESC LIMIT 1`,
         [orderNumber, company]
     );
-    if (lastPrijemHist.rows.length === 0 || lastPrijemHist.rows[0].new_status !== 'problem') return false;
+    if (lastPrijemHist.rows.length === 0) {
+        console.log(`🔎 Restore reparacije #${orderNumber} (${company}): NEMA istorije za fazu PRIJEM - preskačem.`);
+        return false;
+    }
+    if (lastPrijemHist.rows[0].new_status !== 'problem') {
+        console.log(`🔎 Restore reparacije #${orderNumber} (${company}): poslednji PRIJEM status je "${lastPrijemHist.rows[0].new_status}" (ne "problem") - preskačem.`);
+        return false;
+    }
     let parsedPrijemHist = {};
-    try { parsedPrijemHist = JSON.parse(lastPrijemHist.rows[0].comment || '{}'); } catch (_) {}
-    if (parsedPrijemHist.outcome !== 'reparacija') return false;
+    try { parsedPrijemHist = JSON.parse(lastPrijemHist.rows[0].comment || '{}'); } catch (_) {
+        console.log(`🔎 Restore reparacije #${orderNumber} (${company}): comment nije validan JSON ("${lastPrijemHist.rows[0].comment}") - preskačem.`);
+        return false;
+    }
+    if (parsedPrijemHist.outcome !== 'reparacija') {
+        console.log(`🔎 Restore reparacije #${orderNumber} (${company}): outcome je "${parsedPrijemHist.outcome}" (ne "reparacija") - preskačem.`);
+        return false;
+    }
 
     const restoredDeadlineDays = parseInt(parsedPrijemHist.deadlineDays) > 0 ? parseInt(parsedPrijemHist.deadlineDays) : 7;
     // Rok se računa od ORIGINALNOG datuma kad je reparacija zavedena (a ne od trenutka
@@ -193,6 +206,7 @@ const restoreReparacijaFromHistory = async (orderId, orderNumber, company) => {
          VALUES ($1, $2, $3, $4, $5::timestamp, $5::timestamp + make_interval(days => $4), $6)`,
         [orderId, JSON.stringify(parsedPrijemHist.items || []), parsedPrijemHist.note || '', restoredDeadlineDays, lastPrijemHist.rows[0].changed_at, 'sistem (obnovljeno iz istorije)']
     );
+    console.log(`✅ Restore reparacije #${orderNumber} (${company}): obnovljena, rok bio ${restoredDeadlineDays} dana od ${lastPrijemHist.rows[0].changed_at}.`);
     return true;
 };
 
@@ -450,6 +464,8 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                 const hasAnyRep = await pool.query('SELECT id FROM reparacije WHERE order_id = $1 LIMIT 1', [existingOrderId]);
                 if (hasAnyRep.rows.length === 0) {
                     await restoreReparacijaFromHistory(existingOrderId, orderNumber, company);
+                } else {
+                    console.log(`🔎 Restore reparacije #${orderNumber} (${company}): nalog već ima zapis u tabeli reparacije - preskačem proveru.`);
                 }
             } else {
                 // Dodaj novi nalog
