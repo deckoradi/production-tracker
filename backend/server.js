@@ -102,12 +102,23 @@ const initDb = async () => {
         `);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_reparacije_order ON reparacije(order_id)`);
 
-        // ============ REPORT LOG (kada je poslednji izveštaj poslat za svaku firmu) ============
         await pool.query(`
             CREATE TABLE IF NOT EXISTS report_log (
                 id SERIAL PRIMARY KEY,
                 company VARCHAR(255) UNIQUE NOT NULL,
                 last_sent_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+
+        // ============ COMPANY INFO (email, mesto, ulica po firmi) ============
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS company_info (
+                id SERIAL PRIMARY KEY,
+                company VARCHAR(255) UNIQUE NOT NULL,
+                email VARCHAR(255) DEFAULT '',
+                mesto VARCHAR(255) DEFAULT '',
+                ulica VARCHAR(255) DEFAULT '',
+                updated_at TIMESTAMP DEFAULT NOW()
             )
         `);
 
@@ -349,6 +360,67 @@ app.get('/api/companies', authenticate, async (req, res) => {
     try {
         const result = await pool.query('SELECT DISTINCT company FROM orders WHERE company IS NOT NULL ORDER BY company');
         res.json(result.rows.map(r => r.company));
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ COMPANY INFO (email, mesto, ulica) ============
+
+app.get('/api/company-info', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const result = await pool.query(
+            'SELECT company, email, mesto, ulica FROM company_info ORDER BY company'
+        );
+        res.json(result.rows);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/company-info', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const { company, email, mesto, ulica } = req.body;
+        if (!company || !company.trim()) {
+            return res.status(400).json({ error: 'Firma je obavezna.' });
+        }
+        const result = await pool.query(
+            `INSERT INTO company_info (company, email, mesto, ulica, updated_at)
+             VALUES ($1, $2, $3, $4, NOW())
+             ON CONFLICT (company) DO UPDATE SET
+                email = EXCLUDED.email,
+                mesto = EXCLUDED.mesto,
+                ulica = EXCLUDED.ulica,
+                updated_at = NOW()
+             RETURNING company, email, mesto, ulica`,
+            [company.trim(), email || '', mesto || '', ulica || '']
+        );
+        res.json(result.rows[0]);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete('/api/company-info/:company', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const { company } = req.params;
+        const result = await pool.query(
+            'DELETE FROM company_info WHERE company = $1 RETURNING company',
+            [company]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Firma nije pronađena.' });
+        }
+        res.json({ message: `Podaci za "${company}" obrisani.` });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -1311,6 +1383,7 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
             itemLines.push(icon);
             if (items) itemLines.push(items);
             if (d.note) itemLines.push(`Napomena: ${d.note}`);
+            if (isAnulirano) itemLines.push('Naknadno cemo Vas obavestiti o detaljima naplate.');
             itemLines.push('');
         });
 
@@ -1337,14 +1410,12 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
 // ============ SEND REPORT (Excel kao prilog, samo adminu, od poslednjeg izveštaja) ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
-        // 1) Uzmi poslednji datum slanja za firmu klijenta
         const logResult = await pool.query(
             'SELECT last_sent_at FROM report_log WHERE company = $1',
             [req.user.company]
         );
         const lastSentAt = logResult.rows[0]?.last_sent_at || null;
 
-        // Ako nema prethodnog izveštaja, uzmi poslednjih 30 dana
         const dateFrom = lastSentAt
             ? new Date(lastSentAt).toISOString().slice(0, 10)
             : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -1352,7 +1423,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
 
         console.log(`📊 Izveštaj za "${req.user.company}" od ${dateFrom} do ${dateTo}`);
 
-        // 2) Uzmi aktivnosti iz order_history za tu firmu u tom periodu
         const historyResult = await pool.query(
             `SELECT DISTINCT ON (order_number, company) 
                 order_number, company, phase, new_status, comment, changed_by, changed_at
@@ -1364,7 +1434,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
             [req.user.company, dateFrom, dateTo]
         );
 
-        // 3) Generiši Excel
         const workbook = new ExcelJS.Workbook();
         workbook.creator = 'Production Tracker';
         workbook.created = new Date();
@@ -1398,10 +1467,8 @@ app.post('/api/send-report', authenticate, async (req, res) => {
             });
         });
 
-        // 4) Konvertuj u Buffer
         const excelBuffer = await workbook.xlsx.writeBuffer();
 
-        // 5) Pošalji email adminu sa prilogom
         const recipient = process.env.ADMIN_EMAIL;
         if (!recipient) {
             return res.status(400).json({ error: 'ADMIN_EMAIL nije podešen na serveru.' });
@@ -1427,7 +1494,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
             }]
         });
 
-        // 6) Ažuriraj report_log
         await pool.query(
             `INSERT INTO report_log (company, last_sent_at) VALUES ($1, NOW())
              ON CONFLICT (company) DO UPDATE SET last_sent_at = NOW()`,
