@@ -9,7 +9,7 @@ if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
 const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
 async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error(t('msg_session_expired'))}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
 
-document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers();addCompanyInfoControls()}addClientExportControls();if(currentUser?.role==='kontrola'){addKontrolaControls()}loadOrders();checkReminders()});
+document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers();addCompanyInfoControls();addFixedRecipientsControls()}addClientExportControls();if(currentUser?.role==='kontrola'){addKontrolaControls()}loadOrders();checkReminders()});
 
 // ============ PODSETNICI (reparacije čiji je rok istekao) ============
 async function checkReminders(){
@@ -143,6 +143,65 @@ async function deleteCompanyInfo(company){
   try{
     await api(`/api/company-info/${encodeURIComponent(company)}`,{method:'DELETE',headers:headers()});
     loadCompanyInfo();
+  }catch(e){alert('❌ '+e.message)}
+}
+
+// ============ FIXED RECIPIENTS ============
+function addFixedRecipientsControls(){
+  if(!adminPanel||$('fixedRecipientsPanel'))return;
+  const div=document.createElement('div');div.id='fixedRecipientsPanel';div.className='admin-section';
+  div.innerHTML=`<h3>📧 Fiksni primaoci (uvek primaju izveštaj)</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end">
+      <div style="flex:1;min-width:200px">
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Email adresa</label>
+        <input type="email" id="frEmail" placeholder="email@primer.com" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card)">
+      </div>
+      <button id="frAddBtn" class="btn-success" style="padding:10px 16px">➕ Dodaj</button>
+    </div>
+    <div id="frStatus" style="margin-top:8px"></div>
+    <div id="frList" style="margin-top:12px"></div>`;
+  adminPanel.appendChild(div);
+  $('frAddBtn').onclick=addFixedRecipient;
+  $('frEmail')?.addEventListener('keyup',e=>{if(e.key==='Enter')addFixedRecipient()});
+  loadFixedRecipients();
+}
+
+async function loadFixedRecipients(){
+  try{
+    const list=await api('/api/fixed-recipients',{headers:headers()});
+    const el=$('frList');
+    if(!list.length){el.innerHTML='<p style="color:var(--muted);font-size:13px">Još nema fiksnih primalaca.</p>';return}
+    el.innerHTML='<table style="width:100%;font-size:13px;border-collapse:collapse">'+
+      '<thead><tr style="background:var(--paper);text-align:left">'+
+      '<th style="padding:6px">Email</th><th style="padding:6px"></th>'+
+      '</tr></thead><tbody>'+
+      list.map(r=>`<tr style="border-bottom:1px solid var(--line)">
+        <td style="padding:6px">${esc(r.email)}</td>
+        <td style="padding:6px;text-align:right">
+          <span class="clickable" style="color:var(--red);font-weight:700" onclick="deleteFixedRecipient(${r.id})" title="Obriši">🗑️</span>
+        </td>
+      </tr>`).join('')+'</tbody></table>';
+  }catch(e){console.error(e)}
+}
+
+async function addFixedRecipient(){
+  const status=$('frStatus');
+  const email=$('frEmail')?.value.trim()||'';
+  if(!email){status.textContent='❌ Unesi email.';status.className='error';return}
+  status.textContent='⏳ Dodajem...';status.className='';
+  try{
+    await api('/api/fixed-recipients',{method:'POST',headers:headers(true),body:JSON.stringify({email})});
+    status.textContent='✅ Dodato.';status.className='success';
+    $('frEmail').value='';
+    loadFixedRecipients();
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
+
+async function deleteFixedRecipient(id){
+  if(!confirm('Obrisati ovaj email iz fiksne grupe?'))return;
+  try{
+    await api(`/api/fixed-recipients/${id}`,{method:'DELETE',headers:headers()});
+    loadFixedRecipients();
   }catch(e){alert('❌ '+e.message)}
 }
 
@@ -789,4 +848,4 @@ function date(v) {
 
 function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
 function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
-window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;window.resetPassword=resetPassword;window.deleteCompanyInfo=deleteCompanyInfo;
+window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;window.resetPassword=resetPassword;window.deleteCompanyInfo=deleteCompanyInfo;window.deleteFixedRecipient=deleteFixedRecipient;
