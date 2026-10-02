@@ -48,10 +48,18 @@ const TRANSLATIONS = {
     btn_done: '✅ Urađeno',
     btn_problem: '⚠️ Problem',
     btn_none: '🚫 Nema',
+    btn_none_short: 'Nema',
     btn_reset: '⬜ Reset',
     btn_confirm: '✅ Potvrdi',
     btn_cancel: 'Otkaži',
     btn_copy: '📋 Kopiraj tekst',
+
+    // ===== MODAL - INFO =====
+    modal_company: 'Firma',
+    modal_article: 'Artikal',
+    modal_code: 'Šifra',
+    modal_quantity: 'Količina',
+    modal_delivery: 'Datum isporuke',
 
     // ===== PORUKE =====
     msg_session_expired: 'Sesija je istekla.',
@@ -68,6 +76,13 @@ const TRANSLATIONS = {
     msg_waiting_kontrola_confirm: 'čeka potvrdu Kontrole',
     msg_waiting_your_confirm: 'čeka Vašu potvrdu',
     msg_waiting_both: 'čeka potvrdu obe strane',
+    msg_no_phases: 'Nema faza',
+
+    // ===== OSTALO =====
+    order_count_suffix: 'naloga',
+    placeholder_comment: 'Komentar...',
+    placeholder_note: 'Napomena...',
+    lock_tooltip: 'Zaključano — obratite se administratoru',
 
     // ===== EXPORT =====
     export_generating: '⏳ Generišem Excel...',
@@ -118,10 +133,18 @@ const TRANSLATIONS = {
     btn_done: '✅ Fatto',
     btn_problem: '⚠️ Problema',
     btn_none: '🚫 Nessuno',
+    btn_none_short: 'Nessuno',
     btn_reset: '⬜ Reset',
     btn_confirm: '✅ Conferma',
     btn_cancel: 'Annulla',
     btn_copy: '📋 Copia testo',
+
+    // ===== MODAL - INFO =====
+    modal_company: 'Azienda',
+    modal_article: 'Articolo',
+    modal_code: 'Codice',
+    modal_quantity: 'Quantità',
+    modal_delivery: 'Data di consegna',
 
     // ===== PORUKE =====
     msg_session_expired: 'Sessione scaduta.',
@@ -138,6 +161,13 @@ const TRANSLATIONS = {
     msg_waiting_kontrola_confirm: 'in attesa di conferma dal Controllo',
     msg_waiting_your_confirm: 'in attesa della tua conferma',
     msg_waiting_both: 'in attesa di conferma da entrambe le parti',
+    msg_no_phases: 'Nessuna fase',
+
+    // ===== OSTALO =====
+    order_count_suffix: 'ordini',
+    placeholder_comment: 'Commento...',
+    placeholder_note: 'Nota...',
+    lock_tooltip: 'Bloccato — contatta l\'amministratore',
 
     // ===== EXPORT =====
     export_generating: '⏳ Generazione Excel...',
