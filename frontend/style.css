@@ -1,0 +1,862 @@
+/* ============================================================
+   PRODUCTION TRACKER — Design system
+   Tema: tekstilna radionica (kroj, konac, štampa, etiketa)
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
+
+:root {
+    --ink: #1C2321;
+    --denim: #2B4570;
+    --denim-dark: #1C2E4A;
+    --denim-tint: #E7ECF3;
+    --mustard: #D6A419;
+    --mustard-dark: #B78710;
+    --paper: #EEF1EF;
+    --card: #FFFFFF;
+    --line: #D9DFDC;
+    --muted: #70796F;
+    --green: #3F7A5C;
+    --green-bg: #DDEEE4;
+    --red: #B94630;
+    --red-bg: #F6DEDA;
+
+    --font-display: 'Space Grotesk', sans-serif;
+    --font-body: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 16px;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: var(--font-body);
+    background: var(--paper);
+    color: var(--ink);
+    font-size: 16px;
+    line-height: 1.6;
+}
+
+/* ============ LOGIN ============ */
+.login-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    background:
+        repeating-linear-gradient(90deg, rgba(255,255,255,0.05) 0px, rgba(255,255,255,0.05) 1px, transparent 1px, transparent 24px),
+        linear-gradient(160deg, var(--denim) 0%, var(--denim-dark) 100%);
+    padding: 20px;
+}
+
+.login-box {
+    background: var(--card);
+    padding: 44px 32px 36px;
+    border-radius: var(--radius-lg);
+    box-shadow: 0 24px 60px rgba(28, 46, 74, 0.35);
+    width: 100%;
+    max-width: 400px;
+    border-top: 4px solid var(--mustard);
+}
+
+.login-box h1 {
+    text-align: center;
+    color: var(--denim);
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 26px;
+    letter-spacing: -0.01em;
+    margin-bottom: 6px;
+}
+
+.login-box h2 {
+    text-align: center;
+    color: var(--muted);
+    font-size: 14px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 30px;
+    font-family: var(--font-mono);
+}
+
+.form-group {
+    margin-bottom: 18px;
+}
+
+.form-group label {
+    display: block;
+    font-weight: 600;
+    color: var(--ink);
+    margin-bottom: 6px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.form-group input {
+    width: 100%;
+    padding: 14px 16px;
+    border: 2px solid var(--line);
+    border-radius: var(--radius-sm);
+    font-size: 16px;
+    font-family: var(--font-body);
+    transition: border-color 0.2s;
+    background: var(--paper);
+    -webkit-appearance: none;
+}
+
+.form-group input:focus {
+    outline: none;
+    border-color: var(--denim);
+    background: var(--card);
+    box-shadow: 0 0 0 3px var(--denim-tint);
+}
+
+.btn-primary {
+    width: 100%;
+    padding: 14px;
+    background: var(--denim);
+    color: white;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 16px;
+    font-weight: 600;
+    font-family: var(--font-body);
+    cursor: pointer;
+    transition: background 0.2s, transform 0.1s;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.btn-primary:hover {
+    background: var(--denim-dark);
+}
+
+.btn-primary:active {
+    transform: scale(0.98);
+}
+
+.error-message {
+    color: var(--red);
+    margin-top: 14px;
+    text-align: center;
+    font-weight: 600;
+    font-size: 14px;
+}
+
+/* ============ DASHBOARD ============ */
+.dashboard {
+    min-height: 100vh;
+    padding-bottom: 80px;
+}
+
+.navbar {
+    background: var(--denim);
+    padding: 14px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    flex-wrap: wrap;
+    gap: 8px;
+    border-bottom: 3px dashed var(--mustard);
+}
+
+.nav-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.nav-left h1 {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 18px;
+    color: white;
+    white-space: nowrap;
+    letter-spacing: -0.01em;
+}
+
+.company-badge {
+    background: var(--mustard);
+    color: var(--denim-dark);
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.nav-right {
+    display: flex;
+    gap: 8px;
+}
+
+.btn-secondary {
+    padding: 8px 16px;
+    background: rgba(255,255,255,0.12);
+    color: white;
+    border: 1px solid rgba(255,255,255,0.25);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-family: var(--font-body);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    font-weight: 600;
+}
+
+.btn-secondary:active {
+    transform: scale(0.96);
+}
+
+.btn-success {
+    padding: 8px 16px;
+    background: var(--mustard);
+    color: var(--denim-dark);
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-family: var(--font-body);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    font-weight: 700;
+}
+
+.btn-success:active {
+    transform: scale(0.96);
+}
+
+.dashboard-content {
+    padding: 16px 16px;
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+.panel {
+    background: var(--card);
+    border-radius: var(--radius-md);
+    box-shadow: 0 1px 3px rgba(28,35,33,0.06);
+    border: 1px solid var(--line);
+    margin-bottom: 16px;
+    overflow: hidden;
+}
+
+.panel-header {
+    padding: 14px 16px;
+    background: var(--paper);
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.panel-header h2 {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.panel-body {
+    padding: 14px 16px;
+}
+
+.hidden {
+    display: none !important;
+}
+
+/* ============ ADMIN ============ */
+.admin-section {
+    margin-bottom: 16px;
+    padding: 14px;
+    background: var(--paper);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--line);
+}
+
+.admin-section h3 {
+    font-size: 13px;
+    color: var(--ink);
+    margin-bottom: 10px;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.upload-form, .user-form {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.upload-form input[type="file"] {
+    flex: 1;
+    padding: 10px;
+    border: 2px dashed var(--line);
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    min-width: 150px;
+    background: var(--card);
+    font-family: var(--font-body);
+}
+
+.upload-form button, .user-form button {
+    padding: 10px 16px;
+    font-size: 14px;
+}
+
+.user-form input {
+    flex: 1;
+    padding: 10px 12px;
+    border: 2px solid var(--line);
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    min-width: 120px;
+    background: var(--card);
+    font-family: var(--font-body);
+}
+
+.user-form input:focus {
+    outline: none;
+    border-color: var(--denim);
+}
+
+#usersList {
+    margin-top: 8px;
+}
+
+.user-item {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto auto;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 2px;
+    border-bottom: 1px solid var(--line);
+    font-size: 13px;
+}
+
+.user-item span:first-child {
+    font-family: var(--font-mono);
+    font-weight: 600;
+}
+
+/* ============ SEARCH ============ */
+.search-bar {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.search-bar input {
+    flex: 1;
+    padding: 12px 14px;
+    border: 2px solid var(--line);
+    border-radius: var(--radius-sm);
+    font-size: 16px;
+    font-family: var(--font-body);
+    min-width: 150px;
+    background: var(--paper);
+    -webkit-appearance: none;
+}
+
+.search-bar input:focus {
+    outline: none;
+    border-color: var(--denim);
+    background: var(--card);
+    box-shadow: 0 0 0 3px var(--denim-tint);
+}
+
+.search-bar button {
+    padding: 12px 16px;
+    font-size: 14px;
+    white-space: nowrap;
+}
+
+/* ============ ORDERS TABLE ============ */
+#ordersContainer {
+    overflow-x: auto;
+    margin: 0 -4px;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    min-width: 320px;
+}
+
+th {
+    background: var(--denim);
+    padding: 10px 8px;
+    text-align: left;
+    font-weight: 600;
+    color: white;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+td {
+    padding: 10px 8px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: middle;
+}
+
+tr:hover td {
+    background: var(--paper);
+}
+
+.clickable {
+    cursor: pointer;
+    color: var(--denim);
+    font-weight: 700;
+    font-family: var(--font-mono);
+}
+
+.clickable:active {
+    opacity: 0.7;
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 4px;
+    font-size: 10.5px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+    border: 1px solid transparent;
+}
+
+.status-pending {
+    background: var(--paper);
+    color: var(--muted);
+    border-color: var(--line);
+}
+
+.status-completed {
+    background: var(--green-bg);
+    color: var(--green);
+    border-color: var(--green);
+}
+
+.status-problem {
+    background: var(--red-bg);
+    color: var(--red);
+    border-color: var(--red);
+}
+
+/* ============ MOBILNA TABELA ============ */
+@media (max-width: 600px) {
+    table {
+        font-size: 12.5px;
+        min-width: unset;
+    }
+
+    th, td {
+        padding: 8px 6px;
+    }
+
+    th {
+        font-size: 9.5px;
+    }
+
+    .hide-mobile {
+        display: none;
+    }
+}
+
+/* ============ MODAL ============ */
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(19, 27, 36, 0.6);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    padding: 16px;
+}
+
+.modal-content {
+    background: var(--card);
+    padding: 26px 20px;
+    border-radius: var(--radius-lg);
+    max-width: 620px;
+    width: 100%;
+    max-height: 90vh;
+    overflow-y: auto;
+    position: relative;
+    border-top: 4px solid var(--mustard);
+}
+
+.modal-content h2 {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+.close-modal {
+    position: absolute;
+    top: 14px;
+    right: 18px;
+    font-size: 26px;
+    cursor: pointer;
+    color: var(--muted);
+    font-weight: 300;
+    line-height: 1;
+}
+
+.close-modal:active {
+    color: var(--ink);
+}
+
+.order-info {
+    background: var(--paper);
+    padding: 14px 16px;
+    border-radius: var(--radius-sm);
+    margin: 14px 0;
+    font-size: 14px;
+    border: 1px solid var(--line);
+}
+
+.order-info p {
+    margin: 4px 0;
+}
+
+.order-info b {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    font-weight: 600;
+}
+
+/* ============ PHASE TIMELINE (signature element) ============
+   Isprekidana linija ("konac") koja povezuje faze proizvodnje,
+   poput šava koji prati proizvod kroz radionicu.               */
+.phase-timeline {
+    margin-top: 18px;
+}
+
+.phase-row {
+    display: flex;
+    gap: 14px;
+    align-items: stretch;
+}
+
+.phase-spine {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 44px;
+    flex-shrink: 0;
+}
+
+.phase-medallion {
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    background: var(--card);
+    border: 3px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.phase-row--completed .phase-medallion {
+    border-color: var(--green);
+    background: var(--green-bg);
+}
+
+.phase-row--problem .phase-medallion {
+    border-color: var(--red);
+    background: var(--red-bg);
+}
+
+.phase-connector {
+    flex: 1;
+    width: 0;
+    border-left: 3px dashed var(--line);
+    margin: 4px 0;
+    min-height: 14px;
+}
+
+.phase-row:last-child .phase-connector {
+    display: none;
+}
+
+.phase-content {
+    flex: 1;
+    min-width: 0;
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 0;
+}
+
+.phase-row:last-child .phase-content {
+    border-bottom: none;
+    padding-bottom: 4px;
+}
+
+.phase-head {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-top: 6px;
+}
+
+.phase-name {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 16px;
+    color: var(--ink);
+}
+
+.phase-state {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: var(--muted);
+    white-space: normal;
+    line-height: 1.4;
+}
+
+.phase-lock {
+    font-size: 13px;
+    opacity: 0.75;
+    margin-left: 2px;
+}
+
+.phase-row--completed .phase-state {
+    color: var(--green);
+}
+
+.phase-row--problem .phase-state {
+    color: var(--red);
+}
+
+.phase-date {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--muted);
+}
+
+.phase-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin: 10px 0 8px;
+}
+
+.btn-tag {
+    padding: 6px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 11.5px;
+    font-weight: 600;
+    font-family: var(--font-body);
+    background: var(--card);
+    color: var(--ink);
+    -webkit-tap-highlight-color: transparent;
+    transition: transform 0.1s, background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.btn-tag:active {
+    transform: scale(0.95);
+}
+
+.btn-tag--done:hover, .btn-tag--done:active {
+    background: var(--green);
+    border-color: var(--green);
+    color: white;
+}
+
+.btn-tag--problem:hover, .btn-tag--problem:active {
+    background: var(--red);
+    border-color: var(--red);
+    color: white;
+}
+
+.btn-tag--reset:hover, .btn-tag--reset:active {
+    background: var(--muted);
+    border-color: var(--muted);
+    color: white;
+}
+
+.phase-note {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    min-height: 44px;
+    font-size: 13px;
+    font-family: var(--font-body);
+    resize: vertical;
+    background: var(--paper);
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.phase-note:focus {
+    outline: none;
+    border-color: var(--denim);
+    background: var(--card);
+}
+
+/* ============ STATUS PORUKE ============ */
+#uploadStatus, #userStatus, #orderManagementStatus, #historyExportStatus {
+    margin-top: 8px;
+    padding: 9px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 13.5px;
+}
+
+.success {
+    background: var(--green-bg);
+    color: var(--green);
+    border: 1px solid var(--green);
+}
+
+.error {
+    background: var(--red-bg);
+    color: var(--red);
+    border: 1px solid var(--red);
+}
+
+.loading {
+    text-align: center;
+    padding: 34px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 13px;
+}
+
+/* ============ PAGINACIJA ============ */
+.pagination {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 10px;
+    padding: 14px;
+    border-top: 1px solid var(--line);
+    flex-wrap: wrap;
+}
+
+.pagination button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    background: var(--denim);
+    color: white;
+}
+
+.pagination button:disabled {
+    background: var(--line);
+    color: #A8B0AB;
+    cursor: not-allowed;
+}
+
+.pagination span {
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 13px;
+    font-family: var(--font-mono);
+}
+
+/* ============ POBOLJŠANJA ZA TELEFONE ============ */
+@media (max-width: 480px) {
+    .login-box {
+        padding: 34px 22px;
+    }
+
+    .login-box h1 {
+        font-size: 22px;
+    }
+
+    .dashboard-content {
+        padding: 10px 10px;
+    }
+
+    .panel-header {
+        padding: 10px 12px;
+    }
+
+    .panel-body {
+        padding: 10px 10px;
+    }
+
+    .search-bar input {
+        font-size: 16px;
+        padding: 14px;
+    }
+
+    .btn-primary {
+        font-size: 16px;
+        padding: 16px;
+    }
+
+    table {
+        font-size: 12px;
+    }
+
+    th, td {
+        padding: 6px 4px;
+    }
+
+    .modal-content {
+        padding: 18px 14px;
+    }
+
+    .phase-name {
+        font-size: 14.5px;
+    }
+}
+
+/* ============ SCROLL ============ */
+::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--paper);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--line);
+    border-radius: 4px;
+}

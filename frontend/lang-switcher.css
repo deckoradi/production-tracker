@@ -1,0 +1,34 @@
+/* ============================================================
+   lang-switcher.css — zastavice za izbor jezika
+   ============================================================ */
+
+.lang-switcher {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    margin-left: 8px;
+}
+
+.lang-flag {
+    font-size: 18px;
+    cursor: pointer;
+    opacity: 0.5;
+    transition: opacity 0.2s, transform 0.1s;
+    user-select: none;
+    line-height: 1;
+    padding: 2px;
+}
+
+.lang-flag:hover {
+    opacity: 0.8;
+}
+
+.lang-flag.active {
+    opacity: 1;
+    transform: scale(1.15);
+    filter: drop-shadow(0 0 3px rgba(255,255,255,0.6));
+}
+
+.lang-flag:active {
+    transform: scale(0.95);
+}

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Production Tracker</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="lang-switcher.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <meta name="apple-mobile-web-app-title" content="Production Tracker">
+    <meta name="mobile-web-app-capable" content="yes">
+</head>
+<body>
+    <div class="dashboard">
+        <nav class="navbar">
+            <div class="nav-left">
+                <h1 data-i18n="nav_tracker">🏭 Tracker</h1>
+                <span id="companyDisplay" class="company-badge"></span>
+                <div class="lang-switcher" id="langSwitcher">
+                    <span class="lang-flag" data-lang="sr" title="Srpski">🇷🇸</span>
+                    <span class="lang-flag" data-lang="it" title="Italiano">🇮🇹</span>
+                </div>
+            </div>
+            <div class="nav-right">
+                <button id="sendReportBtn" class="btn-success" style="padding:6px 12px;font-size:12px;" data-i18n="nav_report">📧 Izveštaj</button>
+                <button id="changePasswordBtn" class="btn-secondary" style="padding:6px 12px;font-size:12px;" data-i18n="nav_password">🔑 Lozinka</button>
+                <button id="logoutBtn" class="btn-secondary" style="padding:6px 12px;font-size:12px;" data-i18n="nav_logout">Odjava</button>
+            </div>
+        </nav>
+
+        <div class="dashboard-content">
+            <!-- Admin Panel (ostaje samo srpski) -->
+            <div id="adminPanel" class="panel hidden">
+                <div class="panel-header">
+                    <h2>⚙️ Admin</h2>
+                </div>
+                <div class="panel-body">
+                    <div class="admin-section">
+                        <h3>📤 Upload Excel</h3>
+                        <form id="uploadForm" class="upload-form">
+                            <input type="file" id="fileInput" accept=".xlsx,.xls">
+                            <button type="submit" class="btn-primary">Upload</button>
+                        </form>
+                        <div id="uploadStatus"></div>
+                    </div>
+
+                    <div class="admin-section">
+                        <h3>👤 Novi korisnik</h3>
+                        <form id="createUserForm" class="user-form">
+                            <input type="text" id="newUsername" placeholder="Korisničko ime" required>
+                            <input type="text" id="newCompany" placeholder="Naziv firme">
+                            <select id="newRole" style="padding:10px 12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;background:white">
+                                <option value="user">Klijent</option>
+                                <option value="kontrola">Kontrola</option>
+                            </select>
+                            <button type="submit" class="btn-primary">Kreiraj</button>
+                        </form>
+                        <div id="userStatus"></div>
+                    </div>
+
+                    <div class="admin-section">
+                        <h3>📋 Korisnici</h3>
+                        <div id="usersList"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Search -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h2 data-i18n="panel_search">🔍 Pretraga</h2>
+                </div>
+                <div class="panel-body">
+                    <div class="search-bar">
+                        <input type="text" id="searchInput" data-i18n-placeholder="panel_search_placeholder" placeholder="Firma, šifra, nalog..." autocomplete="off">
+                        <button id="searchBtn" class="btn-primary">🔍</button>
+                        <button id="clearSearchBtn" class="btn-secondary">✖</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Orders -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h2 data-i18n="panel_orders">📦 Nalozi</h2>
+                    <span id="orderCount" style="font-size:12px;color:#718096;"></span>
+                </div>
+                <div class="panel-body">
+                    <div id="ordersContainer">
+                        <div class="loading" data-i18n="panel_loading">⏳ Učitavanje...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal za faze -->
+    <div id="phaseModal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close-modal">&times;</span>
+            <h2 style="font-size:18px;"><span id="modalOrderNumber"></span></h2>
+            <div id="modalOrderInfo" class="order-info"></div>
+            <div id="phasesContainer" class="phases-grid"></div>
+        </div>
+    </div>
+
+    <script src="i18n.js"></script>
+    <script src="lang-switcher.js"></script>
+    <script src="dashboard.js"></script>
+</body>
+</html>
