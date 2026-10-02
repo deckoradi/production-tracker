@@ -65,6 +65,7 @@ const initDb = async () => {
                 UNIQUE(order_id, phase)
             )
         `);
+        // Ko je STVARNO poslednji sačuvao ovu fazu (može biti klijent iz druge firme od firme kojoj nalog pripada)
         await pool.query(`ALTER TABLE progress ADD COLUMN IF NOT EXISTS updated_by VARCHAR(100)`);
         await pool.query(`ALTER TABLE progress ADD COLUMN IF NOT EXISTS updated_by_company VARCHAR(255)`);
 
@@ -81,8 +82,10 @@ const initDb = async () => {
                 changed_at TIMESTAMP DEFAULT NOW()
             )
         `);
+        // Firma korisnika koji je STVARNO izvršio izmenu (može se razlikovati od "company" - firme kojoj nalog pripada)
         await pool.query(`ALTER TABLE order_history ADD COLUMN IF NOT EXISTS changed_by_company VARCHAR(255)`);
 
+        // ============ REPARACIJE (tro-fazni tok: obeleženo -> klijent urađeno -> kontrola potvrda) ============
         await pool.query(`
             CREATE TABLE IF NOT EXISTS reparacije (
                 id SERIAL PRIMARY KEY,
@@ -101,15 +104,6 @@ const initDb = async () => {
             )
         `);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_reparacije_order ON reparacije(order_id)`);
-
-        // ============ REPORT LOG (kada je poslednji izveštaj poslat za svaku firmu) ============
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS report_log (
-                id SERIAL PRIMARY KEY,
-                company VARCHAR(255) UNIQUE NOT NULL,
-                last_sent_at TIMESTAMP DEFAULT NOW()
-            )
-        `);
 
         const adminCheck = await pool.query('SELECT * FROM users WHERE username = $1', ['admin']);
         if (adminCheck.rows.length === 0) {
@@ -173,7 +167,12 @@ const authenticate = (req, res, next) => {
     }
 };
 
-// ============ OBNOVI REPARACIJU IZ ISTORIJE ============
+// ============ OBNOVI REPARACIJU IZ ISTORIJE (ako trenutno ne postoji nijedan zapis za nalog) ============
+// Koristi se pri upload-u, i za NOVE naloge (posle brisanja) i za POSTOJEĆE naloge kod kojih je
+// reparacija u nekom trenutku u prošlosti izgubljena (npr. brisanje aktivnih naloga urađeno pre
+// nego što je ova logika uvedena). Bez ovoga, čim se reparacije tabela isprazni, obaveštenja za
+// taj nalog ostaju trajno ugašena i klijent/kontrola gube vezu, iako istorija jasno pokazuje da
+// je nalog i dalje "u reparaciji".
 const restoreReparacijaFromHistory = async (orderId, orderNumber, company) => {
     const lastPrijemHist = await pool.query(
         `SELECT new_status, comment, changed_at FROM order_history
@@ -181,23 +180,40 @@ const restoreReparacijaFromHistory = async (orderId, orderNumber, company) => {
          ORDER BY changed_at DESC LIMIT 1`,
         [orderNumber, company]
     );
-    if (lastPrijemHist.rows.length === 0) return false;
-    if (lastPrijemHist.rows[0].new_status !== 'problem') return false;
+    if (lastPrijemHist.rows.length === 0) {
+        console.log(`🔎 Restore reparacije #${orderNumber} (${company}): NEMA istorije za fazu PRIJEM - preskačem.`);
+        return false;
+    }
+    if (lastPrijemHist.rows[0].new_status !== 'problem') {
+        console.log(`🔎 Restore reparacije #${orderNumber} (${company}): poslednji PRIJEM status je "${lastPrijemHist.rows[0].new_status}" (ne "problem") - preskačem.`);
+        return false;
+    }
     let parsedPrijemHist = {};
-    try { parsedPrijemHist = JSON.parse(lastPrijemHist.rows[0].comment || '{}'); } catch (_) { return false; }
-    if (parsedPrijemHist.outcome !== 'reparacija') return false;
+    try { parsedPrijemHist = JSON.parse(lastPrijemHist.rows[0].comment || '{}'); } catch (_) {
+        console.log(`🔎 Restore reparacije #${orderNumber} (${company}): comment nije validan JSON ("${lastPrijemHist.rows[0].comment}") - preskačem.`);
+        return false;
+    }
+    if (parsedPrijemHist.outcome !== 'reparacija') {
+        console.log(`🔎 Restore reparacije #${orderNumber} (${company}): outcome je "${parsedPrijemHist.outcome}" (ne "reparacija") - preskačem.`);
+        return false;
+    }
 
     const restoredDeadlineDays = parseInt(parsedPrijemHist.deadlineDays) > 0 ? parseInt(parsedPrijemHist.deadlineDays) : 7;
+    // Rok se računa od ORIGINALNOG datuma kad je reparacija zavedena (a ne od trenutka
+    // upload-a), tako da kašnjenje ostane tačno i posle brisanja + ponovnog uploada.
     await pool.query(
         `INSERT INTO reparacije (order_id, items, note, deadline_days, created_at, deadline_date, created_by)
          VALUES ($1, $2, $3, $4, $5::timestamp, $5::timestamp + make_interval(days => $4), $6)`,
         [orderId, JSON.stringify(parsedPrijemHist.items || []), parsedPrijemHist.note || '', restoredDeadlineDays, lastPrijemHist.rows[0].changed_at, 'sistem (obnovljeno iz istorije)']
     );
-    console.log(`✅ Restore reparacije #${orderNumber} (${company})`);
+    console.log(`✅ Restore reparacije #${orderNumber} (${company}): obnovljena, rok bio ${restoredDeadlineDays} dana od ${lastPrijemHist.rows[0].changed_at}.`);
     return true;
 };
 
 // ============ EMAIL ============
+// Prvo pokušava Resend (HTTP API - radi i kad je SMTP blokiran, npr. na Render free planu).
+// Ako RESEND_API_KEY nije podešen, prelazi na SMTP (nodemailer) sa EMAIL_USER/EMAIL_PASS
+// (npr. Gmail: EMAIL_USER=tvoj@gmail.com, EMAIL_PASS=app password sa 16 karaktera).
 let smtpTransporter = null;
 if (hasSmtp) {
     smtpTransporter = nodemailer.createTransport({
@@ -206,27 +222,20 @@ if (hasSmtp) {
     });
 }
 
-async function sendEmail({ to, subject, html, attachments }) {
+async function sendEmail({ to, subject, html }) {
     if (hasResend) {
-        const body = {
-            from: 'Production Tracker <onboarding@resend.dev>',
-            to: [to],
-            subject,
-            html
-        };
-        if (attachments && attachments.length > 0) {
-            body.attachments = attachments.map(a => ({
-                filename: a.filename,
-                content: a.content.toString('base64')
-            }));
-        }
         const r = await fetch('https://api.resend.com/emails', {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify(body)
+            body: JSON.stringify({
+                from: 'Production Tracker <onboarding@resend.dev>',
+                to: [to],
+                subject,
+                html
+            })
         });
         const data = await r.json().catch(() => ({}));
         if (!r.ok) {
@@ -236,16 +245,12 @@ async function sendEmail({ to, subject, html, attachments }) {
     }
 
     if (smtpTransporter) {
-        const mailOptions = {
+        return smtpTransporter.sendMail({
             from: `Production Tracker <${process.env.EMAIL_USER}>`,
             to,
             subject,
             html
-        };
-        if (attachments && attachments.length > 0) {
-            mailOptions.attachments = attachments;
-        }
-        return smtpTransporter.sendMail(mailOptions);
+        });
     }
 
     throw new Error('Email nije podešen (nedostaje RESEND_API_KEY ili EMAIL_USER/EMAIL_PASS na serveru).');
@@ -284,6 +289,7 @@ app.get('/api/users', authenticate, async (req, res) => {
     }
 });
 
+// Nasumična lozinka - bez lako zabunjujućih karaktera (0/O, 1/l/I) radi lakšeg diktiranja
 function generatePassword(length = 8) {
     const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
     let pass = '';
@@ -391,6 +397,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
         const data = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: false });
 
         console.log('📊 Redova:', data.length);
+        console.log('📋 Kolone:', Object.keys(data[0] || {}));
 
         const findValue = (row, keys) => {
             for (let key of keys) {
@@ -405,6 +412,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
         let updated = 0;
         let restored = 0;
 
+        // ============ OBRADA JEDNOG REDA (izdvojeno da bi moglo da se pokreće paralelno) ============
         const processRow = async (row, i) => {
             const company = findValue(row, [
                 'ime firme', 'IME FIRME', 'Firma', 'firma', 'Ime firme',
@@ -435,10 +443,12 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
 
             if (!company && !code && !orderNumber) return { kind: 'skip' };
 
+            // Proveri da li nalog već postoji (aktivan)
             const existing = await pool.query('SELECT id FROM orders WHERE order_number = $1 AND company = $2', [orderNumber, company]);
 
             if (existing.rows.length > 0) {
                 const existingOrderId = existing.rows[0].id;
+                // Ažuriraj (ne diraj progress)
                 await pool.query(
                     `UPDATE orders SET 
                         code = $1, name = $2, quantity = $3, delivery_date = $4
@@ -446,12 +456,16 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                     [code, name, quantity, deliveryDate, orderNumber, company]
                 );
 
+                // Ako za ovaj (postojeći) nalog trenutno NE postoji baš nijedan zapis u tabeli
+                // reparacije (npr. izgubljen ranijim brisanjem, pre nego što je uveden restore),
+                // a istorija pokazuje da je nalog i dalje "u reparaciji" - obnovi ga.
                 const hasAnyRep = await pool.query('SELECT id FROM reparacije WHERE order_id = $1 LIMIT 1', [existingOrderId]);
                 if (hasAnyRep.rows.length === 0) {
                     await restoreReparacijaFromHistory(existingOrderId, orderNumber, company);
                 }
                 return { kind: 'updated' };
             } else {
+                // Dodaj novi nalog
                 const newId = Date.now() + i;
                 await pool.query(
                     `INSERT INTO orders (id, company, code, name, order_number, quantity, delivery_date)
@@ -459,6 +473,8 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                     [newId, company, code, name, orderNumber, quantity, deliveryDate]
                 );
 
+                // Vrati poslednje poznato stanje iz istorije (uključujući i datum) - faze su
+                // međusobno nezavisne, pa se rade paralelno umesto jedna za drugom.
                 const phaseResults = await Promise.all(['100', '200', '300', '400', '500', 'NAPOMENA', 'PRIJEM'].map(async phase => {
                     const histResult = await pool.query(
                         `SELECT new_status, comment, changed_at FROM order_history
@@ -482,12 +498,21 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                 }));
                 const anyRestoredForThisOrder = phaseResults.some(Boolean);
 
+                // Obnovi otvorenu reparaciju (ako je poslednji PRIJEM u istoriji bio "problem" ->
+                // "reparacija", a nalog nije naknadno vraćen na "Sve u redu" niti "Anulirano").
+                // Bez ovoga, brisanje naloga + ponovni Excel upload trajno gasi obaveštenja o
+                // reparaciji, iako je nalog i dalje suštinski "u reparaciji".
                 await restoreReparacijaFromHistory(newId, orderNumber, company);
 
                 return { kind: 'inserted', restored: anyRestoredForThisOrder };
             }
         };
 
+        // ============ PARALELNA OBRADA SA OGRANIČENOM KONKURENTNOŠĆU ============
+        // Fajlovi znaju da imaju i desetine hiljada redova; obrada jedan-po-jedan (sekvencijalno)
+        // je toliko spora da zahtev pukne na timeout-u pre nego što se završi (a onda browser dobije
+        // HTML stranicu greške umesto JSON-a). Ograničena konkurentnost (nekoliko redova
+        // paralelno) drastično skraćuje ukupno vreme, a ne preopterećuje bazu.
         const CONCURRENCY = 8;
         let nextIndex = 0;
         const worker = async () => {
@@ -556,6 +581,9 @@ app.get('/api/orders', authenticate, async (req, res) => {
         }
 
         if (!isPrivileged) {
+            // Nalog koji je već "preuzet" (obeležen) od strane DRUGE firme postaje nevidljiv za sve ostale
+            // klijente (samo Admin/Kontrola i dalje vide sve) - sprečava slučajno editovanje tuđeg naloga
+            // (npr. greškom u broju naloga).
             const claimClause = `NOT EXISTS (
                 SELECT 1 FROM progress pclaim
                 WHERE pclaim.order_id = o.id
@@ -680,6 +708,9 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         }
 
         // ============ ZAŠTITA: NALOG "PREUZET" OD DRUGE FIRME (samo klijenti) ============
+        // Kad god bilo koji klijent obeleži bilo koju fazu na nalogu, taj nalog postaje
+        // vezan za tu firmu - druga firma više ne može da ga menja (sprečava slučajno
+        // editovanje tuđeg naloga, npr. usled greške u broju naloga).
         if (req.user.role === 'user' && ['100', '200', '300', '400', 'NAPOMENA'].includes(phase)) {
             const claimCheck = await pool.query(
                 `SELECT DISTINCT updated_by_company FROM progress
@@ -718,6 +749,8 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
 
         // ============ ZAKLJUČAVANJE PO DANU (samo za klijente, admin nema ograničenja) ============
         if (req.user.role !== 'admin') {
+            // "Nema" (samo Serigrafija/Vez) se zaključava po ISTOJ logici kao i ostale faze
+            // (zaključano tek kad prođe dan od poslednje izmene, ne trajno/odmah).
             const hasPriorActivity = oldStatus !== 'pending' || oldComment.trim() !== '';
             let sameDay = true;
             if (hasPriorActivity && oldUpdatedAt) {
@@ -728,6 +761,7 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
                     && oldDate.getDate() === now.getDate();
             }
             if (hasPriorActivity && !sameDay) {
+                // Jedini izuzetak posle isteka dana: Problem -> Urađeno (bez menjanja komentara)
                 const isProblemToCompleted = oldStatus === 'problem' && status === 'completed' && finalComment === oldComment;
                 if (!isProblemToCompleted) {
                     return res.status(403).json({
@@ -738,6 +772,12 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         }
 
         // ============ PRIJEM: ugradi deadlineDays u comment JSON ============
+        // Rok reparacije (deadlineDays) je do sada stizao SAMO kroz req.body.deadlineDays i
+        // čuvao se isključivo u tabeli "reparacije". Ta tabela se briše kod "Obriši aktivne naloge"
+        // i kod ponovnog Excel upload-a se NE obnavlja (obnavlja se samo "progress" iz "order_history"),
+        // pa je rok reparacije nepovratno nestajao, a sa njim i obaveštenje/podsetnik.
+        // Zato ga sada ugrađujemo u sam comment (koji SE čuva u order_history), da bi mogao da se
+        // pouzdano obnovi kasnije.
         let finalCommentToStore = finalComment;
         if (phase === 'PRIJEM' && status === 'problem') {
             try {
@@ -750,6 +790,9 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             } catch (_) {}
         }
 
+        // Ko je STVARNO uradio ovu izmenu - upisujemo uvek, bez obzira da li se nalog
+        // poklapa sa firmom korisnika. Ovo omogućava da se kasnije vidi (npr. Kontroli)
+        // da je nalog bio namenjen jednoj firmi, a da ga je zapravo radio neko drugi.
         await pool.query(
             `INSERT INTO progress (order_id, phase, status, comment, updated_at, updated_by, updated_by_company)
              VALUES ($1, $2, $3, $4, NOW(), $5, $6)
@@ -762,6 +805,9 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             [orderId, phase, status, finalCommentToStore, req.user.username, req.user.company]
         );
 
+        // Upisujemo u istoriju kad god se nešto promeni (status ILI komentar),
+        // ne samo kad se promeni status - inače komentar-only izmene nestaju
+        // posle brisanja naloga + ponovnog Excel uploada.
         if (status !== oldStatus || finalCommentToStore !== oldComment) {
             const orderInfo = await pool.query(
                 'SELECT order_number, company FROM orders WHERE id = $1',
@@ -775,10 +821,12 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
                     [order_number, company, phase, oldStatus, status, finalCommentToStore, req.user.username, req.user.company]
                 );
+                console.log('📜 Istorija sačuvana', company !== req.user.company ? `(radio je korisnik iz firme "${req.user.company}", nalog je firme "${company}")` : '');
             }
         }
 
-        // ============ REPARACIJE - tro-fazni tok ============
+        // ============ REPARACIJE - tro-fazni tok (obeleženo -> klijent urađeno -> kontrola potvrda) ============
+        // Samo kad Kontrola/Admin menja PRIJEM fazu.
         if (phase === 'PRIJEM') {
             if (status === 'problem') {
                 let parsedPrijem = {};
@@ -790,6 +838,8 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
                         [orderId]
                     );
                     if (existingRep.rows.length > 0) {
+                        // Već postoji otvorena reparacija za ovaj nalog - ažuriramo je (nova stavka/napomena/rok),
+                        // i resetujemo klijentovu potvrdu jer se sadržaj promenio.
                         await pool.query(
                             `UPDATE reparacije SET items = $1, note = $2, deadline_days = $3,
                              deadline_date = NOW() + make_interval(days => $3), created_at = NOW(), created_by = $4,
@@ -805,13 +855,16 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
                         );
                     }
                 } else if (parsedPrijem.outcome === 'anulirano') {
+                    // Anulirano ne prolazi kroz reparacija tok - ukloni eventualnu otvorenu reparaciju za ovaj nalog
                     await pool.query(`DELETE FROM reparacije WHERE order_id = $1 AND kontrola_confirmed_at IS NULL`, [orderId]);
                 }
             } else if (status === 'completed') {
+                // Kontrola je Prijem vratila na "Sve u redu" - ukloni eventualnu otvorenu reparaciju
                 await pool.query(`DELETE FROM reparacije WHERE order_id = $1 AND kontrola_confirmed_at IS NULL`, [orderId]);
             }
         }
 
+        // Vrati ažurirani updated_at
         const updated = await pool.query(
             'SELECT updated_at FROM progress WHERE order_id = $1 AND phase = $2',
             [orderId, phase]
@@ -844,6 +897,7 @@ app.post('/api/reparacija/:id/client-confirm', authenticate, async (req, res) =>
         if (r.rows.length === 0) {
             return res.status(404).json({ error: 'Reparacija nije pronađena ili je već potvrđena.' });
         }
+        console.log(`🔧 Reparacija #${id} potvrđena od klijenta: ${req.user.username} (${req.user.company})`);
         res.json(r.rows[0]);
     } catch (e) {
         console.error('❌ Reparacija client-confirm error:', e);
@@ -867,6 +921,7 @@ app.post('/api/reparacija/:id/kontrola-confirm', authenticate, async (req, res) 
             `UPDATE reparacije SET kontrola_confirmed_at = NOW(), kontrola_confirmed_by = $1 WHERE id = $2 RETURNING *`,
             [req.user.username, id]
         );
+        console.log(`✅ Reparacija #${id} zatvorena od kontrole: ${req.user.username}`);
         res.json(r.rows[0]);
     } catch (e) {
         console.error('❌ Reparacija kontrola-confirm error:', e);
@@ -880,6 +935,7 @@ app.get('/api/reminders', authenticate, async (req, res) => {
         const isPrivileged = req.user.role === 'admin' || req.user.role === 'kontrola';
         let rows;
         if (isPrivileged) {
+            // Kontrola/Admin - sve reparacije čiji je rok istekao, a kontrola ih još nije zatvorila
             const result = await pool.query(
                 `SELECT r.*, o.order_number, o.company, o.name
                  FROM reparacije r
@@ -893,6 +949,8 @@ app.get('/api/reminders', authenticate, async (req, res) => {
                 waitingOn: r.client_confirmed_at ? 'kontrola' : 'klijent i kontrola'
             }));
         } else {
+            // Klijent - reparacije vezane za njegovu firmu ILI koje je on lično poslednji radio,
+            // gde ON još nije potvrdio "Urađeno", a rok je istekao
             const result = await pool.query(
                 `SELECT r.*, o.order_number, o.company, o.name
                  FROM reparacije r
@@ -972,6 +1030,8 @@ app.get('/api/history/export', authenticate, async (req, res) => {
     try {
         let { company, dateFrom, dateTo } = req.query;
         let changedBy = null;
+        // Klijent (ne-admin) vidi ISKLJUČIVO ono što je LIČNO radio - bez obzira čiji je nalog bio
+        // (firma se u prikazu sakriva ako mu ne pripada, ali sam red aktivnosti ostaje)
         if (req.user.role !== 'admin') {
             company = null;
             changedBy = req.user.username;
@@ -1002,6 +1062,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         }
         const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
+        // 1) Poslednja aktivnost po nalogu UNUTAR izabranog perioda (za datum/komentar/izmenio)
         const lastActivityResult = await pool.query(
             `SELECT DISTINCT ON (order_number, company) order_number, company, comment, changed_by, changed_at
              FROM order_history
@@ -1024,12 +1085,14 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             return res.end();
         }
 
+        // 2) Trenutni (najnoviji) status, komentar I datum svake faze - iz cele istorije
         const phaseStatusResult = await pool.query(
             `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, new_status, comment, changed_at
              FROM order_history
              ORDER BY order_number, company, phase, changed_at DESC`
         );
 
+        // 3) Poslednji put kad je faza bila "problem" (sa tekstom koji ga je pratio) - trajno vidljivo i posle prelaska na Urađeno
         const lastProblemResult = await pool.query(
             `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, comment, changed_at
              FROM order_history
@@ -1037,6 +1100,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
              ORDER BY order_number, company, phase, changed_at DESC`
         );
 
+        // 3b) Reparacije - najnovije stanje po nalogu, koristi se da obogati "Prijem" kolonu
         const repairResult = await pool.query(
             `SELECT o.order_number, o.company, r.items, r.note, r.created_at,
                     r.client_confirmed_at, r.client_confirmed_by, r.client_confirmed_by_company,
@@ -1045,19 +1109,19 @@ app.get('/api/history/export', authenticate, async (req, res) => {
              JOIN orders o ON o.id = r.order_id
              ORDER BY r.created_at DESC`
         );
-        const repairMap = new Map();
+        const repairMap = new Map(); // key: order_number||company -> najnovija reparacija (prvi upis pošto je DESC)
         repairResult.rows.forEach(r => {
             const key = `${r.order_number}||${r.company}`;
             if (!repairMap.has(key)) repairMap.set(key, r);
         });
-        const problemMap = new Map();
+        const problemMap = new Map(); // key: order_number||company||phase -> {comment, changedAt}
         lastProblemResult.rows.forEach(r => {
             problemMap.set(`${r.order_number}||${r.company}||${r.phase}`, { comment: r.comment || '', changedAt: r.changed_at });
         });
 
-        const phaseMap = new Map();
-        const napomenaMap = new Map();
-        const prijemMap = new Map();
+        const phaseMap = new Map();    // key: order_number||company -> { phase: {status, comment, changedAt} }
+        const napomenaMap = new Map(); // key: order_number||company -> {comment, changedAt}
+        const prijemMap = new Map();   // key: order_number||company -> {status, comment, changedAt}
         const phaseSet = new Set();
         phaseStatusResult.rows.forEach(r => {
             const key = `${r.order_number}||${r.company}`;
@@ -1076,6 +1140,12 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         const phases = [...phaseSet].sort((a, b) => parseInt(a) - parseInt(b));
         const finalPhases = phases.length ? phases : ['100', '200', '300', '400', '500'];
 
+        // Formatiranje PRIJEM podatka za kolonu "Prijem" - vidljivo SVIM ulogama.
+        // JSON {outcome, unit, items:[{size,qty}], note} sačuvan u comment koloni.
+        // Za reparaciju, prati trenutni korak toka (obeleženo -> klijent urađeno -> kontrola potvrdila):
+        //  - dok čeka klijenta: pun opis (ikona, datum, stavke, napomena)
+        //  - klijent potvrdio (kontrola još nije): SAMO datum + ime klijenta
+        //  - kontrola potvrdila (zatvoreno): SAMO datum + ikona
         const prijemCellText = (entry, key) => {
             if (!entry || entry.status === 'pending') return '';
             const dateStr = entry.changedAt ? new Date(entry.changedAt).toLocaleDateString('sr-RS') : '';
@@ -1086,6 +1156,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
                     const items = (d.items || []).map(it => `vel.${it.size} - ${it.qty} pa.`).join(', ');
                     return [`❌ ANULIRANO ${dateStr}`, items, d.note].filter(Boolean).join('  —  ');
                 }
+                // Reparacija - proveri u kom je koraku toka
                 const rep = repairMap.get(key);
                 if (rep && rep.kontrola_confirmed_at) {
                     return `✅ ${new Date(rep.kontrola_confirmed_at).toLocaleDateString('sr-RS')}`;
@@ -1102,6 +1173,11 @@ app.get('/api/history/export', authenticate, async (req, res) => {
 
         const statusFill = s => s === 'completed' ? 'FFC6F6D5' : s === 'problem' ? 'FFFED7D7' : null;
         const statusFont = s => s === 'completed' ? 'FF276749' : s === 'problem' ? 'FF9B2C2C' : 'FF4A5568';
+        // Sadržaj ćelije za fazu:
+        // - Urađeno: ✅ + datum (posebna linija)
+        // - Problem (trenutno): ⚠️ + datum + tekst, sve u JEDNOJ liniji
+        // - Ako je NEKAD bilo problema (a sad npr. Urađeno): dodatna trajna linija ⚠️ + datum + tekst
+        // - Bez ikakve aktivnosti -> prazno
         const phaseCellText = (entry, orderNumber, comp, phaseCode) => {
             if (!entry) return '';
             const comment = (entry.comment || '').trim();
@@ -1128,6 +1204,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             return lines.join('\n');
         };
 
+        // Da li je Prijem/Reparacija ZAVRŠENA (za zeleno bojenje datuma u koloni "Prijem")
         const isPrijemFinished = (entry, key) => {
             if (!entry || entry.status === 'pending') return false;
             if (entry.status === 'completed') return true;
@@ -1165,6 +1242,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         const totalCols = sheet.columns.length;
         const lastColLetter = sheet.getColumn(totalCols).letter;
 
+        // Naslovni red
         sheet.mergeCells(`A1:${lastColLetter}1`);
         const titleCell = sheet.getCell('A1');
         titleCell.value = `Istorija aktivnosti — Firma: ${company || 'sve firme'}${changedBy ? ` — Korisnik: ${changedBy}` : ''} — Period: ${dateFrom || 'početak'} do ${dateTo || 'danas'} — Generisano: ${new Date().toLocaleString('sr-RS')}`;
@@ -1173,6 +1251,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         sheet.getRow(1).height = 22;
         sheet.mergeCells(`A2:${lastColLetter}2`);
 
+        // Zaglavlje
         const headerRow = sheet.getRow(3);
         headerRow.values = [
             'Datum i vreme', 'Firma', 'Nalog',
@@ -1223,6 +1302,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
                 if (entry && (entry.comment || '').trim()) hasComment = true;
             });
 
+            // Kolona "Prijem" - zeleno kad je Prijem/Reparacija ZAVRŠENA (potvrđeno/OK)
             const prijemColIndex = fixedCols.length + phaseCols.length + 1;
             const prijemCell = row.getCell(prijemColIndex);
             prijemCell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
@@ -1249,6 +1329,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
 });
 
 // ============ PRIJEM - ŠABLONSKI TEKST ZA COPY-PASTE U MAIL ============
+// Zbirno po firmi za dati dan (podrazumevano danas) - admin i Kontrola, moze se generisati vise puta dnevno
 app.get('/api/prijem-template', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
@@ -1256,8 +1337,10 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
     try {
         const { company, date } = req.query;
         if (!company) return res.status(400).json({ error: 'Firma je obavezna.' });
-        const targetDate = date || new Date().toLocaleDateString('en-CA');
+        const targetDate = date || new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
 
+        // Svi PRIJEM problemi za dati dan, iz SVIH firmi - filtriramo ih posle,
+        // po EFEKTIVNOJ firmi (a ne samo po firmi kojoj je nalog nominalno namenjen).
         const rawResult = await pool.query(
             `SELECT DISTINCT ON (order_number, company) order_number, company, new_status, comment, changed_at
              FROM order_history
@@ -1267,17 +1350,20 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
             [targetDate]
         );
 
+        // Za svaki nalog nađi ko je STVARNO poslednji radio proizvodne faze (100/200/300/400).
+        // Ako je to neko iz druge firme, poruka ide na tu (stvarnu) firmu, a ne na nominalnu.
         const effectiveResult = await pool.query(
             `SELECT DISTINCT ON (order_number, company) order_number, company, changed_by, changed_by_company
              FROM order_history
              WHERE phase IN ('100','200','300','400') AND changed_by_company IS NOT NULL
              ORDER BY order_number, company, changed_at DESC`
         );
-        const effectiveMap = new Map();
+        const effectiveMap = new Map(); // key: order_number||company -> {changedBy, changedByCompany}
         effectiveResult.rows.forEach(r => {
             effectiveMap.set(`${r.order_number}||${r.company}`, { changedBy: r.changed_by, changedByCompany: r.changed_by_company });
         });
 
+        // Filtriraj samo stavke čija je EFEKTIVNA firma jednaka izabranoj firmi
         const result = { rows: rawResult.rows.filter(r => {
             const eff = effectiveMap.get(`${r.order_number}||${r.company}`);
             const effectiveCompany = (eff && eff.changedByCompany) ? eff.changedByCompany : r.company;
@@ -1288,6 +1374,8 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
             return res.json({ text: `Nema Reparacija/Anulirano stavki za "${company}" na dan ${targetDate}.` });
         }
 
+        // Uzmi naziv/artikal naloga radi čitljivosti (nalozi mogu biti nominalno iz raznih firmi,
+        // pa učitavamo po skupu mogućih order_number/company i filtriramo tačan par u JS-u)
         const orderNumbers = [...new Set(result.rows.map(r => r.order_number))];
         const nominalCompanies = [...new Set(result.rows.map(r => r.company))];
         const infoResult = await pool.query(
@@ -1334,129 +1422,78 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
     }
 });
 
-// ============ SEND REPORT (Excel kao prilog, samo adminu, od poslednjeg izveštaja) ============
+// ============ SEND REPORT ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
-        // 1) Uzmi poslednji datum slanja za firmu klijenta
-        const logResult = await pool.query(
-            'SELECT last_sent_at FROM report_log WHERE company = $1',
+        const { email, date } = req.body;
+        const today = date || new Date().toLocaleDateString('sr-RS');
+
+        const ordersResult = await pool.query(
+            `SELECT o.*, 
+                    COALESCE(json_agg(json_build_object('phase', p.phase, 'status', p.status, 'comment', p.comment, 'updatedAt', p.updated_at) ORDER BY p.phase) 
+                    FILTER (WHERE p.phase IS NOT NULL), '[]') as progress
+             FROM orders o
+             LEFT JOIN progress p ON o.id = p.order_id
+             WHERE o.company = $1
+             GROUP BY o.id
+             ORDER BY o.id DESC`,
             [req.user.company]
         );
-        const lastSentAt = logResult.rows[0]?.last_sent_at || null;
 
-        // Ako nema prethodnog izveštaja, uzmi poslednjih 30 dana
-        const dateFrom = lastSentAt
-            ? new Date(lastSentAt).toISOString().slice(0, 10)
-            : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-        const dateTo = new Date().toISOString().slice(0, 10);
+        const userOrders = ordersResult.rows;
 
-        console.log(`📊 Izveštaj za "${req.user.company}" od ${dateFrom} do ${dateTo}`);
-
-        // 2) Uzmi aktivnosti iz order_history za tu firmu u tom periodu
-        const historyResult = await pool.query(
-            `SELECT DISTINCT ON (order_number, company) 
-                order_number, company, phase, new_status, comment, changed_by, changed_at
-             FROM order_history
-             WHERE company = $1
-               AND changed_at >= $2::date
-               AND changed_at < ($3::date + INTERVAL '1 day')
-             ORDER BY order_number, company, changed_at DESC`,
-            [req.user.company, dateFrom, dateTo]
-        );
-
-        // 3) Generiši Excel
-        const workbook = new ExcelJS.Workbook();
-        workbook.creator = 'Production Tracker';
-        workbook.created = new Date();
-        const sheet = workbook.addWorksheet('Izveštaj');
-
-        sheet.columns = [
-            { header: 'Datum', key: 'date', width: 20 },
-            { header: 'Nalog', key: 'order', width: 15 },
-            { header: 'Faza', key: 'phase', width: 18 },
-            { header: 'Status', key: 'status', width: 15 },
-            { header: 'Komentar', key: 'comment', width: 40 },
-            { header: 'Izmenio', key: 'changed_by', width: 18 }
-        ];
-
-        sheet.getRow(1).eachCell(cell => {
-            cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF667EEA' } };
-            cell.alignment = { vertical: 'middle', horizontal: 'center' };
-        });
-
-        const STATUS_LABELS = { 'completed': '✅ Urađeno', 'problem': '⚠️ Problem', 'pending': '⬜ U toku', 'nema': '🚫 Nema' };
-
-        historyResult.rows.forEach(r => {
-            sheet.addRow({
-                date: new Date(r.changed_at).toLocaleString('sr-RS'),
-                order: r.order_number,
-                phase: PHASE_LABELS[r.phase] || r.phase,
-                status: STATUS_LABELS[r.new_status] || r.new_status,
-                comment: r.comment || '',
-                changed_by: r.changed_by || ''
-            });
-        });
-
-        // 4) Konvertuj u Buffer
-        const excelBuffer = await workbook.xlsx.writeBuffer();
-
-        // 5) Pošalji email adminu sa prilogom
-        const recipient = process.env.ADMIN_EMAIL;
-        if (!recipient) {
-            return res.status(400).json({ error: 'ADMIN_EMAIL nije podešen na serveru.' });
+        if (userOrders.length === 0) {
+            return res.status(400).json({ error: 'Nema naloga' });
         }
 
-        const fileName = `izvestaj_${req.user.company.replace(/\s+/g, '_')}_${dateFrom}_${dateTo}.xlsx`;
+        const phaseSummary = (progress) => (progress || [])
+            .filter(p => p.phase !== 'NAPOMENA')
+            .map(p => {
+                const icon = p.status === 'completed' ? '✅' : p.status === 'problem' ? '⚠️' : '⬜';
+                return `${icon} ${phaseLabel(p.phase)}`;
+            })
+            .join(' &nbsp; ');
+
+        const rowsHtml = userOrders.map(o => `
+            <tr>
+                <td style="padding:8px;border-bottom:1px solid #e2e8f0;font-family:monospace;font-weight:600">${o.order_number}</td>
+                <td style="padding:8px;border-bottom:1px solid #e2e8f0">${o.name || ''}</td>
+                <td style="padding:8px;border-bottom:1px solid #e2e8f0;text-align:center">${o.quantity || 0}</td>
+                <td style="padding:8px;border-bottom:1px solid #e2e8f0;font-size:13px">${phaseSummary(o.progress)}</td>
+            </tr>`).join('');
+
+        const html = `
+            <div style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto">
+                <h2 style="color:#2B4570;margin-bottom:4px">📦 Dnevni izveštaj — ${req.user.company}</h2>
+                <p style="color:#70796F;margin-top:0">Datum: ${today}</p>
+                <table style="width:100%;border-collapse:collapse;margin-top:12px">
+                    <thead>
+                        <tr style="background:#2B4570;color:white">
+                            <th style="padding:8px;text-align:left">Nalog</th>
+                            <th style="padding:8px;text-align:left">Naziv</th>
+                            <th style="padding:8px;text-align:center">Količina</th>
+                            <th style="padding:8px;text-align:left">Status faza</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rowsHtml}</tbody>
+                </table>
+                <p style="color:#A0AEC0;font-size:12px;margin-top:20px">Automatski generisano iz Production Tracker sistema.</p>
+            </div>`;
+
+        const recipient = email || process.env.ADMIN_EMAIL;
+        if (!recipient) {
+            return res.status(400).json({ error: 'Nije definisan primalac (ADMIN_EMAIL nije podešen na serveru).' });
+        }
 
         await sendEmail({
             to: recipient,
-            subject: `📊 Izveštaj — ${req.user.company} — ${dateFrom} do ${dateTo}`,
-            html: `
-                <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-                    <h2 style="color:#2B4570">📊 Novi izveštaj</h2>
-                    <p><b>Firma:</b> ${req.user.company}</p>
-                    <p><b>Poslao:</b> ${req.user.username}</p>
-                    <p><b>Period:</b> ${dateFrom} do ${dateTo}</p>
-                    <p><b>Broj aktivnosti:</b> ${historyResult.rows.length}</p>
-                    <p style="color:#70796F;font-size:13px;margin-top:20px">Excel fajl je u prilogu.</p>
-                </div>`,
-            attachments: [{
-                filename: fileName,
-                content: Buffer.from(excelBuffer)
-            }]
+            subject: `📦 Dnevni izveštaj — ${req.user.company} — ${today}`,
+            html
         });
 
-        // 6) Ažuriraj report_log
-        await pool.query(
-            `INSERT INTO report_log (company, last_sent_at) VALUES ($1, NOW())
-             ON CONFLICT (company) DO UPDATE SET last_sent_at = NOW()`,
-            [req.user.company]
-        );
-
-        res.json({
-            message: `✅ Izveštaj poslat na ${recipient} (${historyResult.rows.length} aktivnosti)`,
-            dateFrom,
-            dateTo,
-            count: historyResult.rows.length
-        });
+        res.json({ message: `✅ Izveštaj poslat na ${recipient}` });
     } catch (e) {
         console.error('❌ Send report error:', e);
-        res.status(500).json({ error: e.message });
-    }
-});
-
-// ============ REPORT LOG (admin vidi kada je poslednji izveštaj poslat) ============
-app.get('/api/report-log', authenticate, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
-    }
-    try {
-        const result = await pool.query(
-            'SELECT company, last_sent_at FROM report_log ORDER BY last_sent_at DESC'
-        );
-        res.json(result.rows);
-    } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
