@@ -122,6 +122,15 @@ const initDb = async () => {
             )
         `);
 
+        // ============ FIXED RECIPIENTS (email adrese koje uvek primaju izveštaj) ============
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS fixed_recipients (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+
         const adminCheck = await pool.query('SELECT * FROM users WHERE username = $1', ['admin']);
         if (adminCheck.rows.length === 0) {
             const hashedPassword = await bcrypt.hash('admin123', 10);
@@ -221,7 +230,7 @@ async function sendEmail({ to, subject, html, attachments }) {
     if (hasResend) {
         const body = {
             from: 'Production Tracker <onboarding@resend.dev>',
-            to: [to],
+            to: Array.isArray(to) ? to : [to],
             subject,
             html
         };
@@ -249,7 +258,7 @@ async function sendEmail({ to, subject, html, attachments }) {
     if (smtpTransporter) {
         const mailOptions = {
             from: `Production Tracker <${process.env.EMAIL_USER}>`,
-            to,
+            to: Array.isArray(to) ? to.join(', ') : to,
             subject,
             html
         };
@@ -421,6 +430,68 @@ app.delete('/api/company-info/:company', authenticate, async (req, res) => {
             return res.status(404).json({ error: 'Firma nije pronađena.' });
         }
         res.json({ message: `Podaci za "${company}" obrisani.` });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ FIXED RECIPIENTS (email adrese koje uvek primaju izveštaj) ============
+
+app.get('/api/fixed-recipients', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const result = await pool.query(
+            'SELECT id, email, created_at FROM fixed_recipients ORDER BY created_at ASC'
+        );
+        res.json(result.rows);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/fixed-recipients', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const { email } = req.body;
+        if (!email || !email.trim()) {
+            return res.status(400).json({ error: 'Email je obavezan.' });
+        }
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+            return res.status(400).json({ error: 'Email nije validan.' });
+        }
+        const result = await pool.query(
+            `INSERT INTO fixed_recipients (email) VALUES ($1)
+             ON CONFLICT (email) DO NOTHING
+             RETURNING id, email, created_at`,
+            [email.trim().toLowerCase()]
+        );
+        if (result.rows.length === 0) {
+            return res.status(400).json({ error: 'Taj email je već dodat.' });
+        }
+        res.status(201).json(result.rows[0]);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete('/api/fixed-recipients/:id', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const { id } = req.params;
+        const result = await pool.query(
+            'DELETE FROM fixed_recipients WHERE id = $1 RETURNING email',
+            [id]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'Email nije pronađen.' });
+        }
+        res.json({ message: `Email "${result.rows[0].email}" obrisan.` });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -1407,7 +1478,7 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
     }
 });
 
-// ============ SEND REPORT (Excel kao prilog, samo adminu, od poslednjeg izveštaja) ============
+// ============ SEND REPORT (Excel kao prilog, adminu + fiksni + firma, od poslednjeg izveštaja) ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
         const logResult = await pool.query(
@@ -1469,15 +1540,39 @@ app.post('/api/send-report', authenticate, async (req, res) => {
 
         const excelBuffer = await workbook.xlsx.writeBuffer();
 
-        const recipient = process.env.ADMIN_EMAIL;
-        if (!recipient) {
-            return res.status(400).json({ error: 'ADMIN_EMAIL nije podešen na serveru.' });
+        // ============ PRIMAOCI: ADMIN + FIKSNA GRUPA + EMAIL FIRME ============
+        const recipients = new Set();
+
+        // 1) Admin (ADMIN_EMAIL)
+        if (process.env.ADMIN_EMAIL) {
+            recipients.add(process.env.ADMIN_EMAIL.trim().toLowerCase());
+        }
+
+        // 2) Fiksna grupa
+        try {
+            const fixedResult = await pool.query('SELECT email FROM fixed_recipients');
+            fixedResult.rows.forEach(r => recipients.add(r.email.trim().toLowerCase()));
+        } catch (_) {}
+
+        // 3) Email firme
+        try {
+            const companyResult = await pool.query(
+                'SELECT email FROM company_info WHERE company = $1',
+                [req.user.company]
+            );
+            if (companyResult.rows[0]?.email) {
+                recipients.add(companyResult.rows[0].email.trim().toLowerCase());
+            }
+        } catch (_) {}
+
+        if (recipients.size === 0) {
+            return res.status(400).json({ error: 'Nema primalaca (ADMIN_EMAIL nije podešen, niti ima fiksnih primalaca).' });
         }
 
         const fileName = `izvestaj_${req.user.company.replace(/\s+/g, '_')}_${dateFrom}_${dateTo}.xlsx`;
 
         await sendEmail({
-            to: recipient,
+            to: Array.from(recipients),
             subject: `📊 Izveštaj — ${req.user.company} — ${dateFrom} do ${dateTo}`,
             html: `
                 <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
@@ -1501,10 +1596,11 @@ app.post('/api/send-report', authenticate, async (req, res) => {
         );
 
         res.json({
-            message: `✅ Izveštaj poslat na ${recipient} (${historyResult.rows.length} aktivnosti)`,
+            message: `✅ Izveštaj poslat na ${recipients.size} primalaca (${historyResult.rows.length} aktivnosti)`,
             dateFrom,
             dateTo,
-            count: historyResult.rows.length
+            count: historyResult.rows.length,
+            recipients: Array.from(recipients)
         });
     } catch (e) {
         console.error('❌ Send report error:', e);
