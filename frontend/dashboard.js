@@ -19,6 +19,8 @@ async function idbGet(key){const db=await idbOpen();return new Promise((resolve,
 // ============ FILE SYSTEM ACCESS API ============
 const BROJ_FILE_NAME='broj.txt';
 let otpremnicaFolderHandle=null;
+let lastGeneratedExcelBlob=null;
+let lastGeneratedFileName=null;
 
 async function loadFolderHandleFromIdb(){
   try{
@@ -26,10 +28,7 @@ async function loadFolderHandleFromIdb(){
     if(!h)return;
     otpremnicaFolderHandle=h;
     const perm=await h.queryPermission({mode:'readwrite'});
-    if(perm!=='granted'){
-      updateFolderStatusNeedsPermission();
-      return;
-    }
+    if(perm!=='granted'){updateFolderStatusNeedsPermission();return}
     updateFolderStatus();
     const n=await readBrojFromFile(h);
     if(n!==null&&$('otpremnicaBrojInput'))$('otpremnicaBrojInput').value=n;
@@ -63,8 +62,6 @@ async function grantFolderPermission(){
     }else{alert('❌ Pristup folderu nije odobren.')}
   }catch(e){alert('❌ '+e.message)}
 }
-
-async function fileExists(dirHandle,name){try{await dirHandle.getFileHandle(name);return true}catch(_){return false}}
 
 async function readBrojFromFile(dirHandle){
   try{
@@ -409,6 +406,8 @@ async function addKontrolaControls(){
         <input type="date" id="prijemTplDate" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
         <button id="prijemTplGenBtn" class="btn-success">📋 Generiši</button>
         <button id="prijemTplOtpremnicaBtn" class="btn-success" style="background:#2B4570;color:white">📥 Povuci Excel otpremnicu</button>
+        <button id="prijemTplMailBtn" class="btn-success" style="background:#3F7A5C;color:white">📧 Pošalji mail</button>
+        <button id="prijemTplPrintBtn" class="btn-secondary">🖨️ Štampaj 4 primerka</button>
       </div>
       <textarea id="prijemTplResult" class="phase-note" readonly style="margin-top:10px;min-height:180px;font-family:var(--font-mono);font-size:12.5px" placeholder="Ovde će se pojaviti tekst spreman za copy-paste u mail..."></textarea>
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
@@ -431,6 +430,8 @@ async function addKontrolaControls(){
   $('prijemTplGenBtn').onclick=generatePrijemTemplate;
   $('prijemTplCopyBtn').onclick=copyPrijemTemplate;
   $('prijemTplOtpremnicaBtn').onclick=exportOtpremnica;
+  $('prijemTplMailBtn').onclick=sendOtpremnicaMail;
+  $('prijemTplPrintBtn').onclick=printOtpremnica;
   $('otpremnicaFolderBtn').onclick=chooseFolder;
 
   setTimeout(async()=>{
@@ -469,6 +470,10 @@ async function exportOtpremnica(){
     if(!r.ok){const d=await r.json().catch(()=>({}));throw Error(d.error||`HTTP ${r.status}`)}
     const blob=await r.blob();
     const fileName=`Otpremnica_${broj}_${company.replace(/\s+/g,'_')}_${date||'danas'}.xlsx`;
+
+    // Sačuvaj u memoriju za kasnije (mail)
+    lastGeneratedExcelBlob=blob;
+    lastGeneratedFileName=fileName;
 
     // 1) Download
     const url=URL.createObjectURL(blob);
@@ -515,6 +520,61 @@ async function generatePrijemTemplate(){
     const d=await api(`/api/prijem-template?${params.toString()}`,{headers:headers()});
     $('prijemTplResult').value=d.text||'';
     status.textContent='✅ Spremno - kopiraj i zalepi u mail';status.className='success';
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
+
+// ============ SLANJE OTPREMNICE MAIL-OM ============
+async function sendOtpremnicaMail(){
+  const status=$('prijemTplStatus');
+  const company=$('prijemTplCompany')?.value||'';
+  const broj=$('otpremnicaBrojInput')?.value||'';
+  const text=$('prijemTplResult')?.value||'';
+
+  if(!company){status.textContent='❌ Izaberi firmu.';status.className='error';return}
+  if(!text){status.textContent='❌ Prvo generiši tekst.';status.className='error';return}
+  if(!lastGeneratedExcelBlob){status.textContent='❌ Prvo povuci Excel otpremnicu (za prilog).';status.className='error';return}
+
+  if(!confirm(`Poslati otpremnicu br. ${broj} za "${company}" na mail?`))return;
+
+  status.textContent='⏳ Šaljem mail...';status.className='';
+  try{
+    // Konvertuj blob u base64
+    const arrayBuffer=await lastGeneratedExcelBlob.arrayBuffer();
+    const bytes=new Uint8Array(arrayBuffer);
+    let binary='';
+    for(let i=0;i<bytes.length;i++)binary+=String.fromCharCode(bytes[i]);
+    const excelBase64=btoa(binary);
+
+    const d=await api('/api/poslji-otpremnicu-mail',{
+      method:'POST',
+      headers:headers(true),
+      body:JSON.stringify({
+        company,
+        number:broj,
+        text,
+        excelBase64,
+        fileName:lastGeneratedFileName
+      })
+    });
+    status.textContent=`✅ ${d.message}`;status.className='success';
+  }catch(e){
+    status.textContent='❌ '+e.message;status.className='error';
+  }
+}
+
+// ============ ŠTAMPANJE 4 PRIMERKA ============
+async function printOtpremnica(){
+  const status=$('prijemTplStatus');
+  if(!lastGeneratedExcelBlob){
+    status.textContent='❌ Prvo povuci Excel otpremnicu.';status.className='error';
+    return;
+  }
+  if(!confirm('Otvoriće se Excel u novom tabu. Za 4 primerka:\n1) Klikni "Print"\n2) U "Copies" upiši 4\n3) Klikni "Print"\n\nNastaviti?'))return;
+  try{
+    const url=URL.createObjectURL(lastGeneratedExcelBlob);
+    window.open(url,'_blank');
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+    status.textContent='✅ Excel otvoren u novom tabu — štampaj 4 primerka.';status.className='success';
   }catch(e){status.textContent='❌ '+e.message;status.className='error'}
 }
 

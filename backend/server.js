@@ -535,6 +535,63 @@ app.post('/api/change-password', authenticate, async (req, res) => {
     }
 });
 
+// ============ NOVA RUTA: SLANJE OTPREMNICE MAIL-OM ============
+app.post('/api/poslji-otpremnicu-mail', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const { company, number, text, excelBase64, fileName } = req.body;
+        if (!company) return res.status(400).json({ error: 'Firma je obavezna.' });
+        if (!text) return res.status(400).json({ error: 'Tekst je obavezan.' });
+        if (!excelBase64) return res.status(400).json({ error: 'Excel nije priložen.' });
+
+        // Primaoci: admin + fiksni + email firme
+        const recipients = new Set();
+        if (process.env.ADMIN_EMAIL) {
+            recipients.add(process.env.ADMIN_EMAIL.trim().toLowerCase());
+        }
+        try {
+            const fixedResult = await pool.query('SELECT email FROM fixed_recipients');
+            fixedResult.rows.forEach(r => recipients.add(r.email.trim().toLowerCase()));
+        } catch (_) {}
+        try {
+            const companyResult = await pool.query(
+                'SELECT email FROM company_info WHERE company = $1',
+                [company]
+            );
+            if (companyResult.rows[0]?.email) {
+                recipients.add(companyResult.rows[0].email.trim().toLowerCase());
+            }
+        } catch (_) {}
+
+        if (recipients.size === 0) {
+            return res.status(400).json({ error: 'Nema primalaca (ADMIN_EMAIL nije podešen, niti ima fiksnih primalaca, niti email firme).' });
+        }
+
+        const excelBuffer = Buffer.from(excelBase64, 'base64');
+        const finalFileName = fileName || `Otpremnica_${number||'?'}_${company.replace(/\s+/g,'_')}.xlsx`;
+
+        await sendEmail({
+            to: Array.from(recipients),
+            subject: `📦 Otpremnica br. ${number||'?'} — ${company}`,
+            html: `<pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap">${text.replace(/</g,'&lt;')}</pre>`,
+            attachments: [{
+                filename: finalFileName,
+                content: excelBuffer
+            }]
+        });
+
+        res.json({
+            message: `✅ Otpremnica poslata na ${recipients.size} primalaca`,
+            recipients: Array.from(recipients)
+        });
+    } catch (e) {
+        console.error('❌ Poslji otpremnicu mail error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ============ UPLOAD ============
 app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
     if (req.user.role !== 'admin') {
@@ -1395,7 +1452,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
     }
 });
 
-// ============ PRIJEM - ŠABLONSKI TEKST ZA COPY-PASTE U MAIL (SA BROJEM OTPREMNICE) ============
+// ============ PRIJEM - ŠABLONSKI TEKST ZA COPY-PASTE U MAIL (SA BROJEM OTPREMNICE, FILTRIRA KAO EXCEL) ============
 app.get('/api/prijem-template', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
@@ -1426,14 +1483,29 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
             effectiveMap.set(`${r.order_number}||${r.company}`, { changedBy: r.changed_by, changedByCompany: r.changed_by_company });
         });
 
-        const result = { rows: rawResult.rows.filter(r => {
+        const filteredRows = rawResult.rows.filter(r => {
             const eff = effectiveMap.get(`${r.order_number}||${r.company}`);
             const effectiveCompany = (eff && eff.changedByCompany) ? eff.changedByCompany : r.company;
-            return effectiveCompany === company;
-        }) };
+            if (effectiveCompany !== company) return false;
+            let d = {};
+            try { d = JSON.parse(r.comment || '{}'); } catch (_) {}
+            return d.outcome === 'reparacija';
+        });
+
+        const skipKeys = new Set();
+        if (filteredRows.length > 0) {
+            const logResult = await pool.query(
+                `SELECT order_number, company, repair_changed_at FROM otpremnica_log`
+            );
+            logResult.rows.forEach(l => {
+                skipKeys.add(`${l.order_number}||${l.company}||${new Date(l.repair_changed_at).toISOString()}`);
+            });
+        }
+
+        const result = { rows: filteredRows.filter(r => !skipKeys.has(`${r.order_number}||${r.company}||${new Date(r.changed_at).toISOString()}`)) };
 
         if (result.rows.length === 0) {
-            return res.json({ text: `Nema Reparacija/Anulirano stavki za "${company}" na dan ${targetDate}.` });
+            return res.json({ text: `Nema novih reparacija za "${company}" na dan ${targetDate} (sve su već poslate u otpremnici).` });
         }
 
         const orderNumbers = [...new Set(result.rows.map(r => r.order_number))];
@@ -1444,22 +1516,17 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
         );
         const nameMap = new Map(infoResult.rows.map(r => [`${r.order_number}||${r.company}`, r.name]));
 
-        let hasReparacija = false;
         const itemLines = [];
         result.rows.forEach(r => {
             const naziv = nameMap.get(`${r.order_number}||${r.company}`) || '';
             let d = {};
             try { d = JSON.parse(r.comment || '{}'); } catch (_) {}
-            const isAnulirano = d.outcome === 'anulirano';
-            if (!isAnulirano) hasReparacija = true;
-            const icon = isAnulirano ? '❌ ANULIRANO' : '🔧 REPARACIJA';
             const items = (d.items || []).map(it => `vel.${it.size} - ${it.qty} pa.`).join(', ');
 
             itemLines.push(`Nalog #${r.order_number}${naziv ? ' — ' + naziv : ''}`);
-            itemLines.push(icon);
+            itemLines.push('🔧 REPARACIJA');
             if (items) itemLines.push(items);
             if (d.note) itemLines.push(`Napomena: ${d.note}`);
-            if (isAnulirano) itemLines.push('Naknadno cemo Vas obavestiti o detaljima naplate.');
             itemLines.push('');
         });
 
@@ -1469,10 +1536,8 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
         lines.push(`danas Vam vraćamo po otpremnici br. ${otpremnicaNumber} sledeće artikle:`);
         lines.push('');
         lines.push(...itemLines);
-        if (hasReparacija) {
-            lines.push('Molimo Vas da uradite reparacije što pre, kako ne bismo kasnili sa isporukama.');
-            lines.push('');
-        }
+        lines.push('Molimo Vas da uradite reparacije što pre, kako ne bismo kasnili sa isporukama.');
+        lines.push('');
         lines.push('Hvala,');
         lines.push('pozdrav.');
 
@@ -1747,149 +1812,446 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
+// PRODUCTION TRACKER - orders.js
+let currentUser=null,orders=[],selectedOrderId=null,currentPage=1,totalPages=1,totalOrders=0;
+const LIMIT=100;
+const $=id=>document.getElementById(id);
+const token=localStorage.getItem('token'),userStr=localStorage.getItem('user');
+if(!token||!userStr){location.href='index.html'}else{try{currentUser=JSON.parse(userStr)}catch(e){localStorage.clear();location.href='index.html'}}
+const companyDisplay=$('companyDisplay'),adminPanel=$('adminPanel'),ordersContainer=$('ordersContainer'),searchInput=$('searchInput'),searchBtn=$('searchBtn'),clearSearchBtn=$('clearSearchBtn'),logoutBtn=$('logoutBtn'),sendReportBtn=$('sendReportBtn'),changePasswordBtn=$('changePasswordBtn'),phaseModal=$('phaseModal'),modalOrderNumber=$('modalOrderNumber'),modalOrderInfo=$('modalOrderInfo'),phasesContainer=$('phasesContainer'),closeModal=document.querySelector('.close-modal'),orderCount=$('orderCount');
+if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
+const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
+async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error(t('msg_session_expired'))}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
 
-// ============ SEND REPORT ============
-app.post('/api/send-report', authenticate, async (req, res) => {
-    try {
-        const logResult = await pool.query(
-            'SELECT last_sent_at FROM report_log WHERE company = $1',
-            [req.user.company]
-        );
-        const lastSentAt = logResult.rows[0]?.last_sent_at || null;
+// ============ INDEXEDDB za čuvanje FileSystemDirectoryHandle ============
+const IDB_NAME='production-tracker-fs';
+const IDB_STORE='handles';
+function idbOpen(){return new Promise((resolve,reject)=>{const req=indexedDB.open(IDB_NAME,1);req.onupgradeneeded=()=>{if(!req.result.objectStoreNames.contains(IDB_STORE))req.result.createObjectStore(IDB_STORE)};req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)})}
+async function idbSet(key,val){const db=await idbOpen();return new Promise((resolve,reject)=>{const tx=db.transaction(IDB_STORE,'readwrite');tx.objectStore(IDB_STORE).put(val,key);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error)})}
+async function idbGet(key){const db=await idbOpen();return new Promise((resolve,reject)=>{const tx=db.transaction(IDB_STORE,'readonly');const req=tx.objectStore(IDB_STORE).get(key);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)})}
 
-        const dateFrom = lastSentAt
-            ? new Date(lastSentAt).toISOString().slice(0, 10)
-            : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-        const dateTo = new Date().toISOString().slice(0, 10);
+// ============ FILE SYSTEM ACCESS API ============
+const BROJ_FILE_NAME='broj.txt';
+let otpremnicaFolderHandle=null;
+let lastGeneratedExcelBlob=null;
+let lastGeneratedFileName=null;
 
-        console.log(`📊 Izveštaj za "${req.user.company}" od ${dateFrom} do ${dateTo}`);
+async function loadFolderHandleFromIdb(){
+  try{
+    const h=await idbGet('otpremnicaFolder');
+    if(!h)return;
+    otpremnicaFolderHandle=h;
+    const perm=await h.queryPermission({mode:'readwrite'});
+    if(perm!=='granted'){updateFolderStatusNeedsPermission();return}
+    updateFolderStatus();
+    const n=await readBrojFromFile(h);
+    if(n!==null&&$('otpremnicaBrojInput'))$('otpremnicaBrojInput').value=n;
+  }catch(e){console.error('loadFolderHandleFromIdb:',e)}
+}
 
-        const historyResult = await pool.query(
-            `SELECT DISTINCT ON (order_number, company) 
-                order_number, company, phase, new_status, comment, changed_by, changed_at
-             FROM order_history
-             WHERE company = $1
-               AND changed_at >= $2::date
-               AND changed_at < ($3::date + INTERVAL '1 day')
-             ORDER BY order_number, company, changed_at DESC`,
-            [req.user.company, dateFrom, dateTo]
-        );
-
-        const workbook = new ExcelJS.Workbook();
-        workbook.creator = 'Production Tracker';
-        workbook.created = new Date();
-        const sheet = workbook.addWorksheet('Izveštaj');
-
-        sheet.columns = [
-            { header: 'Datum', key: 'date', width: 20 },
-            { header: 'Nalog', key: 'order', width: 15 },
-            { header: 'Faza', key: 'phase', width: 18 },
-            { header: 'Status', key: 'status', width: 15 },
-            { header: 'Komentar', key: 'comment', width: 40 },
-            { header: 'Izmenio', key: 'changed_by', width: 18 }
-        ];
-
-        sheet.getRow(1).eachCell(cell => {
-            cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF667EEA' } };
-            cell.alignment = { vertical: 'middle', horizontal: 'center' };
-        });
-
-        const STATUS_LABELS = { 'completed': '✅ Urađeno', 'problem': '⚠️ Problem', 'pending': '⬜ U toku', 'nema': '🚫 Nema' };
-
-        historyResult.rows.forEach(r => {
-            sheet.addRow({
-                date: new Date(r.changed_at).toLocaleString('sr-RS'),
-                order: r.order_number,
-                phase: PHASE_LABELS[r.phase] || r.phase,
-                status: STATUS_LABELS[r.new_status] || r.new_status,
-                comment: r.comment || '',
-                changed_by: r.changed_by || ''
-            });
-        });
-
-        const excelBuffer = await workbook.xlsx.writeBuffer();
-
-        const recipients = new Set();
-
-        if (process.env.ADMIN_EMAIL) {
-            recipients.add(process.env.ADMIN_EMAIL.trim().toLowerCase());
-        }
-
-        try {
-            const fixedResult = await pool.query('SELECT email FROM fixed_recipients');
-            fixedResult.rows.forEach(r => recipients.add(r.email.trim().toLowerCase()));
-        } catch (_) {}
-
-        try {
-            const companyResult = await pool.query(
-                'SELECT email FROM company_info WHERE company = $1',
-                [req.user.company]
-            );
-            if (companyResult.rows[0]?.email) {
-                recipients.add(companyResult.rows[0].email.trim().toLowerCase());
-            }
-        } catch (_) {}
-
-        if (recipients.size === 0) {
-            return res.status(400).json({ error: 'Nema primalaca (ADMIN_EMAIL nije podešen, niti ima fiksnih primalaca).' });
-        }
-
-        const fileName = `izvestaj_${req.user.company.replace(/\s+/g, '_')}_${dateFrom}_${dateTo}.xlsx`;
-
-        await sendEmail({
-            to: Array.from(recipients),
-            subject: `📊 Izveštaj — ${req.user.company} — ${dateFrom} do ${dateTo}`,
-            html: `
-                <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
-                    <h2 style="color:#2B4570">📊 Novi izveštaj</h2>
-                    <p><b>Firma:</b> ${req.user.company}</p>
-                    <p><b>Poslao:</b> ${req.user.username}</p>
-                    <p><b>Period:</b> ${dateFrom} do ${dateTo}</p>
-                    <p><b>Broj aktivnosti:</b> ${historyResult.rows.length}</p>
-                    <p style="color:#70796F;font-size:13px;margin-top:20px">Excel fajl je u prilogu.</p>
-                </div>`,
-            attachments: [{
-                filename: fileName,
-                content: Buffer.from(excelBuffer)
-            }]
-        });
-
-        await pool.query(
-            `INSERT INTO report_log (company, last_sent_at) VALUES ($1, NOW())
-             ON CONFLICT (company) DO UPDATE SET last_sent_at = NOW()`,
-            [req.user.company]
-        );
-
-        res.json({
-            message: `✅ Izveštaj poslat na ${recipients.size} primalaca (${historyResult.rows.length} aktivnosti)`,
-            dateFrom,
-            dateTo,
-            count: historyResult.rows.length,
-            recipients: Array.from(recipients)
-        });
-    } catch (e) {
-        console.error('❌ Send report error:', e);
-        res.status(500).json({ error: e.message });
+async function chooseFolder(){
+  if(!window.showDirectoryPicker){alert('❌ Tvoj browser ne podržava File System Access API.\nKoristi Chrome ili Edge.');return}
+  try{
+    const h=await window.showDirectoryPicker({mode:'readwrite'});
+    otpremnicaFolderHandle=h;
+    await idbSet('otpremnicaFolder',h);
+    updateFolderStatus();
+    const brojPolje=$('otpremnicaBrojInput');
+    if(brojPolje){
+      const n=await readBrojFromFile(h);
+      if(n!==null){brojPolje.value=n}
+      else{await writeBrojToFile(h,parseInt(brojPolje.value)||2450)}
     }
-});
+  }catch(e){if(e.name!=='AbortError')alert('❌ Greška: '+e.message)}
+}
 
-app.get('/api/report-log', authenticate, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
-    }
-    try {
-        const result = await pool.query(
-            'SELECT company, last_sent_at FROM report_log ORDER BY last_sent_at DESC'
-        );
-        res.json(result.rows);
-    } catch (e) {
-        res.status(500).json({ error: e.message });
-    }
-});
+async function grantFolderPermission(){
+  if(!otpremnicaFolderHandle)return chooseFolder();
+  try{
+    const req=await otpremnicaFolderHandle.requestPermission({mode:'readwrite'});
+    if(req==='granted'){
+      updateFolderStatus();
+      const n=await readBrojFromFile(otpremnicaFolderHandle);
+      if(n!==null&&$('otpremnicaBrojInput'))$('otpremnicaBrojInput').value=n;
+    }else{alert('❌ Pristup folderu nije odobren.')}
+  }catch(e){alert('❌ '+e.message)}
+}
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`🗄️ PostgreSQL: ${process.env.DATABASE_URL ? '✅' : '❌'}`);
-    console.log(`📧 Email spreman preko: ${hasResend ? 'Resend' : hasSmtp ? 'SMTP (nodemailer)' : '❌ NIJE PODEŠEN'}`);
-});
+async function readBrojFromFile(dirHandle){
+  try{
+    const fh=await dirHandle.getFileHandle(BROJ_FILE_NAME);
+    const file=await fh.getFile();
+    const text=await file.text();
+    const n=parseInt(text.trim());
+    return isNaN(n)?null:n;
+  }catch(_){return null}
+}
+
+async function writeBrojToFile(dirHandle,broj){
+  const fh=await dirHandle.getFileHandle(BROJ_FILE_NAME,{create:true});
+  const w=await fh.createWritable();
+  await w.write(String(broj));
+  await w.close();
+}
+
+function updateFolderStatus(){
+  const status=$('otpremnicaFolderStatus');
+  if(!status)return;
+  const btn=$('otpremnicaFolderBtn');
+  if(otpremnicaFolderHandle){
+    status.textContent=`✅ Folder: ${otpremnicaFolderHandle.name}`;
+    status.style.color='var(--green)';
+    if(btn){btn.textContent='📁 Promeni folder';btn.onclick=chooseFolder}
+  }else{
+    status.textContent='⚠️ Folder nije izabran';
+    status.style.color='var(--red)';
+    if(btn){btn.textContent='📁 Izaberi folder';btn.onclick=chooseFolder}
+  }
+}
+
+function updateFolderStatusNeedsPermission(){
+  const status=$('otpremnicaFolderStatus');
+  if(!status)return;
+  status.textContent='⚠️ Klikni "Omogući pristup folderu"';
+  status.style.color='var(--red)';
+  const btn=$('otpremnicaFolderBtn');
+  if(btn){btn.textContent='🔓 Omogući pristup folderu';btn.onclick=grantFolderPermission}
+}
+
+document.addEventListener('DOMContentLoaded',()=>{ setTimeout(loadFolderHandleFromIdb,300); });
+
+document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers();addCompanyInfoControls();addFixedRecipientsControls();addOtpremnicaLogControls()}addClientExportControls();if(currentUser?.role==='kontrola'){addKontrolaControls()}loadOrders();checkReminders()});
+
+// ============ PODSETNICI ============
+async function checkReminders(){
+  try{
+    const d=await api('/api/reminders',{headers:headers()});
+    const list=d.reminders||[];
+    if(list.length===0)return;
+    showRemindersModal(list);
+  }catch(e){console.error('Reminders error:',e.message)}
+}
+
+function showRemindersModal(list){
+  let div=$('remindersModal');
+  if(!div){div=document.createElement('div');div.id='remindersModal';div.className='modal';document.body.appendChild(div)}
+  const rows=list.map(r=>{
+    const days=Math.floor((Date.now()-new Date(r.deadlineDate).getTime())/86400000);
+    const waitLabel=r.waitingOn==='kontrola'?t('msg_waiting_kontrola_confirm'):r.waitingOn==='klijent'?t('msg_waiting_your_confirm'):t('msg_waiting_both');
+    const dayWord=days===1?t('msg_day'):t('msg_days');
+    return `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer" onclick="closeRemindersModal();openOrder(${r.orderId})">
+      <b>${t('th_order')} #${esc(r.orderNumber)}</b>${r.name?` — ${esc(r.name)}`:''}<br>
+      <span style="color:var(--muted);font-size:13px">${esc(r.company)} — ${t('msg_late_days')} ${days} ${dayWord} — ${waitLabel}</span>
+    </div>`;
+  }).join('');
+  div.innerHTML=`<div class="modal-content" style="max-width:520px">
+    <span class="close-modal" onclick="closeRemindersModal()">&times;</span>
+    <h2 style="font-size:18px">${t('msg_reminder_title')}</h2>
+    <div style="margin-top:12px;max-height:60vh;overflow-y:auto">${rows}</div>
+  </div>`;
+  div.classList.remove('hidden');
+}
+function closeRemindersModal(){$('remindersModal')?.classList.add('hidden')}
+let searchDebounce=null;
+searchInput?.addEventListener('input',()=>{clearTimeout(searchDebounce);searchDebounce=setTimeout(()=>loadOrders(searchInput.value,1),300)});
+searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>phaseModal?.classList.add('hidden'));window.addEventListener('click',e=>{if(e.target===phaseModal)phaseModal.classList.add('hidden')});
+
+function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;const p=document.createElement('div');p.id='orderManagementPanel';p.className='admin-section';p.innerHTML=`<h3>🗂️ Upravljanje nalozima</h3><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="deleteActiveOrdersBtn" class="btn-tag btn-tag--problem" style="padding:10px 16px;font-size:13px">🗑️ Obriši aktivne naloge</button><button id="deleteAllHistoryBtn" class="btn-tag btn-tag--reset" style="padding:10px 16px;font-size:13px">🧹 Obriši sve + istoriju</button></div><div id="orderManagementStatus"></div>`;adminPanel.appendChild(p);$('deleteActiveOrdersBtn').onclick=clearActive;$('deleteAllHistoryBtn').onclick=clearAll;
+  const h=document.createElement('div');h.id='historyExportPanel';h.className='admin-section';
+  h.innerHTML=`<h3>📊 Istorija aktivnosti (Excel izveštaj)</h3>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      <select id="historyCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;flex:1;min-width:150px;font-family:var(--font-body);background:var(--card)">
+        <option value="">Sve firme</option>
+      </select>
+      <input type="date" id="historyDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+      <input type="date" id="historyDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+      <button id="exportHistoryBtn" class="btn-success" style="padding:10px 16px">📥 Preuzmi Excel</button>
+    </div>
+    <div id="historyExportStatus"></div>`;
+  adminPanel.appendChild(h);
+  $('exportHistoryBtn').onclick=exportHistory;
+}
+
+// ============ COMPANY INFO ============
+function addCompanyInfoControls(){
+  if(!adminPanel||$('companyInfoPanel'))return;
+  const div=document.createElement('div');div.id='companyInfoPanel';div.className='admin-section';
+  div.innerHTML=`<h3>📇 Podaci o firmama (email, mesto, ulica)</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end">
+      <div style="flex:1;min-width:160px">
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Firma</label>
+        <select id="ciCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card);font-family:var(--font-body)"></select>
+      </div>
+      <div style="flex:1;min-width:160px">
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Email</label>
+        <input type="email" id="ciEmail" placeholder="email@firma.com" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card)">
+      </div>
+      <div style="flex:1;min-width:120px">
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Mesto</label>
+        <input type="text" id="ciMesto" placeholder="Mesto" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card)">
+      </div>
+      <div style="flex:1;min-width:140px">
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Ulica</label>
+        <input type="text" id="ciUlica" placeholder="Ulica i broj" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card)">
+      </div>
+      <button id="ciSaveBtn" class="btn-success" style="padding:10px 16px">💾 Sačuvaj</button>
+    </div>
+    <div id="ciStatus" style="margin-top:8px"></div>
+    <div id="ciList" style="margin-top:12px"></div>`;
+  adminPanel.appendChild(div);
+  $('ciSaveBtn').onclick=saveCompanyInfo;
+  loadCompanyInfo();
+}
+
+async function loadCompanyInfo(){
+  try{
+    const companies=await api('/api/companies',{headers:headers()});
+    const sel=$('ciCompany');
+    if(sel)sel.innerHTML='<option value="">— Izaberi firmu —</option>'+companies.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    const info=await api('/api/company-info',{headers:headers()});
+    const list=$('ciList');
+    if(!info.length){list.innerHTML='<p style="color:var(--muted);font-size:13px">Još nema unetih podataka.</p>';return}
+    list.innerHTML='<table style="width:100%;font-size:13px;border-collapse:collapse">'+
+      '<thead><tr style="background:var(--paper);text-align:left">'+
+      '<th style="padding:6px">Firma</th><th style="padding:6px">Email</th><th style="padding:6px">Mesto</th><th style="padding:6px">Ulica</th><th style="padding:6px"></th>'+
+      '</tr></thead><tbody>'+
+      info.map(r=>`<tr style="border-bottom:1px solid var(--line)">
+        <td style="padding:6px;font-weight:600">${esc(r.company)}</td>
+        <td style="padding:6px">${esc(r.email||'')}</td>
+        <td style="padding:6px">${esc(r.mesto||'')}</td>
+        <td style="padding:6px">${esc(r.ulica||'')}</td>
+        <td style="padding:6px;text-align:right">
+          <span class="clickable" style="color:var(--red);font-weight:700" onclick="deleteCompanyInfo('${js(r.company)}')" title="Obriši">🗑️</span>
+        </td>
+      </tr>`).join('')+'</tbody></table>';
+  }catch(e){console.error(e)}
+}
+
+async function saveCompanyInfo(){
+  const status=$('ciStatus');
+  const company=$('ciCompany')?.value||'';
+  const email=$('ciEmail')?.value.trim()||'';
+  const mesto=$('ciMesto')?.value.trim()||'';
+  const ulica=$('ciUlica')?.value.trim()||'';
+  if(!company){status.textContent='❌ Izaberi firmu.';status.className='error';return}
+  status.textContent='⏳ Čuvam...';status.className='';
+  try{
+    await api('/api/company-info',{method:'POST',headers:headers(true),body:JSON.stringify({company,email,mesto,ulica})});
+    status.textContent='✅ Sačuvano.';status.className='success';
+    $('ciEmail').value='';$('ciMesto').value='';$('ciUlica').value='';$('ciCompany').value='';
+    loadCompanyInfo();
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
+
+async function deleteCompanyInfo(company){
+  if(!confirm(`Obrisati podatke za "${company}"?`))return;
+  try{
+    await api(`/api/company-info/${encodeURIComponent(company)}`,{method:'DELETE',headers:headers()});
+    loadCompanyInfo();
+  }catch(e){alert('❌ '+e.message)}
+}
+
+// ============ FIXED RECIPIENTS ============
+function addFixedRecipientsControls(){
+  if(!adminPanel||$('fixedRecipientsPanel'))return;
+  const div=document.createElement('div');div.id='fixedRecipientsPanel';div.className='admin-section';
+  div.innerHTML=`<h3>📧 Fiksni primaoci (uvek primaju izveštaj)</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end">
+      <div style="flex:1;min-width:200px">
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Email adresa</label>
+        <input type="email" id="frEmail" placeholder="email@primer.com" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card)">
+      </div>
+      <button id="frAddBtn" class="btn-success" style="padding:10px 16px">➕ Dodaj</button>
+    </div>
+    <div id="frStatus" style="margin-top:8px"></div>
+    <div id="frList" style="margin-top:12px"></div>`;
+  adminPanel.appendChild(div);
+  $('frAddBtn').onclick=addFixedRecipient;
+  $('frEmail')?.addEventListener('keyup',e=>{if(e.key==='Enter')addFixedRecipient()});
+  loadFixedRecipients();
+}
+
+async function loadFixedRecipients(){
+  try{
+    const list=await api('/api/fixed-recipients',{headers:headers()});
+    const el=$('frList');
+    if(!list.length){el.innerHTML='<p style="color:var(--muted);font-size:13px">Još nema fiksnih primalaca.</p>';return}
+    el.innerHTML='<table style="width:100%;font-size:13px;border-collapse:collapse">'+
+      '<thead><tr style="background:var(--paper);text-align:left">'+
+      '<th style="padding:6px">Email</th><th style="padding:6px"></th>'+
+      '</tr></thead><tbody>'+
+      list.map(r=>`<tr style="border-bottom:1px solid var(--line)">
+        <td style="padding:6px">${esc(r.email)}</td>
+        <td style="padding:6px;text-align:right">
+          <span class="clickable" style="color:var(--red);font-weight:700" onclick="deleteFixedRecipient(${r.id})" title="Obriši">🗑️</span>
+        </td>
+      </tr>`).join('')+'</tbody></table>';
+  }catch(e){console.error(e)}
+}
+
+async function addFixedRecipient(){
+  const status=$('frStatus');
+  const email=$('frEmail')?.value.trim()||'';
+  if(!email){status.textContent='❌ Unesi email.';status.className='error';return}
+  status.textContent='⏳ Dodajem...';status.className='';
+  try{
+    await api('/api/fixed-recipients',{method:'POST',headers:headers(true),body:JSON.stringify({email})});
+    status.textContent='✅ Dodato.';status.className='success';
+    $('frEmail').value='';
+    loadFixedRecipients();
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
+
+async function deleteFixedRecipient(id){
+  if(!confirm('Obrisati ovaj email iz fiksne grupe?'))return;
+  try{
+    await api(`/api/fixed-recipients/${id}`,{method:'DELETE',headers:headers()});
+    loadFixedRecipients();
+  }catch(e){alert('❌ '+e.message)}
+}
+
+// ============ OTPREMNICA LOG ============
+function addOtpremnicaLogControls(){
+  if(!adminPanel||$('otpremnicaLogPanel'))return;
+  const div=document.createElement('div');div.id='otpremnicaLogPanel';div.className='admin-section';
+  div.innerHTML=`<h3>🗑️ Log otpremnica</h3>
+    <p style="font-size:12px;color:var(--muted);margin-top:6px">Briše evidenciju o tome koje su reparacije već poslate u otpremnici. Sledeći put će se ponovo pojaviti u otpremnici.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+      <button id="clearOtpremnicaLogBtn" class="btn-tag btn-tag--problem" style="padding:10px 16px;font-size:13px">🗑️ Obriši log otpremnica</button>
+    </div>
+    <div id="otpremnicaLogStatus" style="margin-top:8px"></div>`;
+  adminPanel.appendChild(div);
+  $('clearOtpremnicaLogBtn').onclick=clearOtpremnicaLog;
+}
+
+async function clearOtpremnicaLog(){
+  if(!confirm('Obrisati ceo log otpremnica? Sledeći put će se sve reparacije ponovo pojaviti u otpremnici.'))return;
+  const status=$('otpremnicaLogStatus');
+  status.textContent='⏳ Brišem...';status.className='';
+  try{
+    const d=await api('/api/otpremnica-log',{method:'DELETE',headers:headers()});
+    status.textContent=`✅ ${d.message}`;status.className='success';
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
+
+async function exportHistory(){
+  const status=$('historyExportStatus');
+  const company=$('historyCompany')?.value||'';
+  const dateFrom=$('historyDateFrom')?.value||'';
+  const dateTo=$('historyDateTo')?.value||'';
+  status.textContent='⏳ Generišem Excel...';status.className='';
+  try{
+    const params=new URLSearchParams();
+    if(company)params.append('company',company);
+    if(dateFrom)params.append('dateFrom',dateFrom);
+    if(dateTo)params.append('dateTo',dateTo);
+    const r=await fetch(`/api/history/export?${params.toString()}`,{headers:headers()});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw Error(d.error||`HTTP ${r.status}`)}
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=`istorija_${company||'sve-firme'}_${dateFrom||'x'}_${dateTo||'x'}.xlsx`;
+    document.body.appendChild(a);a.click();a.remove();
+    URL.revokeObjectURL(url);
+    status.textContent='✅ Fajl preuzet';status.className='success';
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
+
+// ============ EXPORT ZA KLIJENTA ============
+function addClientExportControls(){
+  if(currentUser?.role==='admin')return;
+  if($('clientExportPanel'))return;
+  const div=document.createElement('div');div.id='clientExportPanel';div.className='panel';
+  div.innerHTML=`<div class="panel-header"><h2>${t('panel_my_report')}</h2></div>
+    <div class="panel-body">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="date" id="myDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+        <input type="date" id="myDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+        <button id="myExportBtn" class="btn-success">${t('panel_my_report_download')}</button>
+      </div>
+      <div id="myExportStatus" style="margin-top:8px"></div>
+    </div>`;
+  adminPanel?.insertAdjacentElement('afterend',div);
+  $('myExportBtn').onclick=exportMyHistory;
+}
+async function exportMyHistory(){
+  const status=$('myExportStatus');
+  const dateFrom=$('myDateFrom')?.value||'';
+  const dateTo=$('myDateTo')?.value||'';
+  status.textContent=t('export_generating');status.className='';
+  try{
+    const params=new URLSearchParams();
+    if(dateFrom)params.append('dateFrom',dateFrom);
+    if(dateTo)params.append('dateTo',dateTo);
+    const r=await fetch(`/api/history/export?${params.toString()}`,{headers:headers()});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw Error(d.error||`HTTP ${r.status}`)}
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=`moja_istorija_${dateFrom||'x'}_${dateTo||'x'}.xlsx`;
+    document.body.appendChild(a);a.click();a.remove();
+    URL.revokeObjectURL(url);
+    status.textContent=t('export_done');status.className='success';
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
+
+// ============ KONTROLA - PANEL SA ŠABLONOM ZA MAIL ============
+async function addKontrolaControls(){
+  if($('kontrolaPanel'))return;
+  const div=document.createElement('div');div.id='kontrolaPanel';div.className='panel';
+  div.innerHTML=`<div class="panel-header"><h2>📋 Šablon za Prijem (mail)</h2></div>
+    <div class="panel-body">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+        <div>
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">OTPREMNICA Br.</label>
+          <input type="number" id="otpremnicaBrojInput" value="2450" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card);width:100px;font-weight:bold">
+        </div>
+        <div>
+          <button id="otpremnicaFolderBtn" class="btn-secondary" type="button">📁 Izaberi folder</button>
+          <div id="otpremnicaFolderStatus" style="font-size:12px;color:var(--red);margin-top:4px">⚠️ Folder nije izabran</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <select id="prijemTplCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;flex:1;min-width:150px;font-family:var(--font-body);background:var(--card)">
+          <option value="">Izaberi firmu...</option>
+        </select>
+        <input type="date" id="prijemTplDate" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+        <button id="prijemTplGenBtn" class="btn-success">📋 Generiši</button>
+        <button id="prijemTplOtpremnicaBtn" class="btn-success" style="background:#2B4570;color:white">📥 Povuci Excel otpremnicu</button>
+        <button id="prijemTplMailBtn" class="btn-success" style="background:#3F7A5C;color:white">📧 Pošalji mail</button>
+        <button id="prijemTplPrintBtn" class="btn-secondary">🖨️ Štampaj 4 primerka</button>
+      </div>
+      <textarea id="prijemTplResult" class="phase-note" readonly style="margin-top:10px;min-height:180px;font-family:var(--font-mono);font-size:12.5px" placeholder="Ovde će se pojaviti tekst spreman za copy-paste u mail..."></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <button id="prijemTplCopyBtn" class="btn-secondary">📋 Kopiraj tekst</button>
+      </div>
+      <div id="prijemTplStatus" style="margin-top:8px"></div>
+    </div>`;
+  const anchor=$('clientExportPanel')||adminPanel;
+  anchor?.insertAdjacentElement('afterend',div);
+
+  const dateInput=$('prijemTplDate');
+  if(dateInput)dateInput.value=new Date().toISOString().slice(0,10);
+
+  try{
+    const companies=await api('/api/companies',{headers:headers()});
+    const sel=$('prijemTplCompany');
+    if(sel)sel.innerHTML='<option value="">Izaberi firmu...</option>'+companies.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+  }catch(e){console.error(e)}
+
+  $('prijemTplGenBtn').onclick=generatePrijemTemplate;
+  $('prijemTplCopyBtn').onclick=copyPrijemTemplate;
+  $('prijemTplOtpremnicaBtn').onclick=exportOtpremnica;
+  $('prijemTplMailBtn').onclick=sendOtpremnicaMail;
+  $('prijemTplPrintBtn').onclick=printOtpremnica;
+  $('otpremnicaFolderBtn').onclick=chooseFolder;
+
+  setTimeout(async()=>{
+    if(otpremnicaFolderHandle){
+      const n=await readBrojFromFile(otpremnicaFolderHandle);
+      if(n!==null&&$('otpremnicaBrojInput'))$('otpremnicaBrojInput').value=n;
+    }
+  },500);
+}
