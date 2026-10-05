@@ -9,9 +9,9 @@ if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
 const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
 async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error(t('msg_session_expired'))}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
 
-document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers();addCompanyInfoControls();addFixedRecipientsControls()}addClientExportControls();if(currentUser?.role==='kontrola'){addKontrolaControls()}loadOrders();checkReminders()});
+document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers();addCompanyInfoControls();addFixedRecipientsControls();addOtpremnicaLogControls()}addClientExportControls();if(currentUser?.role==='kontrola'){addKontrolaControls()}loadOrders();checkReminders()});
 
-// ============ PODSETNICI (reparacije čiji je rok istekao) ============
+// ============ PODSETNICI ============
 async function checkReminders(){
   try{
     const d=await api('/api/reminders',{headers:headers()});
@@ -66,7 +66,7 @@ function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;con
   $('exportHistoryBtn').onclick=exportHistory;
 }
 
-// ============ COMPANY INFO (email, mesto, ulica) ============
+// ============ COMPANY INFO ============
 function addCompanyInfoControls(){
   if(!adminPanel||$('companyInfoPanel'))return;
   const div=document.createElement('div');div.id='companyInfoPanel';div.className='admin-section';
@@ -205,6 +205,30 @@ async function deleteFixedRecipient(id){
   }catch(e){alert('❌ '+e.message)}
 }
 
+// ============ OTPREMNICA LOG ============
+function addOtpremnicaLogControls(){
+  if(!adminPanel||$('otpremnicaLogPanel'))return;
+  const div=document.createElement('div');div.id='otpremnicaLogPanel';div.className='admin-section';
+  div.innerHTML=`<h3>🗑️ Log otpremnica</h3>
+    <p style="font-size:12px;color:var(--muted);margin-top:6px">Briše evidenciju o tome koje su reparacije već poslate u otpremnici. Sledeći put će se ponovo pojaviti u otpremnici.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+      <button id="clearOtpremnicaLogBtn" class="btn-tag btn-tag--problem" style="padding:10px 16px;font-size:13px">🗑️ Obriši log otpremnica</button>
+    </div>
+    <div id="otpremnicaLogStatus" style="margin-top:8px"></div>`;
+  adminPanel.appendChild(div);
+  $('clearOtpremnicaLogBtn').onclick=clearOtpremnicaLog;
+}
+
+async function clearOtpremnicaLog(){
+  if(!confirm('Obrisati ceo log otpremnica? Sledeći put će se sve reparacije ponovo pojaviti u otpremnici.'))return;
+  const status=$('otpremnicaLogStatus');
+  status.textContent='⏳ Brišem...';status.className='';
+  try{
+    const d=await api('/api/otpremnica-log',{method:'DELETE',headers:headers()});
+    status.textContent=`✅ ${d.message}`;status.className='success';
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
+
 async function exportHistory(){
   const status=$('historyExportStatus');
   const company=$('historyCompany')?.value||'';
@@ -268,7 +292,7 @@ async function exportMyHistory(){
   }catch(e){status.textContent='❌ '+e.message;status.className='error'}
 }
 
-// ============ KONTROLA - PANEL SA ŠABLONOM ZA MAIL (ostaje srpski) ============
+// ============ KONTROLA - PANEL SA ŠABLONOM ZA MAIL ============
 async function addKontrolaControls(){
   if($('kontrolaPanel'))return;
   const div=document.createElement('div');div.id='kontrolaPanel';div.className='panel';
@@ -280,6 +304,7 @@ async function addKontrolaControls(){
         </select>
         <input type="date" id="prijemTplDate" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
         <button id="prijemTplGenBtn" class="btn-success">📋 Generiši</button>
+        <button id="prijemTplOtpremnicaBtn" class="btn-success" style="background:#2B4570;color:white">📥 Povuci Excel otpremnicu</button>
       </div>
       <textarea id="prijemTplResult" class="phase-note" readonly style="margin-top:10px;min-height:180px;font-family:var(--font-mono);font-size:12.5px" placeholder="Ovde će se pojaviti tekst spreman za copy-paste u mail..."></textarea>
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
@@ -301,6 +326,31 @@ async function addKontrolaControls(){
 
   $('prijemTplGenBtn').onclick=generatePrijemTemplate;
   $('prijemTplCopyBtn').onclick=copyPrijemTemplate;
+  $('prijemTplOtpremnicaBtn').onclick=exportOtpremnica;
+}
+
+// ============ OTPREMNICA - EXPORT EXCEL ============
+async function exportOtpremnica(){
+  const status=$('prijemTplStatus');
+  const company=$('prijemTplCompany')?.value||'';
+  const date=$('prijemTplDate')?.value||'';
+  if(!company){status.textContent='❌ Izaberi firmu.';status.className='error';return}
+  status.textContent='⏳ Generišem otpremnicu...';status.className='';
+  try{
+    const params=new URLSearchParams();
+    params.append('company',company);
+    if(date)params.append('date',date);
+    const r=await fetch(`/api/otpremnica/export?${params.toString()}`,{headers:headers()});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw Error(d.error||`HTTP ${r.status}`)}
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=`Otpremnica_${company.replace(/\s+/g,'_')}_${date||'danas'}.xlsx`;
+    document.body.appendChild(a);a.click();a.remove();
+    URL.revokeObjectURL(url);
+    status.textContent='✅ Otpremnica preuzeta.';status.className='success';
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
 }
 
 async function generatePrijemTemplate(){
@@ -726,7 +776,7 @@ async function submitPrijemOk(id){
   }catch(e){Object.assign(p,old);renderModal(o);alert('❌ '+e.message)}
 }
 
-// ============ SIZE MODAL (Reparacija / Anulirano) ============
+// ============ SIZE MODAL ============
 const SIZE_RANGE=Array.from({length:46-18+1},(_,i)=>18+i);
 let sizeModalOrderId=null, sizeModalOutcome=null;
 
@@ -848,4 +898,4 @@ function date(v) {
 
 function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
 function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
-window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;window.resetPassword=resetPassword;window.deleteCompanyInfo=deleteCompanyInfo;window.deleteFixedRecipient=deleteFixedRecipient;
+window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;window.resetPassword=resetPassword;window.deleteCompanyInfo=deleteCompanyInfo;window.deleteFixedRecipient=deleteFixedRecipient;window.clearOtpremnicaLog=clearOtpremnicaLog;
