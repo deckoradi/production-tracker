@@ -110,7 +110,6 @@ const initDb = async () => {
             )
         `);
 
-        // ============ COMPANY INFO (email, mesto, ulica po firmi) ============
         await pool.query(`
             CREATE TABLE IF NOT EXISTS company_info (
                 id SERIAL PRIMARY KEY,
@@ -122,7 +121,6 @@ const initDb = async () => {
             )
         `);
 
-        // ============ FIXED RECIPIENTS (email adrese koje uvek primaju izveštaj) ============
         await pool.query(`
             CREATE TABLE IF NOT EXISTS fixed_recipients (
                 id SERIAL PRIMARY KEY,
@@ -131,7 +129,6 @@ const initDb = async () => {
             )
         `);
 
-        // ============ OTPREMNICA LOG (reparacije koje su već poslate u otpremnici) ============
         await pool.query(`
             CREATE TABLE IF NOT EXISTS otpremnica_log (
                 id SERIAL PRIMARY KEY,
@@ -205,7 +202,6 @@ const authenticate = (req, res, next) => {
     }
 };
 
-// ============ OBNOVI REPARACIJU IZ ISTORIJE ============
 const restoreReparacijaFromHistory = async (orderId, orderNumber, company) => {
     const lastPrijemHist = await pool.query(
         `SELECT new_status, comment, changed_at FROM order_history
@@ -229,7 +225,6 @@ const restoreReparacijaFromHistory = async (orderId, orderNumber, company) => {
     return true;
 };
 
-// ============ EMAIL ============
 let smtpTransporter = null;
 if (hasSmtp) {
     smtpTransporter = nodemailer.createTransport({
@@ -386,8 +381,6 @@ app.get('/api/companies', authenticate, async (req, res) => {
     }
 });
 
-// ============ COMPANY INFO (email, mesto, ulica) ============
-
 app.get('/api/company-info', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
@@ -446,8 +439,6 @@ app.delete('/api/company-info/:company', authenticate, async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
-
-// ============ FIXED RECIPIENTS (email adrese koje uvek primaju izveštaj) ============
 
 app.get('/api/fixed-recipients', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
@@ -508,8 +499,6 @@ app.delete('/api/fixed-recipients/:id', authenticate, async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
-
-// ============ OTPREMNICA LOG (brisanje) ============
 
 app.delete('/api/otpremnica-log', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
@@ -840,7 +829,6 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         if (!status) status = oldStatus;
         const finalComment = comment !== undefined ? comment : oldComment;
 
-        // ============ PRAVA PRISTUPA PO ULOZI ============
         if (req.user.role === 'kontrola' && phase !== 'PRIJEM') {
             return res.status(403).json({ error: 'Kontrola može da menja isključivo fazu Prijem.' });
         }
@@ -848,7 +836,6 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             return res.status(403).json({ error: 'Nemate dozvolu za ovu fazu.' });
         }
 
-        // ============ ZAŠTITA: NALOG "PREUZET" OD DRUGE FIRME (samo klijenti) ============
         if (req.user.role === 'user' && ['100', '200', '300', '400', 'NAPOMENA'].includes(phase)) {
             const claimCheck = await pool.query(
                 `SELECT DISTINCT updated_by_company FROM progress
@@ -865,7 +852,6 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
         }
 
-        // ============ ZAŠTITA: REDOSLED FAZA (samo klijenti, ne mogu da preskaču faze) ============
         if (req.user.role === 'user' && ['100', '200', '300', '400', '500'].includes(phase) && status !== 'pending') {
             const phaseOrder = ['100', '200', '300', '400', '500'];
             const idx = phaseOrder.indexOf(phase);
@@ -885,7 +871,6 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
         }
 
-        // ============ ZAKLJUČAVANJE PO DANU (samo za klijente, admin nema ograničenja) ============
         if (req.user.role !== 'admin') {
             const hasPriorActivity = oldStatus !== 'pending' || oldComment.trim() !== '';
             let sameDay = true;
@@ -906,7 +891,6 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
         }
 
-        // ============ PRIJEM: ugradi deadlineDays u comment JSON ============
         let finalCommentToStore = finalComment;
         if (phase === 'PRIJEM' && status === 'problem') {
             try {
@@ -947,7 +931,6 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
         }
 
-        // ============ REPARACIJE - tro-fazni tok ============
         if (phase === 'PRIJEM') {
             if (status === 'problem') {
                 let parsedPrijem = {};
@@ -1000,7 +983,6 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
     }
 });
 
-// ============ REPARACIJA: KLIJENT POTVRĐUJE "URAĐENO" ============
 app.post('/api/reparacija/:id/client-confirm', authenticate, async (req, res) => {
     try {
         const { id } = req.params;
@@ -1020,7 +1002,6 @@ app.post('/api/reparacija/:id/client-confirm', authenticate, async (req, res) =>
     }
 });
 
-// ============ REPARACIJA: KONTROLA POTVRĐUJE "SVE U REDU" ============
 app.post('/api/reparacija/:id/kontrola-confirm', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Nemate dozvolu za ovu akciju.' });
@@ -1043,7 +1024,6 @@ app.post('/api/reparacija/:id/kontrola-confirm', authenticate, async (req, res) 
     }
 });
 
-// ============ PODSETNICI (REPARACIJE ČIJI JE ROK ISTEKAO) ============
 app.get('/api/reminders', authenticate, async (req, res) => {
     try {
         const isPrivileged = req.user.role === 'admin' || req.user.role === 'kontrola';
@@ -1088,7 +1068,6 @@ app.get('/api/reminders', authenticate, async (req, res) => {
     }
 });
 
-// ============ OBRISI AKTIVNE NALOGE (ISTORIJA OSTAJE) ============
 app.post('/api/clear-orders', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Samo admin može' });
@@ -1109,7 +1088,6 @@ app.post('/api/clear-orders', authenticate, async (req, res) => {
     }
 });
 
-// ============ OBRISI AKTIVNE NALOGE + ISTORIJU (POTPUNO BRISANJE) ============
 app.post('/api/clear-all', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Samo admin može' });
@@ -1504,17 +1482,17 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
     }
 });
 
-// ============ OTPREMNICA - EXCEL EXPORT ============
+// ============ OTPREMNICA - EXCEL EXPORT (SA A4 PRINT SETUP) ============
 app.get('/api/otpremnica/export', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
     }
     try {
-        const { company, date } = req.query;
+        const { company, date, number } = req.query;
         if (!company) return res.status(400).json({ error: 'Firma je obavezna.' });
         const targetDate = date || new Date().toLocaleDateString('en-CA');
+        const otpremnicaNumber = number ? String(number).trim() : '2450';
 
-        // 1) Uzmi sve PRIJEM "problem" stavke za taj dan, iz SVIH firmi
         const rawResult = await pool.query(
             `SELECT DISTINCT ON (order_number, company) order_number, company, new_status, comment, changed_at
              FROM order_history
@@ -1524,7 +1502,6 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
             [targetDate]
         );
 
-        // 2) Za svaki nalog nađi ko je STVARNO radio proizvodne faze (100/200/300/400)
         const effectiveResult = await pool.query(
             `SELECT DISTINCT ON (order_number, company) order_number, company, changed_by, changed_by_company
              FROM order_history
@@ -1536,9 +1513,6 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
             effectiveMap.set(`${r.order_number}||${r.company}`, { changedBy: r.changed_by, changedByCompany: r.changed_by_company });
         });
 
-        // 3) Filtriraj samo stavke čija je EFEKTIVNA firma jednaka izabranoj firmi
-        //    + samo REPARACIJA (ne ANULIRANO)
-        //    + preskoči one koje su već poslate u otpremnici (otpremnica_log)
         const filteredRows = rawResult.rows
             .filter(r => {
                 const eff = effectiveMap.get(`${r.order_number}||${r.company}`);
@@ -1549,7 +1523,6 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
                 return d.outcome === 'reparacija';
             });
 
-        // 3b) Preskoči one koji su već u otpremnica_log
         const skipKeys = new Set();
         if (filteredRows.length > 0) {
             const logResult = await pool.query(
@@ -1578,7 +1551,6 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
             return res.status(404).json({ error: `Nema novih reparacija za "${company}" na dan ${targetDate} (sve su već poslate u otpremnici).` });
         }
 
-        // 4) Uzmi naziv artikla iz orders
         const orderNumbers = [...new Set(rows.map(r => r.orderNumber))];
         const nominalCompanies = [...new Set(rows.map(r => r.company))];
         const infoResult = await pool.query(
@@ -1587,7 +1559,6 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
         );
         const nameMap = new Map(infoResult.rows.map(r => [`${r.order_number}||${r.company}`, r.name]));
 
-        // 5) Uzmi mesto i ulicu iz company_info
         const infoCompany = await pool.query(
             'SELECT mesto, ulica FROM company_info WHERE company = $1',
             [company]
@@ -1595,27 +1566,37 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
         const mesto = infoCompany.rows[0]?.mesto || '';
         const ulica = infoCompany.rows[0]?.ulica || '';
 
-        // 6) Generiši Excel
         const workbook = new ExcelJS.Workbook();
         workbook.creator = 'Production Tracker';
         workbook.created = new Date();
-        const sheet = workbook.addWorksheet('OTPREMNICA');
+        const sheet = workbook.addWorksheet('OTPREMNICA', {
+            pageSetup: {
+                paperSize: 9,
+                orientation: 'portrait',
+                fitToPage: true,
+                fitToWidth: 1,
+                fitToHeight: 0,
+                margins: {
+                    left: 0.3, right: 0.3,
+                    top: 0.3, bottom: 0.3,
+                    header: 0.1, footer: 0.1
+                },
+                horizontalCentered: true
+            }
+        });
 
-        // Širine kolona (A-F)
         sheet.columns = [
-            { key: 'a', width: 6 },   // A
-            { key: 'b', width: 38 },  // B
-            { key: 'c', width: 28 },  // C
-            { key: 'd', width: 16 },  // D
-            { key: 'e', width: 10 },  // E
-            { key: 'f', width: 10 }   // F
+            { key: 'a', width: 6 },
+            { key: 'b', width: 38 },
+            { key: 'c', width: 28 },
+            { key: 'd', width: 16 },
+            { key: 'e', width: 10 },
+            { key: 'f', width: 10 }
         ];
 
-        // ---------- ZAGLAVLJE LEVO ----------
         const headerLeft = [
             'DRAGANA-STROBEL',
             '"FALC EAST" d.o.o.',
-            'preduzeće za proizvodnju spoljnu i unutrašnju trgovinu',
             '19350 KNJAZEVAC',
             'Ul.Lole Ribara 26',
             'Tel: 019/737-919; 019/737929',
@@ -1633,62 +1614,54 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
             cell.alignment = { vertical: 'middle', horizontal: 'left' };
         });
 
-        // ---------- DATUM (F2) ----------
+        // DATUM u E2, datum u F2
+        sheet.getCell('E2').value = 'DATUM';
+        sheet.getCell('E2').font = { name: 'Arial', size: 10, bold: true };
+        sheet.getCell('E2').alignment = { vertical: 'middle', horizontal: 'right' };
         sheet.getCell('F2').value = new Date().toLocaleDateString('sr-RS');
         sheet.getCell('F2').font = { name: 'Arial', size: 10 };
         sheet.getCell('F2').alignment = { vertical: 'middle', horizontal: 'right' };
 
-        // ---------- OTPREMNICA Br. (red 4) ----------
+        // OTPREMNICA Br. u C4, broj u D4
         sheet.getCell('C4').value = 'OTPREMNICA Br.';
         sheet.getCell('C4').font = { name: 'Arial', size: 10, bold: true };
         sheet.getCell('C4').alignment = { vertical: 'middle', horizontal: 'right' };
+        sheet.getCell('D4').value = otpremnicaNumber;
+        sheet.getCell('D4').font = { name: 'Arial', size: 12, bold: true };
+        sheet.getCell('D4').alignment = { vertical: 'middle', horizontal: 'left' };
 
-        sheet.getCell('E4').value = 2450; // fiksni broj, kasnije ćemo dinamički
-        sheet.getCell('E4').font = { name: 'Arial', size: 12, bold: true };
-        sheet.getCell('E4').alignment = { vertical: 'middle', horizontal: 'center' };
-
-        // ---------- KUPAC (red 6) ----------
         sheet.getCell('C6').value = 'Kupac:';
         sheet.getCell('C6').font = { name: 'Arial', size: 10, bold: true };
         sheet.getCell('C6').alignment = { vertical: 'middle', horizontal: 'right' };
-
         sheet.getCell('D6').value = company;
         sheet.getCell('D6').font = { name: 'Arial', size: 10 };
         sheet.getCell('D6').alignment = { vertical: 'middle', horizontal: 'left' };
 
-        // ---------- MESTO (red 7) ----------
         sheet.getCell('C7').value = 'MESTO';
         sheet.getCell('C7').font = { name: 'Arial', size: 10, bold: true };
         sheet.getCell('C7').alignment = { vertical: 'middle', horizontal: 'right' };
-
         sheet.getCell('D7').value = mesto;
         sheet.getCell('D7').font = { name: 'Arial', size: 10 };
         sheet.getCell('D7').alignment = { vertical: 'middle', horizontal: 'left' };
 
-        // ---------- ULICA (red 8) ----------
         sheet.getCell('C8').value = 'ulica:';
         sheet.getCell('C8').font = { name: 'Arial', size: 10, bold: true };
         sheet.getCell('C8').alignment = { vertical: 'middle', horizontal: 'right' };
-
         sheet.getCell('D8').value = ulica;
         sheet.getCell('D8').font = { name: 'Arial', size: 10 };
         sheet.getCell('D8').alignment = { vertical: 'middle', horizontal: 'left' };
 
-        // ---------- NAČIN OTPREME (red 9) ----------
         sheet.getCell('C9').value = 'Način otpreme:';
         sheet.getCell('C9').font = { name: 'Arial', size: 10, bold: true };
         sheet.getCell('C9').alignment = { vertical: 'middle', horizontal: 'right' };
-
         sheet.getCell('D9').value = 'vozilom';
         sheet.getCell('D9').font = { name: 'Arial', size: 10 };
         sheet.getCell('D9').alignment = { vertical: 'middle', horizontal: 'left' };
 
-        // ---------- REG. BROJ VOZILA (red 10) ----------
         sheet.getCell('C10').value = 'Reg. broj vozila:';
         sheet.getCell('C10').font = { name: 'Arial', size: 10, bold: true };
         sheet.getCell('C10').alignment = { vertical: 'middle', horizontal: 'right' };
 
-        // ---------- TABELA - zaglavlje (red 12) ----------
         const headerRowNum = 12;
         const headers = ['RB', 'REPARACIJE:', 'NAZIV ARTIKLA', 'BOLA', 'JED.MERE', 'KOLIČINA'];
         headers.forEach((h, i) => {
@@ -1702,7 +1675,6 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
         });
         sheet.getRow(headerRowNum).height = 22;
 
-        // ---------- TABELA - redovi ----------
         let currentRow = headerRowNum + 1;
         let totalQty = 0;
 
@@ -1711,7 +1683,7 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
             const ukupnoQty = (r.items || []).reduce((sum, it) => sum + (parseInt(it.qty) || 0), 0);
             totalQty += ukupnoQty;
             const naziv = nameMap.get(`${r.orderNumber}||${r.company}`) || '';
-            const bola = `PLCOM**${r.orderNumber}`;
+            const bola = `${r.orderNumber}`;
 
             const cells = [
                 { col: 'A', val: idx + 1, align: 'center' },
@@ -1732,7 +1704,6 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
             currentRow++;
         });
 
-        // ---------- UKUPNO ----------
         const totalRowNum = currentRow;
         sheet.mergeCells(`C${totalRowNum}:D${totalRowNum}`);
         sheet.getCell(`C${totalRowNum}`).value = 'UKUPNO';
@@ -1743,7 +1714,6 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
         sheet.getCell(`F${totalRowNum}`).alignment = { vertical: 'middle', horizontal: 'center' };
         sheet.getCell(`F${totalRowNum}`).border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
 
-        // ---------- POTPIS ----------
         const potpisRow = totalRowNum + 3;
         sheet.getCell(`B${potpisRow}`).value = 'Robu izdao:';
         sheet.getCell(`B${potpisRow}`).font = { name: 'Arial', size: 10 };
@@ -1757,7 +1727,6 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
         sheet.getCell(`B${potpisRow2}`).value = '__________________________';
         sheet.getCell(`D${potpisRow2}`).value = '__________________________';
 
-        // ---------- UPISI U LOG ----------
         for (const r of rows) {
             await pool.query(
                 `INSERT INTO otpremnica_log (order_number, company, repair_changed_at)
@@ -1768,7 +1737,6 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
         }
         console.log(`📦 Otpremnica: ${rows.length} reparacija upisano u log.`);
 
-        // ---------- POŠALJI FAJL ----------
         const fileName = `Otpremnica_${company.replace(/\s+/g, '_')}_${targetDate}.xlsx`;
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
@@ -1781,7 +1749,7 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
     }
 });
 
-// ============ SEND REPORT (Excel kao prilog, adminu + fiksni + firma, od poslednjeg izveštaja) ============
+// ============ SEND REPORT ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
         const logResult = await pool.query(
@@ -1843,7 +1811,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
 
         const excelBuffer = await workbook.xlsx.writeBuffer();
 
-        // ============ PRIMAOCI: ADMIN + FIKSNA GRUPA + EMAIL FIRME ============
         const recipients = new Set();
 
         if (process.env.ADMIN_EMAIL) {
@@ -1908,7 +1875,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
     }
 });
 
-// ============ REPORT LOG (admin vidi kada je poslednji izveštaj poslat) ============
 app.get('/api/report-log', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
@@ -1923,7 +1889,6 @@ app.get('/api/report-log', authenticate, async (req, res) => {
     }
 });
 
-// ============ POKRENI SERVER ============
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`🗄️ PostgreSQL: ${process.env.DATABASE_URL ? '✅' : '❌'}`);

@@ -1395,15 +1395,16 @@ app.get('/api/history/export', authenticate, async (req, res) => {
     }
 });
 
-// ============ PRIJEM - ŠABLONSKI TEKST ZA COPY-PASTE U MAIL ============
+// ============ PRIJEM - ŠABLONSKI TEKST ZA COPY-PASTE U MAIL (SA BROJEM OTPREMNICE) ============
 app.get('/api/prijem-template', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
     }
     try {
-        const { company, date } = req.query;
+        const { company, date, number } = req.query;
         if (!company) return res.status(400).json({ error: 'Firma je obavezna.' });
         const targetDate = date || new Date().toLocaleDateString('en-CA');
+        const otpremnicaNumber = number ? String(number).trim() : '-----';
 
         const rawResult = await pool.query(
             `SELECT DISTINCT ON (order_number, company) order_number, company, new_status, comment, changed_at
@@ -1465,7 +1466,7 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
         const lines = [];
         lines.push('Poštovani,');
         lines.push('');
-        lines.push('danas Vam vraćamo po otpremnici br. ----- sledeće artikle:');
+        lines.push(`danas Vam vraćamo po otpremnici br. ${otpremnicaNumber} sledeće artikle:`);
         lines.push('');
         lines.push(...itemLines);
         if (hasReparacija) {
@@ -1614,7 +1615,6 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
             cell.alignment = { vertical: 'middle', horizontal: 'left' };
         });
 
-        // DATUM u E2, datum u F2
         sheet.getCell('E2').value = 'DATUM';
         sheet.getCell('E2').font = { name: 'Arial', size: 10, bold: true };
         sheet.getCell('E2').alignment = { vertical: 'middle', horizontal: 'right' };
@@ -1622,7 +1622,6 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
         sheet.getCell('F2').font = { name: 'Arial', size: 10 };
         sheet.getCell('F2').alignment = { vertical: 'middle', horizontal: 'right' };
 
-        // OTPREMNICA Br. u C4, broj u D4
         sheet.getCell('C4').value = 'OTPREMNICA Br.';
         sheet.getCell('C4').font = { name: 'Arial', size: 10, bold: true };
         sheet.getCell('C4').alignment = { vertical: 'middle', horizontal: 'right' };
