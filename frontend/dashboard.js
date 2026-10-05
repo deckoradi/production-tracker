@@ -10,65 +10,34 @@ const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Conten
 async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error(t('msg_session_expired'))}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
 
 // ============ INDEXEDDB za čuvanje FileSystemDirectoryHandle ============
-const IDB_NAME = 'production-tracker-fs';
-const IDB_STORE = 'handles';
-
-function idbOpen(){
-  return new Promise((resolve,reject)=>{
-    const req=indexedDB.open(IDB_NAME,1);
-    req.onupgradeneeded=()=>{ if(!req.result.objectStoreNames.contains(IDB_STORE)) req.result.createObjectStore(IDB_STORE); };
-    req.onsuccess=()=>resolve(req.result);
-    req.onerror=()=>reject(req.error);
-  });
-}
-async function idbSet(key,val){
-  const db=await idbOpen();
-  return new Promise((resolve,reject)=>{
-    const tx=db.transaction(IDB_STORE,'readwrite');
-    tx.objectStore(IDB_STORE).put(val,key);
-    tx.oncomplete=()=>resolve();
-    tx.onerror=()=>reject(tx.error);
-  });
-}
-async function idbGet(key){
-  const db=await idbOpen();
-  return new Promise((resolve,reject)=>{
-    const tx=db.transaction(IDB_STORE,'readonly');
-    const req=tx.objectStore(IDB_STORE).get(key);
-    req.onsuccess=()=>resolve(req.result);
-    req.onerror=()=>reject(req.error);
-  });
-}
+const IDB_NAME='production-tracker-fs';
+const IDB_STORE='handles';
+function idbOpen(){return new Promise((resolve,reject)=>{const req=indexedDB.open(IDB_NAME,1);req.onupgradeneeded=()=>{if(!req.result.objectStoreNames.contains(IDB_STORE))req.result.createObjectStore(IDB_STORE)};req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)})}
+async function idbSet(key,val){const db=await idbOpen();return new Promise((resolve,reject)=>{const tx=db.transaction(IDB_STORE,'readwrite');tx.objectStore(IDB_STORE).put(val,key);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error)})}
+async function idbGet(key){const db=await idbOpen();return new Promise((resolve,reject)=>{const tx=db.transaction(IDB_STORE,'readonly');const req=tx.objectStore(IDB_STORE).get(key);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)})}
 
 // ============ FILE SYSTEM ACCESS API ============
-const BROJ_FILE_NAME = 'broj.txt';
-let otpremnicaFolderHandle = null;
+const BROJ_FILE_NAME='broj.txt';
+let otpremnicaFolderHandle=null;
 
 async function loadFolderHandleFromIdb(){
   try{
     const h=await idbGet('otpremnicaFolder');
-    if(h){
-      const perm=await h.queryPermission({mode:'readwrite'});
-      if(perm==='granted'){
-        otpremnicaFolderHandle=h;
-        updateFolderStatus();
-        return;
-      }
-      const req=await h.requestPermission({mode:'readwrite'});
-      if(req==='granted'){
-        otpremnicaFolderHandle=h;
-        updateFolderStatus();
-        return;
-      }
+    if(!h)return;
+    otpremnicaFolderHandle=h;
+    const perm=await h.queryPermission({mode:'readwrite'});
+    if(perm!=='granted'){
+      updateFolderStatusNeedsPermission();
+      return;
     }
+    updateFolderStatus();
+    const n=await readBrojFromFile(h);
+    if(n!==null&&$('otpremnicaBrojInput'))$('otpremnicaBrojInput').value=n;
   }catch(e){console.error('loadFolderHandleFromIdb:',e)}
 }
 
 async function chooseFolder(){
-  if(!window.showDirectoryPicker){
-    alert('❌ Tvoj browser ne podržava File System Access API.\nKoristi Chrome ili Edge.');
-    return;
-  }
+  if(!window.showDirectoryPicker){alert('❌ Tvoj browser ne podržava File System Access API.\nKoristi Chrome ili Edge.');return}
   try{
     const h=await window.showDirectoryPicker({mode:'readwrite'});
     otpremnicaFolderHandle=h;
@@ -76,24 +45,26 @@ async function chooseFolder(){
     updateFolderStatus();
     const brojPolje=$('otpremnicaBrojInput');
     if(brojPolje){
-      const postoji=await fileExists(h,BROJ_FILE_NAME);
-      if(!postoji){
-        await writeBrojToFile(h,parseInt(brojPolje.value)||2450);
-      }
+      const n=await readBrojFromFile(h);
+      if(n!==null){brojPolje.value=n}
+      else{await writeBrojToFile(h,parseInt(brojPolje.value)||2450)}
     }
-  }catch(e){
-    if(e.name!=='AbortError') alert('❌ Greška: '+e.message);
-  }
+  }catch(e){if(e.name!=='AbortError')alert('❌ Greška: '+e.message)}
 }
 
-async function fileExists(dirHandle,name){
+async function grantFolderPermission(){
+  if(!otpremnicaFolderHandle)return chooseFolder();
   try{
-    await dirHandle.getFileHandle(name);
-    return true;
-  }catch(_){
-    return false;
-  }
+    const req=await otpremnicaFolderHandle.requestPermission({mode:'readwrite'});
+    if(req==='granted'){
+      updateFolderStatus();
+      const n=await readBrojFromFile(otpremnicaFolderHandle);
+      if(n!==null&&$('otpremnicaBrojInput'))$('otpremnicaBrojInput').value=n;
+    }else{alert('❌ Pristup folderu nije odobren.')}
+  }catch(e){alert('❌ '+e.message)}
 }
+
+async function fileExists(dirHandle,name){try{await dirHandle.getFileHandle(name);return true}catch(_){return false}}
 
 async function readBrojFromFile(dirHandle){
   try{
@@ -102,9 +73,7 @@ async function readBrojFromFile(dirHandle){
     const text=await file.text();
     const n=parseInt(text.trim());
     return isNaN(n)?null:n;
-  }catch(_){
-    return null;
-  }
+  }catch(_){return null}
 }
 
 async function writeBrojToFile(dirHandle,broj){
@@ -117,13 +86,25 @@ async function writeBrojToFile(dirHandle,broj){
 function updateFolderStatus(){
   const status=$('otpremnicaFolderStatus');
   if(!status)return;
+  const btn=$('otpremnicaFolderBtn');
   if(otpremnicaFolderHandle){
     status.textContent=`✅ Folder: ${otpremnicaFolderHandle.name}`;
     status.style.color='var(--green)';
+    if(btn){btn.textContent='📁 Promeni folder';btn.onclick=chooseFolder}
   }else{
     status.textContent='⚠️ Folder nije izabran';
     status.style.color='var(--red)';
+    if(btn){btn.textContent='📁 Izaberi folder';btn.onclick=chooseFolder}
   }
+}
+
+function updateFolderStatusNeedsPermission(){
+  const status=$('otpremnicaFolderStatus');
+  if(!status)return;
+  status.textContent='⚠️ Klikni "Omogući pristup folderu"';
+  status.style.color='var(--red)';
+  const btn=$('otpremnicaFolderBtn');
+  if(btn){btn.textContent='🔓 Omogući pristup folderu';btn.onclick=grantFolderPermission}
 }
 
 document.addEventListener('DOMContentLoaded',()=>{ setTimeout(loadFolderHandleFromIdb,300); });
@@ -142,11 +123,7 @@ async function checkReminders(){
 
 function showRemindersModal(list){
   let div=$('remindersModal');
-  if(!div){
-    div=document.createElement('div');
-    div.id='remindersModal';div.className='modal';
-    document.body.appendChild(div);
-  }
+  if(!div){div=document.createElement('div');div.id='remindersModal';div.className='modal';document.body.appendChild(div)}
   const rows=list.map(r=>{
     const days=Math.floor((Date.now()-new Date(r.deadlineDate).getTime())/86400000);
     const waitLabel=r.waitingOn==='kontrola'?t('msg_waiting_kontrola_confirm'):r.waitingOn==='klijent'?t('msg_waiting_your_confirm'):t('msg_waiting_both');
@@ -169,7 +146,6 @@ searchInput?.addEventListener('input',()=>{clearTimeout(searchDebounce);searchDe
 searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>phaseModal?.classList.add('hidden'));window.addEventListener('click',e=>{if(e.target===phaseModal)phaseModal.classList.add('hidden')});
 
 function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;const p=document.createElement('div');p.id='orderManagementPanel';p.className='admin-section';p.innerHTML=`<h3>🗂️ Upravljanje nalozima</h3><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="deleteActiveOrdersBtn" class="btn-tag btn-tag--problem" style="padding:10px 16px;font-size:13px">🗑️ Obriši aktivne naloge</button><button id="deleteAllHistoryBtn" class="btn-tag btn-tag--reset" style="padding:10px 16px;font-size:13px">🧹 Obriši sve + istoriju</button></div><div id="orderManagementStatus"></div>`;adminPanel.appendChild(p);$('deleteActiveOrdersBtn').onclick=clearActive;$('deleteAllHistoryBtn').onclick=clearAll;
-
   const h=document.createElement('div');h.id='historyExportPanel';h.className='admin-section';
   h.innerHTML=`<h3>📊 Istorija aktivnosti (Excel izveštaj)</h3>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
@@ -221,7 +197,6 @@ async function loadCompanyInfo(){
     const companies=await api('/api/companies',{headers:headers()});
     const sel=$('ciCompany');
     if(sel)sel.innerHTML='<option value="">— Izaberi firmu —</option>'+companies.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
-
     const info=await api('/api/company-info',{headers:headers()});
     const list=$('ciList');
     if(!info.length){list.innerHTML='<p style="color:var(--muted);font-size:13px">Još nema unetih podataka.</p>';return}
@@ -466,7 +441,7 @@ async function addKontrolaControls(){
   },500);
 }
 
-// ============ OTPREMNICA - EXPORT EXCEL ============
+// ============ OTPREMNICA - EXPORT EXCEL (DOWNLOAD + FOLDER) ============
 async function exportOtpremnica(){
   const status=$('prijemTplStatus');
   const company=$('prijemTplCompany')?.value||'';
@@ -478,6 +453,12 @@ async function exportOtpremnica(){
   if(!otpremnicaFolderHandle){status.textContent='❌ Prvo izaberi folder za brojeve.';status.className='error';return}
   if(!broj||broj<1){status.textContent='❌ Unesi ispravan broj otpremnice.';status.className='error';return}
 
+  const perm=await otpremnicaFolderHandle.queryPermission({mode:'readwrite'});
+  if(perm!=='granted'){
+    const req=await otpremnicaFolderHandle.requestPermission({mode:'readwrite'});
+    if(req!=='granted'){status.textContent='❌ Pristup folderu nije odobren.';status.className='error';return}
+  }
+
   status.textContent='⏳ Generišem otpremnicu...';status.className='';
   try{
     const params=new URLSearchParams();
@@ -487,18 +468,35 @@ async function exportOtpremnica(){
     const r=await fetch(`/api/otpremnica/export?${params.toString()}`,{headers:headers()});
     if(!r.ok){const d=await r.json().catch(()=>({}));throw Error(d.error||`HTTP ${r.status}`)}
     const blob=await r.blob();
+    const fileName=`Otpremnica_${broj}_${company.replace(/\s+/g,'_')}_${date||'danas'}.xlsx`;
+
+    // 1) Download
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
     a.href=url;
-    a.download=`Otpremnica_${broj}_${company.replace(/\s+/g,'_')}_${date||'danas'}.xlsx`;
+    a.download=fileName;
     document.body.appendChild(a);a.click();a.remove();
     URL.revokeObjectURL(url);
 
+    // 2) Sačuvaj u folder
+    try{
+      const fh=await otpremnicaFolderHandle.getFileHandle(fileName,{create:true});
+      const w=await fh.createWritable();
+      await w.write(blob);
+      await w.close();
+    }catch(err){
+      console.error('Ne mogu da sačuvam u folder:',err);
+      status.textContent='⚠️ Excel je preuzet, ali nije sačuvan u folder: '+err.message;
+      status.className='error';
+      return;
+    }
+
+    // 3) Povećaj broj i sačuvaj
     const nextBroj=broj+1;
     await writeBrojToFile(otpremnicaFolderHandle,nextBroj);
     if(brojInput)brojInput.value=nextBroj;
 
-    status.textContent=`✅ Otpremnica preuzeta (br. ${broj}). Sledeći: ${nextBroj}`;status.className='success';
+    status.textContent=`✅ Otpremnica ${broj} sačuvana. Sledeći: ${nextBroj}`;status.className='success';
   }catch(e){status.textContent='❌ '+e.message;status.className='error'}
 }
 
@@ -774,7 +772,7 @@ function renderModal(o){
   });
   h+='</div>';
 
-  // ============ NAPOMENA ============
+  // NAPOMENA
   const nLock = napomena ? (isKontrola ? {locked:true, onlyCompleteAllowed:false} : phaseLockState(napomena)) : {locked:false};
   const nComment = napomena?.comment || '';
   const nDate = napomena?.updatedAt && (nComment.trim()!=='') ? date(napomena.updatedAt) : null;
@@ -795,7 +793,7 @@ function renderModal(o){
       </div>
     </div>`;
 
-  // ============ REPARACIJA - samo za klijenta ============
+  // REPARACIJA
   const rep=o.reparacija;
   if(!isPrivileged && rep){
     const items=formatPrijemItems(rep.items);
@@ -825,7 +823,7 @@ function renderModal(o){
     </div>`;
   }
 
-  // ============ PRIJEM (samo admin i Kontrola) ============
+  // PRIJEM
   if(isPrivileged && prijem){
     const pLock = isAdmin ? {locked:false,onlyCompleteAllowed:false} : phaseLockState(prijem);
     let pBadge='';

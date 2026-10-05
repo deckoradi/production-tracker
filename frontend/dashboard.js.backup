@@ -9,6 +9,125 @@ if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
 const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
 async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error(t('msg_session_expired'))}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
 
+// ============ INDEXEDDB za čuvanje FileSystemDirectoryHandle ============
+const IDB_NAME = 'production-tracker-fs';
+const IDB_STORE = 'handles';
+
+function idbOpen(){
+  return new Promise((resolve,reject)=>{
+    const req=indexedDB.open(IDB_NAME,1);
+    req.onupgradeneeded=()=>{ if(!req.result.objectStoreNames.contains(IDB_STORE)) req.result.createObjectStore(IDB_STORE); };
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error);
+  });
+}
+async function idbSet(key,val){
+  const db=await idbOpen();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(IDB_STORE,'readwrite');
+    tx.objectStore(IDB_STORE).put(val,key);
+    tx.oncomplete=()=>resolve();
+    tx.onerror=()=>reject(tx.error);
+  });
+}
+async function idbGet(key){
+  const db=await idbOpen();
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(IDB_STORE,'readonly');
+    const req=tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error);
+  });
+}
+
+// ============ FILE SYSTEM ACCESS API ============
+const BROJ_FILE_NAME = 'broj.txt';
+let otpremnicaFolderHandle = null;
+
+async function loadFolderHandleFromIdb(){
+  try{
+    const h=await idbGet('otpremnicaFolder');
+    if(h){
+      const perm=await h.queryPermission({mode:'readwrite'});
+      if(perm==='granted'){
+        otpremnicaFolderHandle=h;
+        updateFolderStatus();
+        return;
+      }
+      const req=await h.requestPermission({mode:'readwrite'});
+      if(req==='granted'){
+        otpremnicaFolderHandle=h;
+        updateFolderStatus();
+        return;
+      }
+    }
+  }catch(e){console.error('loadFolderHandleFromIdb:',e)}
+}
+
+async function chooseFolder(){
+  if(!window.showDirectoryPicker){
+    alert('❌ Tvoj browser ne podržava File System Access API.\nKoristi Chrome ili Edge.');
+    return;
+  }
+  try{
+    const h=await window.showDirectoryPicker({mode:'readwrite'});
+    otpremnicaFolderHandle=h;
+    await idbSet('otpremnicaFolder',h);
+    updateFolderStatus();
+    const brojPolje=$('otpremnicaBrojInput');
+    if(brojPolje){
+      const postoji=await fileExists(h,BROJ_FILE_NAME);
+      if(!postoji){
+        await writeBrojToFile(h,parseInt(brojPolje.value)||2450);
+      }
+    }
+  }catch(e){
+    if(e.name!=='AbortError') alert('❌ Greška: '+e.message);
+  }
+}
+
+async function fileExists(dirHandle,name){
+  try{
+    await dirHandle.getFileHandle(name);
+    return true;
+  }catch(_){
+    return false;
+  }
+}
+
+async function readBrojFromFile(dirHandle){
+  try{
+    const fh=await dirHandle.getFileHandle(BROJ_FILE_NAME);
+    const file=await fh.getFile();
+    const text=await file.text();
+    const n=parseInt(text.trim());
+    return isNaN(n)?null:n;
+  }catch(_){
+    return null;
+  }
+}
+
+async function writeBrojToFile(dirHandle,broj){
+  const fh=await dirHandle.getFileHandle(BROJ_FILE_NAME,{create:true});
+  const w=await fh.createWritable();
+  await w.write(String(broj));
+  await w.close();
+}
+
+function updateFolderStatus(){
+  const status=$('otpremnicaFolderStatus');
+  if(!status)return;
+  if(otpremnicaFolderHandle){
+    status.textContent=`✅ Folder: ${otpremnicaFolderHandle.name}`;
+    status.style.color='var(--green)';
+  }else{
+    status.textContent='⚠️ Folder nije izabran';
+    status.style.color='var(--red)';
+  }
+}
+
+document.addEventListener('DOMContentLoaded',()=>{ setTimeout(loadFolderHandleFromIdb,300); });
+
 document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers();addCompanyInfoControls();addFixedRecipientsControls();addOtpremnicaLogControls()}addClientExportControls();if(currentUser?.role==='kontrola'){addKontrolaControls()}loadOrders();checkReminders()});
 
 // ============ PODSETNICI ============
@@ -298,6 +417,16 @@ async function addKontrolaControls(){
   const div=document.createElement('div');div.id='kontrolaPanel';div.className='panel';
   div.innerHTML=`<div class="panel-header"><h2>📋 Šablon za Prijem (mail)</h2></div>
     <div class="panel-body">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
+        <div>
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">OTPREMNICA Br.</label>
+          <input type="number" id="otpremnicaBrojInput" value="2450" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card);width:100px;font-weight:bold">
+        </div>
+        <div>
+          <button id="otpremnicaFolderBtn" class="btn-secondary" type="button">📁 Izaberi folder</button>
+          <div id="otpremnicaFolderStatus" style="font-size:12px;color:var(--red);margin-top:4px">⚠️ Folder nije izabran</div>
+        </div>
+      </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <select id="prijemTplCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;flex:1;min-width:150px;font-family:var(--font-body);background:var(--card)">
           <option value="">Izaberi firmu...</option>
@@ -327,6 +456,14 @@ async function addKontrolaControls(){
   $('prijemTplGenBtn').onclick=generatePrijemTemplate;
   $('prijemTplCopyBtn').onclick=copyPrijemTemplate;
   $('prijemTplOtpremnicaBtn').onclick=exportOtpremnica;
+  $('otpremnicaFolderBtn').onclick=chooseFolder;
+
+  setTimeout(async()=>{
+    if(otpremnicaFolderHandle){
+      const n=await readBrojFromFile(otpremnicaFolderHandle);
+      if(n!==null&&$('otpremnicaBrojInput'))$('otpremnicaBrojInput').value=n;
+    }
+  },500);
 }
 
 // ============ OTPREMNICA - EXPORT EXCEL ============
@@ -334,22 +471,34 @@ async function exportOtpremnica(){
   const status=$('prijemTplStatus');
   const company=$('prijemTplCompany')?.value||'';
   const date=$('prijemTplDate')?.value||'';
+  const brojInput=$('otpremnicaBrojInput');
+  const broj=parseInt(brojInput?.value)||0;
+
   if(!company){status.textContent='❌ Izaberi firmu.';status.className='error';return}
+  if(!otpremnicaFolderHandle){status.textContent='❌ Prvo izaberi folder za brojeve.';status.className='error';return}
+  if(!broj||broj<1){status.textContent='❌ Unesi ispravan broj otpremnice.';status.className='error';return}
+
   status.textContent='⏳ Generišem otpremnicu...';status.className='';
   try{
     const params=new URLSearchParams();
     params.append('company',company);
     if(date)params.append('date',date);
+    params.append('number',broj);
     const r=await fetch(`/api/otpremnica/export?${params.toString()}`,{headers:headers()});
     if(!r.ok){const d=await r.json().catch(()=>({}));throw Error(d.error||`HTTP ${r.status}`)}
     const blob=await r.blob();
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
     a.href=url;
-    a.download=`Otpremnica_${company.replace(/\s+/g,'_')}_${date||'danas'}.xlsx`;
+    a.download=`Otpremnica_${broj}_${company.replace(/\s+/g,'_')}_${date||'danas'}.xlsx`;
     document.body.appendChild(a);a.click();a.remove();
     URL.revokeObjectURL(url);
-    status.textContent='✅ Otpremnica preuzeta.';status.className='success';
+
+    const nextBroj=broj+1;
+    await writeBrojToFile(otpremnicaFolderHandle,nextBroj);
+    if(brojInput)brojInput.value=nextBroj;
+
+    status.textContent=`✅ Otpremnica preuzeta (br. ${broj}). Sledeći: ${nextBroj}`;status.className='success';
   }catch(e){status.textContent='❌ '+e.message;status.className='error'}
 }
 
@@ -357,12 +506,14 @@ async function generatePrijemTemplate(){
   const status=$('prijemTplStatus');
   const company=$('prijemTplCompany')?.value||'';
   const date=$('prijemTplDate')?.value||'';
+  const broj=$('otpremnicaBrojInput')?.value||'';
   if(!company){status.textContent='❌ Izaberi firmu.';status.className='error';return}
   status.textContent='⏳ Generišem...';status.className='';
   try{
     const params=new URLSearchParams();
     params.append('company',company);
     if(date)params.append('date',date);
+    if(broj)params.append('number',broj);
     const d=await api(`/api/prijem-template?${params.toString()}`,{headers:headers()});
     $('prijemTplResult').value=d.text||'';
     status.textContent='✅ Spremno - kopiraj i zalepi u mail';status.className='success';

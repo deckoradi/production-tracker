@@ -1636,14 +1636,14 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
         sheet.getCell('D6').font = { name: 'Arial', size: 10 };
         sheet.getCell('D6').alignment = { vertical: 'middle', horizontal: 'left' };
 
-        sheet.getCell('C7').value = 'MESTO';
+        sheet.getCell('C7').value = 'Mesto:';
         sheet.getCell('C7').font = { name: 'Arial', size: 10, bold: true };
         sheet.getCell('C7').alignment = { vertical: 'middle', horizontal: 'right' };
         sheet.getCell('D7').value = mesto;
         sheet.getCell('D7').font = { name: 'Arial', size: 10 };
         sheet.getCell('D7').alignment = { vertical: 'middle', horizontal: 'left' };
 
-        sheet.getCell('C8').value = 'ulica:';
+        sheet.getCell('C8').value = 'Ulica:';
         sheet.getCell('C8').font = { name: 'Arial', size: 10, bold: true };
         sheet.getCell('C8').alignment = { vertical: 'middle', horizontal: 'right' };
         sheet.getCell('D8').value = ulica;
@@ -1736,7 +1736,7 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
         }
         console.log(`📦 Otpremnica: ${rows.length} reparacija upisano u log.`);
 
-        const fileName = `Otpremnica_${company.replace(/\s+/g, '_')}_${targetDate}.xlsx`;
+        const fileName = `Otpremnica_${otpremnicaNumber}_${company.replace(/\s+/g, '_')}_${targetDate}.xlsx`;
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
         res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
         await workbook.xlsx.write(res);
