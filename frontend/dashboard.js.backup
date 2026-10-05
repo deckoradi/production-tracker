@@ -7,9 +7,9 @@ if(!token||!userStr){location.href='index.html'}else{try{currentUser=JSON.parse(
 const companyDisplay=$('companyDisplay'),adminPanel=$('adminPanel'),ordersContainer=$('ordersContainer'),searchInput=$('searchInput'),searchBtn=$('searchBtn'),clearSearchBtn=$('clearSearchBtn'),logoutBtn=$('logoutBtn'),sendReportBtn=$('sendReportBtn'),changePasswordBtn=$('changePasswordBtn'),phaseModal=$('phaseModal'),modalOrderNumber=$('modalOrderNumber'),modalOrderInfo=$('modalOrderInfo'),phasesContainer=$('phasesContainer'),closeModal=document.querySelector('.close-modal'),orderCount=$('orderCount');
 if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
 const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
-async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error('Sesija je istekla.')}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
+async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error(t('msg_session_expired'))}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
 
-document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers()}addClientExportControls();if(currentUser?.role==='kontrola'){addKontrolaControls()}loadOrders();checkReminders()});
+document.addEventListener('DOMContentLoaded',()=>{if(currentUser?.role==='admin'){adminPanel?.classList.remove('hidden');addAdminControls();loadUsers();addCompanyInfoControls();addFixedRecipientsControls()}addClientExportControls();if(currentUser?.role==='kontrola'){addKontrolaControls()}loadOrders();checkReminders()});
 
 // ============ PODSETNICI (reparacije čiji je rok istekao) ============
 async function checkReminders(){
@@ -30,15 +30,16 @@ function showRemindersModal(list){
   }
   const rows=list.map(r=>{
     const days=Math.floor((Date.now()-new Date(r.deadlineDate).getTime())/86400000);
-    const waitLabel=r.waitingOn==='kontrola'?'čeka potvrdu Kontrole':r.waitingOn==='klijent'?'čeka Vašu potvrdu':'čeka potvrdu obe strane';
+    const waitLabel=r.waitingOn==='kontrola'?t('msg_waiting_kontrola_confirm'):r.waitingOn==='klijent'?t('msg_waiting_your_confirm'):t('msg_waiting_both');
+    const dayWord=days===1?t('msg_day'):t('msg_days');
     return `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer" onclick="closeRemindersModal();openOrder(${r.orderId})">
-      <b>Nalog #${esc(r.orderNumber)}</b>${r.name?` — ${esc(r.name)}`:''}<br>
-      <span style="color:var(--muted);font-size:13px">${esc(r.company)} — kasni ${days} ${days===1?'dan':'dana'} — ${waitLabel}</span>
+      <b>${t('th_order')} #${esc(r.orderNumber)}</b>${r.name?` — ${esc(r.name)}`:''}<br>
+      <span style="color:var(--muted);font-size:13px">${esc(r.company)} — ${t('msg_late_days')} ${days} ${dayWord} — ${waitLabel}</span>
     </div>`;
   }).join('');
   div.innerHTML=`<div class="modal-content" style="max-width:520px">
     <span class="close-modal" onclick="closeRemindersModal()">&times;</span>
-    <h2 style="font-size:18px">⏰ Podsetnik — reparacije čiji je rok istekao</h2>
+    <h2 style="font-size:18px">${t('msg_reminder_title')}</h2>
     <div style="margin-top:12px;max-height:60vh;overflow-y:auto">${rows}</div>
   </div>`;
   div.classList.remove('hidden');
@@ -65,6 +66,145 @@ function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;con
   $('exportHistoryBtn').onclick=exportHistory;
 }
 
+// ============ COMPANY INFO (email, mesto, ulica) ============
+function addCompanyInfoControls(){
+  if(!adminPanel||$('companyInfoPanel'))return;
+  const div=document.createElement('div');div.id='companyInfoPanel';div.className='admin-section';
+  div.innerHTML=`<h3>📇 Podaci o firmama (email, mesto, ulica)</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end">
+      <div style="flex:1;min-width:160px">
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Firma</label>
+        <select id="ciCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card);font-family:var(--font-body)"></select>
+      </div>
+      <div style="flex:1;min-width:160px">
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Email</label>
+        <input type="email" id="ciEmail" placeholder="email@firma.com" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card)">
+      </div>
+      <div style="flex:1;min-width:120px">
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Mesto</label>
+        <input type="text" id="ciMesto" placeholder="Mesto" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card)">
+      </div>
+      <div style="flex:1;min-width:140px">
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Ulica</label>
+        <input type="text" id="ciUlica" placeholder="Ulica i broj" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card)">
+      </div>
+      <button id="ciSaveBtn" class="btn-success" style="padding:10px 16px">💾 Sačuvaj</button>
+    </div>
+    <div id="ciStatus" style="margin-top:8px"></div>
+    <div id="ciList" style="margin-top:12px"></div>`;
+  adminPanel.appendChild(div);
+  $('ciSaveBtn').onclick=saveCompanyInfo;
+  loadCompanyInfo();
+}
+
+async function loadCompanyInfo(){
+  try{
+    const companies=await api('/api/companies',{headers:headers()});
+    const sel=$('ciCompany');
+    if(sel)sel.innerHTML='<option value="">— Izaberi firmu —</option>'+companies.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+
+    const info=await api('/api/company-info',{headers:headers()});
+    const list=$('ciList');
+    if(!info.length){list.innerHTML='<p style="color:var(--muted);font-size:13px">Još nema unetih podataka.</p>';return}
+    list.innerHTML='<table style="width:100%;font-size:13px;border-collapse:collapse">'+
+      '<thead><tr style="background:var(--paper);text-align:left">'+
+      '<th style="padding:6px">Firma</th><th style="padding:6px">Email</th><th style="padding:6px">Mesto</th><th style="padding:6px">Ulica</th><th style="padding:6px"></th>'+
+      '</tr></thead><tbody>'+
+      info.map(r=>`<tr style="border-bottom:1px solid var(--line)">
+        <td style="padding:6px;font-weight:600">${esc(r.company)}</td>
+        <td style="padding:6px">${esc(r.email||'')}</td>
+        <td style="padding:6px">${esc(r.mesto||'')}</td>
+        <td style="padding:6px">${esc(r.ulica||'')}</td>
+        <td style="padding:6px;text-align:right">
+          <span class="clickable" style="color:var(--red);font-weight:700" onclick="deleteCompanyInfo('${js(r.company)}')" title="Obriši">🗑️</span>
+        </td>
+      </tr>`).join('')+'</tbody></table>';
+  }catch(e){console.error(e)}
+}
+
+async function saveCompanyInfo(){
+  const status=$('ciStatus');
+  const company=$('ciCompany')?.value||'';
+  const email=$('ciEmail')?.value.trim()||'';
+  const mesto=$('ciMesto')?.value.trim()||'';
+  const ulica=$('ciUlica')?.value.trim()||'';
+  if(!company){status.textContent='❌ Izaberi firmu.';status.className='error';return}
+  status.textContent='⏳ Čuvam...';status.className='';
+  try{
+    await api('/api/company-info',{method:'POST',headers:headers(true),body:JSON.stringify({company,email,mesto,ulica})});
+    status.textContent='✅ Sačuvano.';status.className='success';
+    $('ciEmail').value='';$('ciMesto').value='';$('ciUlica').value='';$('ciCompany').value='';
+    loadCompanyInfo();
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
+
+async function deleteCompanyInfo(company){
+  if(!confirm(`Obrisati podatke za "${company}"?`))return;
+  try{
+    await api(`/api/company-info/${encodeURIComponent(company)}`,{method:'DELETE',headers:headers()});
+    loadCompanyInfo();
+  }catch(e){alert('❌ '+e.message)}
+}
+
+// ============ FIXED RECIPIENTS ============
+function addFixedRecipientsControls(){
+  if(!adminPanel||$('fixedRecipientsPanel'))return;
+  const div=document.createElement('div');div.id='fixedRecipientsPanel';div.className='admin-section';
+  div.innerHTML=`<h3>📧 Fiksni primaoci (uvek primaju izveštaj)</h3>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end">
+      <div style="flex:1;min-width:200px">
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Email adresa</label>
+        <input type="email" id="frEmail" placeholder="email@primer.com" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card)">
+      </div>
+      <button id="frAddBtn" class="btn-success" style="padding:10px 16px">➕ Dodaj</button>
+    </div>
+    <div id="frStatus" style="margin-top:8px"></div>
+    <div id="frList" style="margin-top:12px"></div>`;
+  adminPanel.appendChild(div);
+  $('frAddBtn').onclick=addFixedRecipient;
+  $('frEmail')?.addEventListener('keyup',e=>{if(e.key==='Enter')addFixedRecipient()});
+  loadFixedRecipients();
+}
+
+async function loadFixedRecipients(){
+  try{
+    const list=await api('/api/fixed-recipients',{headers:headers()});
+    const el=$('frList');
+    if(!list.length){el.innerHTML='<p style="color:var(--muted);font-size:13px">Još nema fiksnih primalaca.</p>';return}
+    el.innerHTML='<table style="width:100%;font-size:13px;border-collapse:collapse">'+
+      '<thead><tr style="background:var(--paper);text-align:left">'+
+      '<th style="padding:6px">Email</th><th style="padding:6px"></th>'+
+      '</tr></thead><tbody>'+
+      list.map(r=>`<tr style="border-bottom:1px solid var(--line)">
+        <td style="padding:6px">${esc(r.email)}</td>
+        <td style="padding:6px;text-align:right">
+          <span class="clickable" style="color:var(--red);font-weight:700" onclick="deleteFixedRecipient(${r.id})" title="Obriši">🗑️</span>
+        </td>
+      </tr>`).join('')+'</tbody></table>';
+  }catch(e){console.error(e)}
+}
+
+async function addFixedRecipient(){
+  const status=$('frStatus');
+  const email=$('frEmail')?.value.trim()||'';
+  if(!email){status.textContent='❌ Unesi email.';status.className='error';return}
+  status.textContent='⏳ Dodajem...';status.className='';
+  try{
+    await api('/api/fixed-recipients',{method:'POST',headers:headers(true),body:JSON.stringify({email})});
+    status.textContent='✅ Dodato.';status.className='success';
+    $('frEmail').value='';
+    loadFixedRecipients();
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
+
+async function deleteFixedRecipient(id){
+  if(!confirm('Obrisati ovaj email iz fiksne grupe?'))return;
+  try{
+    await api(`/api/fixed-recipients/${id}`,{method:'DELETE',headers:headers()});
+    loadFixedRecipients();
+  }catch(e){alert('❌ '+e.message)}
+}
+
 async function exportHistory(){
   const status=$('historyExportStatus');
   const company=$('historyCompany')?.value||'';
@@ -89,17 +229,17 @@ async function exportHistory(){
   }catch(e){status.textContent='❌ '+e.message;status.className='error'}
 }
 
-// ============ EXPORT ZA KLIJENTA (iskljucivo njegova firma + njegove licne aktivnosti) ============
+// ============ EXPORT ZA KLIJENTA ============
 function addClientExportControls(){
   if(currentUser?.role==='admin')return;
   if($('clientExportPanel'))return;
   const div=document.createElement('div');div.id='clientExportPanel';div.className='panel';
-  div.innerHTML=`<div class="panel-header"><h2>📊 Moj izveštaj</h2></div>
+  div.innerHTML=`<div class="panel-header"><h2>${t('panel_my_report')}</h2></div>
     <div class="panel-body">
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <input type="date" id="myDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
         <input type="date" id="myDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
-        <button id="myExportBtn" class="btn-success">📥 Preuzmi Excel</button>
+        <button id="myExportBtn" class="btn-success">${t('panel_my_report_download')}</button>
       </div>
       <div id="myExportStatus" style="margin-top:8px"></div>
     </div>`;
@@ -110,7 +250,7 @@ async function exportMyHistory(){
   const status=$('myExportStatus');
   const dateFrom=$('myDateFrom')?.value||'';
   const dateTo=$('myDateTo')?.value||'';
-  status.textContent='⏳ Generišem Excel...';status.className='';
+  status.textContent=t('export_generating');status.className='';
   try{
     const params=new URLSearchParams();
     if(dateFrom)params.append('dateFrom',dateFrom);
@@ -124,11 +264,11 @@ async function exportMyHistory(){
     a.download=`moja_istorija_${dateFrom||'x'}_${dateTo||'x'}.xlsx`;
     document.body.appendChild(a);a.click();a.remove();
     URL.revokeObjectURL(url);
-    status.textContent='✅ Fajl preuzet';status.className='success';
+    status.textContent=t('export_done');status.className='success';
   }catch(e){status.textContent='❌ '+e.message;status.className='error'}
 }
 
-// ============ KONTROLA - PANEL SA ŠABLONOM ZA MAIL (Prijem, po firmi/danu) ============
+// ============ KONTROLA - PANEL SA ŠABLONOM ZA MAIL (ostaje srpski) ============
 async function addKontrolaControls(){
   if($('kontrolaPanel'))return;
   const div=document.createElement('div');div.id='kontrolaPanel';div.className='panel';
@@ -246,59 +386,71 @@ changePasswordBtn?.addEventListener('click',async()=>{
   }catch(e){alert('❌ '+e.message)}
 });
 
-async function loadOrders(search='',page=1){try{const u=search?`/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}`:`/api/orders?page=${page}&limit=${LIMIT}`;ordersContainer.innerHTML='<div class="loading">⏳ Učitavanje...</div>';const d=await api(u,{headers:headers()});orders=d.data||[];totalOrders=d.total||0;currentPage=d.page||1;totalPages=d.totalPages||1;if(orderCount)orderCount.textContent=`${totalOrders} naloga`;renderOrders();if(selectedOrderId&&!phaseModal?.classList.contains('hidden')){const o=orders.find(x=>String(x.id)===String(selectedOrderId));if(o)renderModal(o);else phaseModal.classList.add('hidden')}}catch(e){ordersContainer.innerHTML=`<div class="error">❌ ${esc(e.message)}</div>`}}
-// ============ STATUS NALOGA (glavna lista) ============
+async function loadOrders(search='',page=1){try{const u=search?`/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}`:`/api/orders?page=${page}&limit=${LIMIT}`;ordersContainer.innerHTML=`<div class="loading">${t('panel_loading')}</div>`;const d=await api(u,{headers:headers()});orders=d.data||[];totalOrders=d.total||0;currentPage=d.page||1;totalPages=d.totalPages||1;if(orderCount)orderCount.textContent=`${totalOrders} ${t('order_count_suffix')}`;renderOrders();if(selectedOrderId&&!phaseModal?.classList.contains('hidden')){const o=orders.find(x=>String(x.id)===String(selectedOrderId));if(o)renderModal(o);else phaseModal.classList.add('hidden')}}catch(e){ordersContainer.innerHTML=`<div class="error">❌ ${esc(e.message)}</div>`}}
+
+// ============ STATUS NALOGA ============
 function computeOrderStatus(o){
   const knownPhases=['100','200','300','400','500'];
   const p=o.progress||[];
   const findRow=ph=>p.find(x=>String(x.phase)===ph);
 
-  // 1) Prijem/Reparacija/Anulirano ima prioritet dok je otvoreno
   if(o.prijem && o.prijem.status==='problem'){
     let parsed={};
     try{parsed=JSON.parse(o.prijem.comment||'{}')}catch(_){}
     if(parsed.outcome==='anulirano'){
-      return ['❌ ANULIRANO','status-problem'];
+      return [t('status_cancelled'),'status-problem'];
     }
     if(parsed.outcome==='reparacija'){
       const rep=o.reparacija;
       if(!rep || !rep.kontrolaConfirmedAt){
-        return ['🔧 REPARACIJA','status-problem'];
+        return [t('status_repair'),'status-problem'];
       }
-      // rep.kontrolaConfirmedAt postoji -> reparacija zatvorena, nastavi na normalnu proveru ispod
     }
   }
 
-  // 2) Problem u bilo kojoj od prvih 5 faza
   const hasProblem=knownPhases.some(ph=>{const r=findRow(ph);return r && r.status==='problem'});
-  if(hasProblem)return ['⚠️ Problem','status-problem'];
+  if(hasProblem)return [t('status_problem'),'status-problem'];
 
-  // 3) Svih 5 faza završeno (Serigrafija/Vez "Nema" se računa kao završeno)
   const doneCount=knownPhases.filter(ph=>{const r=findRow(ph);return r && (r.status==='completed'||r.status==='nema')}).length;
-  if(doneCount===knownPhases.length)return ['✅ U redu','status-completed'];
+  if(doneCount===knownPhases.length)return [t('status_ok'),'status-completed'];
 
-  // 4) U toku
-  return doneCount>0?[`${doneCount}/${knownPhases.length}`,'status-pending']:['U toku','status-pending'];
+  return doneCount>0?[`${doneCount}/${knownPhases.length}`,'status-pending']:[t('status_in_progress'),'status-pending'];
 }
 
-function renderOrders(){if(!orders.length){ordersContainer.innerHTML='<p style="text-align:center;padding:40px;color:var(--muted)">📭 Nema naloga za prikaz</p>';return}const admin=currentUser?.role==='admin'||currentUser?.role==='kontrola';let h='<table><thead><tr>'+(admin?'<th>Firma</th><th>Šifra</th><th>Naziv</th><th>Nalog</th><th>Količina</th><th>Datum</th><th>Status</th>':'<th>Nalog</th><th>Naziv</th><th>Količina</th><th>Status</th>')+'</tr></thead><tbody>';orders.forEach((o,i)=>{const st=computeOrderStatus(o);h+=`<tr style="${i%2===0?'background:var(--paper)':''}">`;if(admin)h+=`<td>${esc(o.company)}</td><td class="clickable" style="cursor:default;font-weight:600">${esc(o.code)}</td><td>${esc(o.name)}</td><td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td style="text-align:center">${o.quantity||0}</td><td>${esc(o.deliveryDate||'-')}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;else h+=`<td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td>${esc(o.name)}</td><td style="text-align:center">${o.quantity||0}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;h+='</tr>'});h+='</tbody></table>';if(totalPages>1)h+=`<div class="pagination"><button onclick="goToPage(${currentPage-1})" ${currentPage<=1?'disabled':''}>◀</button><span>${currentPage} / ${totalPages}</span><button onclick="goToPage(${currentPage+1})" ${currentPage>=totalPages?'disabled':''}>▶</button></div>`;ordersContainer.innerHTML=h}
+function renderOrders(){
+  if(!orders.length){
+    ordersContainer.innerHTML=`<p style="text-align:center;padding:40px;color:var(--muted)">${t('panel_no_orders')}</p>`;
+    return;
+  }
+  const admin=currentUser?.role==='admin'||currentUser?.role==='kontrola';
+  let h='<table><thead><tr>'+(admin?'<th>Firma</th><th>Šifra</th><th>Naziv</th><th>Nalog</th><th>Količina</th><th>Datum</th><th>Status</th>':`<th>${t('th_order')}</th><th>${t('th_name')}</th><th>${t('th_quantity')}</th><th>${t('th_status')}</th>`)+'</tr></thead><tbody>';
+  orders.forEach((o,i)=>{
+    const st=computeOrderStatus(o);
+    h+=`<tr style="${i%2===0?'background:var(--paper)':''}">`;
+    if(admin)h+=`<td>${esc(o.company)}</td><td class="clickable" style="cursor:default;font-weight:600">${esc(o.code)}</td><td>${esc(o.name)}</td><td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td style="text-align:center">${o.quantity||0}</td><td>${esc(o.deliveryDate||'-')}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;
+    else h+=`<td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td>${esc(o.name)}</td><td style="text-align:center">${o.quantity||0}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;
+    h+='</tr>';
+  });
+  h+='</tbody></table>';
+  if(totalPages>1)h+=`<div class="pagination"><button onclick="goToPage(${currentPage-1})" ${currentPage<=1?'disabled':''}>◀</button><span>${currentPage} / ${totalPages}</span><button onclick="goToPage(${currentPage+1})" ${currentPage>=totalPages?'disabled':''}>▶</button></div>`;
+  ordersContainer.innerHTML=h;
+}
 function goToPage(p){if(p<1||p>totalPages)return;loadOrders(searchInput?.value||'',p)}
 
 function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)return;selectedOrderId=id;renderModal(o);phaseModal.classList.remove('hidden')}
 
 // ============ NAZIVI FAZA ============
-const PHASE_LABELS={'100':'Krojenje','200':'Serigrafija','300':'Vez','400':'Šivenje','500':'Poslato'};
-function phaseLabel(p){return PHASE_LABELS[String(p)]||`Faza ${p}`}
+function phaseLabel(p){
+  const key='phase_'+String(p);
+  const translated=t(key);
+  return translated!==key?translated:`Faza ${p}`;
+}
 
-// ============ IKONICE FAZA (medaljoni na "prošivenoj" liniji) ============
+// ============ IKONICE FAZA ============
 const PHASE_ICONS={'100':'✂️','200':'🖨️','300':'🧵','400':'🪡','500':'📦'};
 function phaseIcon(p){return PHASE_ICONS[String(p)]||'●'}
 
-// ============ ZAKLJUČAVANJE PO DANU (isto pravilo kao na serveru) ============
-// - Ako faza nikad nije dirana ILI je zadnji put dirana DANAS -> otvorena za klijenta.
-// - Ako je zadnja izmena bila ranijeg dana:
-//     - status 'problem' -> jedino dozvoljeno dugme "Urađeno" (ostalo zaključano)
-//     - svaki drugi status -> potpuno zaključano
+// ============ ZAKLJUČAVANJE PO DANU ============
 function isSameLocalDay(iso){
   if(!iso) return false;
   const d=new Date(iso), n=new Date();
@@ -306,7 +458,6 @@ function isSameLocalDay(iso){
 }
 function phaseLockState(p){
   if(currentUser?.role==='admin') return {locked:false, onlyCompleteAllowed:false};
-  // "Nema" se zaključava po ISTOJ logici kao i ostale faze (ne trajno/odmah) - vidi ispod.
   const hasActivity=(p.status && p.status!=='pending') || (p.comment && p.comment.trim()!=='');
   if(!hasActivity) return {locked:false, onlyCompleteAllowed:false};
   if(isSameLocalDay(p.updatedAt)) return {locked:false, onlyCompleteAllowed:false};
@@ -314,24 +465,21 @@ function phaseLockState(p){
   return {locked:true, onlyCompleteAllowed:false};
 }
 
-// ============ RENDER MODAL – prošivena linija kroz faze, zaključavanje po danu, Napomena, Prijem ============
+// ============ RENDER MODAL ============
 function renderModal(o){
   modalOrderNumber.textContent=o.orderNumber||'N/A';
   const isAdmin=currentUser?.role==='admin';
   const isKontrola=currentUser?.role==='kontrola';
   const isPrivileged=isAdmin||isKontrola;
   const isOwnCompany=o.company===currentUser?.company;
-  const firmaLine=(isPrivileged||isOwnCompany)?`<p><b>Firma:</b> ${esc(o.company)}</p>`:'';
-  modalOrderInfo.innerHTML=`${firmaLine}<p><b>Artikal:</b> ${esc(o.name)}</p><p><b>Šifra:</b> ${esc(o.code)}</p><p><b>Količina:</b> ${o.quantity||0}</p><p><b>Datum isporuke:</b> ${esc(o.deliveryDate||'-')}</p>`;
+  const firmaLine=(isPrivileged||isOwnCompany)?`<p><b>${t('modal_company')}:</b> ${esc(o.company)}</p>`:'';
+  modalOrderInfo.innerHTML=`${firmaLine}<p><b>${t('modal_article')}:</b> ${esc(o.name)}</p><p><b>${t('modal_code')}:</b> ${esc(o.code)}</p><p><b>${t('modal_quantity')}:</b> ${o.quantity||0}</p><p><b>${t('modal_delivery')}:</b> ${esc(o.deliveryDate||'-')}</p>`;
 
   const progress=o.progress||[];
   const phases=progress.filter(p=>p.phase!=='NAPOMENA' && p.phase!=='PRIJEM');
   const napomena=progress.find(p=>p.phase==='NAPOMENA');
   const prijem=progress.find(p=>p.phase==='PRIJEM');
 
-  // ============ NALOG JE RADIO NEKO IZ DRUGE FIRME (samo Kontrola/Admin vide) ============
-  // Klijent može da nađe i obradi tuđi nalog (npr. preko pretrage). Ovde to prikazujemo
-  // Kontroli/Adminu: nalog je NAMENJEN firmi X, ali je poslednju izmenu uradio korisnik iz firme Y.
   if(isPrivileged){
     const foreignEdits=phases
       .filter(p=>p.updatedByCompany && p.updatedByCompany!==o.company && (p.status && p.status!=='pending' || (p.comment&&p.comment.trim()!=='')))
@@ -354,7 +502,6 @@ function renderModal(o){
     const comment = (p.comment||'').trim();
     const lock = isKontrola ? {locked:true, onlyCompleteAllowed:false} : phaseLockState(p);
 
-    // Redosled faza (samo klijent) - ne može da obeleži fazu dok prethodne nisu rešene (Urađeno/Nema)
     let sequenceBlockedOn=null;
     if(!isPrivileged){
       const idx=knownOrder.indexOf(String(p.phase));
@@ -370,47 +517,42 @@ function renderModal(o){
       }
     }
 
-    // Bedž: samo ikonica + datum (bez reči "Urađeno"/"Problem"). Za Problem: ikonica+datum+tekst u jednoj liniji.
     let badge='';
     if(p.status==='completed'){
       badge=`<span class="phase-state">✅${dateStr?` ${dateStr}`:''}</span>`;
     } else if(p.status==='problem'){
       badge=`<span class="phase-state">⚠️${dateStr?` ${dateStr}`:''}${comment?` — ${esc(comment)}`:''}</span>`;
     } else if(p.status==='nema'){
-      badge=`<span class="phase-state">🚫 Nema${dateStr?` ${dateStr}`:''}</span>`;
+      badge=`<span class="phase-state">🚫 ${t('btn_none_short')}${dateStr?` ${dateStr}`:''}</span>`;
     }
-    // Dugme "Nema" - samo za Serigrafiju (200) i Vez (300), za artikle koji tu operaciju nemaju
     const showNemaBtn = (p.phase==='200' || p.phase==='300');
-    // Trajna istorija "Problem" (ostaje vidljivo i posle prelaska na Urađeno), sa tekstom koji ga je pratio
     const problemDateStr = p.lastProblemAt && p.status!=='problem' ? date(p.lastProblemAt) : null;
     const problemComment = (p.lastProblemComment||'').trim();
     const problemLine = problemDateStr ? `<div class="phase-date" style="margin-top:-4px;margin-bottom:6px">⚠️ ${problemDateStr}${problemComment?` — ${esc(problemComment)}`:''}</div>` : '';
-    // Ova faza je radio neko iz druge firme od firme kojoj nalog pripada (vidljivo Kontroli/Adminu)
     const foreignLine = (isPrivileged && p.updatedByCompany && p.updatedByCompany!==o.company)
       ? `<div class="phase-date" style="margin-top:-4px;margin-bottom:6px;color:#9C6B00">👤 Radio: ${esc(p.updatedBy||'?')} (firma "${esc(p.updatedByCompany)}")</div>`
       : '';
 
     let bodyHtml='';
     if(sequenceBlockedOn){
-      bodyHtml=`<div class="phase-date" style="color:var(--muted)">⛔ Prvo rešite fazu "${esc(phaseLabel(sequenceBlockedOn))}"</div>`;
+      bodyHtml=`<div class="phase-date" style="color:var(--muted)">${t('msg_first_resolve_phase')} "${esc(phaseLabel(sequenceBlockedOn))}"</div>`;
     } else if(lock.locked){
-      // Zaključano: kompaktan prikaz, katanac je već u naslovnoj liniji (bez teksta).
       const lockedExtra = (p.status==='completed' && comment) ? `<div class="phase-date" style="margin-top:2px">${esc(comment)}</div>` : '';
       bodyHtml=`${lockedExtra}
         ${lock.onlyCompleteAllowed
-          ? `<div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button></div>`
+          ? `<div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">${t('btn_done')}</button></div>`
           : ''}`;
     } else {
       bodyHtml=`<div class="phase-actions">
-          <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ Urađeno</button>
-          <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ Problem</button>
-          ${showNemaBtn ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 Nema</button>` : ''}
-          ${isAdmin ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">⬜ Reset</button>` : ''}
+          <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">${t('btn_done')}</button>
+          <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">${t('btn_problem')}</button>
+          ${showNemaBtn ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">${t('btn_none')}</button>` : ''}
+          ${isAdmin ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">${t('btn_reset')}</button>` : ''}
         </div>
-        <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="Komentar...">${esc(p.comment||'')}</textarea>`;
+        <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
     }
 
-    const lockIcon = (lock.locked && !lock.onlyCompleteAllowed) ? `<span class="phase-lock" title="Zaključano — obratite se administratoru">🔒</span>` : '';
+    const lockIcon = (lock.locked && !lock.onlyCompleteAllowed) ? `<span class="phase-lock" title="${t('lock_tooltip')}">🔒</span>` : '';
 
     h+=`<div class="phase-row ${stateClass}">
       <div class="phase-spine">
@@ -431,7 +573,7 @@ function renderModal(o){
   });
   h+='</div>';
 
-  // ============ NAPOMENA (opšte polje, van faza, ista logika zaključavanja) ============
+  // ============ NAPOMENA ============
   const nLock = napomena ? (isKontrola ? {locked:true, onlyCompleteAllowed:false} : phaseLockState(napomena)) : {locked:false};
   const nComment = napomena?.comment || '';
   const nDate = napomena?.updatedAt && (nComment.trim()!=='') ? date(napomena.updatedAt) : null;
@@ -441,18 +583,18 @@ function renderModal(o){
       </div>
       <div class="phase-content" style="border-bottom:none">
         <div class="phase-head">
-          <span class="phase-name">Napomena</span>
+          <span class="phase-name">${t('phase_note')}</span>
           ${nDate ? `<span class="phase-date">📅 ${nDate}</span>` : ''}
-          ${nLock.locked ? `<span class="phase-lock" title="Zaključano — obratite se administratoru">🔒</span>` : ''}
+          ${nLock.locked ? `<span class="phase-lock" title="${t('lock_tooltip')}">🔒</span>` : ''}
         </div>
         ${(isPrivileged && napomena?.updatedByCompany && napomena.updatedByCompany!==o.company) ? `<div class="phase-date" style="margin-top:-4px;margin-bottom:6px;color:#9C6B00">👤 Radio: ${esc(napomena.updatedBy||'?')} (firma "${esc(napomena.updatedByCompany)}")</div>` : ''}
         ${nLock.locked
           ? (nComment ? `<div class="phase-date" style="margin-top:2px">${esc(nComment)}</div>` : '')
-          : `<textarea class="phase-note" style="margin-top:8px" onblur="saveComment(${o.id},'NAPOMENA',this.value)" placeholder="Napomena...">${esc(nComment)}</textarea>`}
+          : `<textarea class="phase-note" style="margin-top:8px" onblur="saveComment(${o.id},'NAPOMENA',this.value)" placeholder="${t('placeholder_note')}">${esc(nComment)}</textarea>`}
       </div>
     </div>`;
 
-  // ============ REPARACIJA - poseban blok SAMO za klijenta (nema pristup kartici Prijem) ============
+  // ============ REPARACIJA - samo za klijenta ============
   const rep=o.reparacija;
   if(!isPrivileged && rep){
     const items=formatPrijemItems(rep.items);
@@ -460,13 +602,13 @@ function renderModal(o){
     const kontrolaDone=!!rep.kontrolaConfirmedAt;
     let repBody;
     if(kontrolaDone){
-      repBody=`<div class="phase-date">✅ Zatvoreno ${date(rep.kontrolaConfirmedAt)}</div>`;
+      repBody=`<div class="phase-date">${t('msg_closed')} ${date(rep.kontrolaConfirmedAt)}</div>`;
     } else if(clientDone){
-      repBody=`<div class="phase-date" style="margin-bottom:4px">✅ Potvrđeno: ${esc(rep.clientConfirmedBy||'?')} — ${date(rep.clientConfirmedAt)}</div>
-        <div class="phase-date" style="color:var(--muted)">⏳ Čeka potvrdu Kontrole</div>`;
+      repBody=`<div class="phase-date" style="margin-bottom:4px">${t('msg_confirmed')}: ${esc(rep.clientConfirmedBy||'?')} — ${date(rep.clientConfirmedAt)}</div>
+        <div class="phase-date" style="color:var(--muted)">${t('msg_waiting_kontrola')}</div>`;
     } else {
       repBody=`<div class="phase-date" style="margin-bottom:6px">🔧 ${date(rep.createdAt)}${items?` — ${esc(items)}`:''}${rep.note?` — ${esc(rep.note)}`:''}</div>
-        <div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="confirmReparacijaClient(${rep.id})">✅ Urađeno</button></div>`;
+        <div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="confirmReparacijaClient(${rep.id})">${t('btn_done')}</button></div>`;
     }
     h+=`<div class="phase-row" style="margin-top:6px">
       <div class="phase-spine">
@@ -474,15 +616,15 @@ function renderModal(o){
       </div>
       <div class="phase-content" style="border-bottom:none">
         <div class="phase-head">
-          <span class="phase-name">Reparacija</span>
-          ${!kontrolaDone ? `<span class="phase-date">Rok: ${rep.deadlineDate?date(rep.deadlineDate):'-'}</span>` : ''}
+          <span class="phase-name">${t('phase_repair')}</span>
+          ${!kontrolaDone ? `<span class="phase-date">${t('msg_deadline')}: ${rep.deadlineDate?date(rep.deadlineDate):'-'}</span>` : ''}
         </div>
         ${repBody}
       </div>
     </div>`;
   }
 
-  // ============ PRIJEM (samo admin i Kontrola) - reparacija tok je integrisan direktno ovde, bez posebne kartice ============
+  // ============ PRIJEM (samo admin i Kontrola) ============
   if(isPrivileged && prijem){
     const pLock = isAdmin ? {locked:false,onlyCompleteAllowed:false} : phaseLockState(prijem);
     let pBadge='';
@@ -498,7 +640,7 @@ function renderModal(o){
       const items = formatPrijemItems(pParsed.items);
       pBadge = `<span class="phase-state">${icon}${d?` ${d}`:''}${items?` — ${esc(items)}`:''}${pParsed.note?` — ${esc(pParsed.note)}`:''}</span>`;
     }
-    const pLockIcon = (pLock.locked && !pLock.onlyCompleteAllowed) ? `<span class="phase-lock" title="Zaključano — obratite se administratoru">🔒</span>` : '';
+    const pLockIcon = (pLock.locked && !pLock.onlyCompleteAllowed) ? `<span class="phase-lock" title="${t('lock_tooltip')}">🔒</span>` : '';
 
     if(pLock.locked && !pLock.onlyCompleteAllowed){
       pBody = '';
@@ -517,7 +659,6 @@ function renderModal(o){
         </div>`;
     }
 
-    // Reparacija - kompletna logika toka (klijent urađeno -> kontrola sve u redu) prikazana direktno ispod Prijema
     let repSection='';
     if(pParsed && pParsed.outcome==='reparacija' && rep){
       if(rep.kontrolaConfirmedAt){
@@ -536,7 +677,7 @@ function renderModal(o){
       </div>
       <div class="phase-content" style="border-bottom:none">
         <div class="phase-head">
-          <span class="phase-name">Prijem</span>
+          <span class="phase-name">${t('phase_reception')}</span>
           ${pBadge}
           ${pLockIcon}
         </div>
@@ -546,7 +687,7 @@ function renderModal(o){
     </div>`;
   }
 
-  phasesContainer.innerHTML=phases.length ? h : 'Nema faza';
+  phasesContainer.innerHTML=phases.length ? h : t('msg_no_phases');
 }
 
 // ============ REPARACIJA - potvrde ============
@@ -585,7 +726,7 @@ async function submitPrijemOk(id){
   }catch(e){Object.assign(p,old);renderModal(o);alert('❌ '+e.message)}
 }
 
-// ============ SIZE MODAL (Reparacija / Anulirano) - kućice 18-46, klik i upiši, uvek "par" ============
+// ============ SIZE MODAL (Reparacija / Anulirano) ============
 const SIZE_RANGE=Array.from({length:46-18+1},(_,i)=>18+i);
 let sizeModalOrderId=null, sizeModalOutcome=null;
 
@@ -630,7 +771,6 @@ function openSizeModal(orderId,outcome){
 }
 function closeSizeModal(){$('sizeModal')?.classList.add('hidden');sizeModalOrderId=null;sizeModalOutcome=null}
 
-// Format kao "vel.18 - 2 pa." - koristi se u modulu, Excelu i mail sablonu
 function formatPrijemItems(items){
   return (items||[]).map(it=>`vel.${it.size} - ${it.qty} pa.`).join(', ');
 }
@@ -669,7 +809,7 @@ async function saveComment(id, phase, comment) {
   if (!p) return;
   const oldComment = p.comment, oldUpdated = p.updatedAt;
   p.comment = comment;
-  p.updatedAt = new Date().toISOString(); // privremeno za prikaz
+  p.updatedAt = new Date().toISOString();
   try {
     const res = await api('/api/update-phase', {
       method: 'POST',
@@ -685,9 +825,21 @@ async function saveComment(id, phase, comment) {
   }
 }
 
-async function updatePhase(id,phase,status){const o=orders.find(x=>String(x.id)===String(id)),p=o?.progress.find(x=>String(x.phase)===String(phase));if(!p)return;const old={status:p.status,comment:p.comment,updatedAt:p.updatedAt};p.status=status;p.updatedAt=new Date().toISOString();renderOrders();renderModal(o);try{const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,status,comment:p.comment||''})});p.updatedAt=d.updatedAt;renderOrders();renderModal(o)}catch(e){Object.assign(p,old);renderOrders();renderModal(o);alert('❌ '+e.message)}}
+async function updatePhase(id,phase,status){
+  const o=orders.find(x=>String(x.id)===String(id)),p=o?.progress.find(x=>String(x.phase)===String(phase));
+  if(!p)return;
+  const old={status:p.status,comment:p.comment,updatedAt:p.updatedAt};
+  p.status=status;p.updatedAt=new Date().toISOString();
+  renderOrders();renderModal(o);
+  try{
+    const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,status,comment:p.comment||''})});
+    p.updatedAt=d.updatedAt;renderOrders();renderModal(o);
+  }catch(e){
+    Object.assign(p,old);renderOrders();renderModal(o);alert('❌ '+e.message);
+  }
+}
 
-// ============ DATE function (samo datum) ============
+// ============ DATE function ============
 function date(v) {
   const d = new Date(v);
   if (isNaN(d)) return String(v);
@@ -696,4 +848,4 @@ function date(v) {
 
 function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
 function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
-window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;window.resetPassword=resetPassword;
+window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;window.resetPassword=resetPassword;window.deleteCompanyInfo=deleteCompanyInfo;window.deleteFixedRecipient=deleteFixedRecipient;
