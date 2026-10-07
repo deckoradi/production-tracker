@@ -17,7 +17,7 @@ const isSerigrafijaRole = () => currentUser?.role === 'serigrafija';
 const isExternalWorker = () => isVezRole() || isSerigrafijaRole();
 const isPrivileged = () => currentUser?.role === 'admin' || currentUser?.role === 'kontrola';
 
-// ============ INDEXEDDB za čuvanje FileSystemDirectoryHandle ============
+// ============ INDEXEDDB ============
 const IDB_NAME='production-tracker-fs';
 const IDB_STORE='handles';
 function idbOpen(){return new Promise((resolve,reject)=>{const req=indexedDB.open(IDB_NAME,1);req.onupgradeneeded=()=>{if(!req.result.objectStoreNames.contains(IDB_STORE))req.result.createObjectStore(IDB_STORE)};req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)})}
@@ -419,7 +419,7 @@ async function exportMyHistory(){
   }catch(e){status.textContent='❌ '+e.message;status.className='error'}
 }
 
-// ============ KONTROLA - PANEL SA ŠABLONOM ZA MAIL ============
+// ============ KONTROLA - PANEL ============
 async function addKontrolaControls(){
   if($('kontrolaPanel'))return;
   const div=document.createElement('div');div.id='kontrolaPanel';div.className='panel';
@@ -478,7 +478,7 @@ async function addKontrolaControls(){
   },500);
 }
 
-// ============ OTPREMNICA - EXPORT EXCEL ============
+// ============ OTPREMNICA - EXPORT ============
 async function exportOtpremnica(){
   const status=$('prijemTplStatus');
   const company=$('prijemTplCompany')?.value||'';
@@ -639,7 +639,7 @@ async function clearAll(){
 
 $('uploadForm')?.addEventListener('submit',async e=>{e.preventDefault();const f=$('fileInput'),s=$('uploadStatus');if(!f?.files?.[0]){s.textContent='Molimo izaberite Excel fajl';s.className='error';return}s.textContent='⏳ Analiziram Excel i sinhronizujem...';s.className='';const fd=new FormData();fd.append('file',f.files[0]);try{const r=await fetch('/api/upload',{method:'POST',headers:headers(),body:fd});const d=await r.json();if(!r.ok)throw Error(d.error);s.className='success';s.innerHTML=`✅ Sinhronizovano: 🟢 ${d.updated} postojećih, 🔵 ${d.inserted} novih, 🔴 ${d.removed} uklonjeno. Istorija sačuvana.`;f.value='';await loadOrders('',1)}catch(e){s.textContent='❌ '+e.message;s.className='error'}});
 
-// ============ KREIRANJE KORISNIKA — SA NOVIM ROLE-OVIMA ============
+// ============ KREIRANJE KORISNIKA ============
 $('createUserForm')?.addEventListener('submit',async e=>{
   e.preventDefault();
   try{
@@ -890,6 +890,47 @@ function phaseLabel(p){
 const PHASE_ICONS={'100':'✂️','200':'🖨️','300':'🧵','400':'🪡','500':'📦'};
 function phaseIcon(p){return PHASE_ICONS[String(p)]||'●'}
 
+// ============ IKONICE STATUS ============
+function statusIcon(status){
+  if(status==='poslato') return '📤';
+  if(status==='uradjeno') return '📤';
+  if(status==='completed') return '📥';
+  if(status==='problem') return '⚠️';
+  if(status==='nema') return '🚫';
+  if(status==='pending') return '⬜';
+  return '•';
+}
+
+// ============ HISTORY TIMELINE ============
+// Prikazuje hronologiju svih izmena za datu fazu
+function renderHistoryTimeline(history){
+  if(!Array.isArray(history) || history.length === 0) return '';
+  const rows = history.map(h => {
+    const st = h.status || h.newStatus;
+    const dateStr = h.changedAt ? date(h.changedAt) : '';
+    const by = h.changedByCompany || h.changedBy || '';
+    const comment = (h.comment || '').trim();
+    const label = statusLabelForTimeline(st);
+    return `<div style="display:flex;gap:8px;font-size:12px;color:var(--muted);line-height:1.6">
+      <span style="font-family:var(--font-mono);color:#4A5568">${statusIcon(st)} ${label}</span>
+      <span style="flex:1;text-align:right">${dateStr}${by?`  (${esc(by)})`:''}</span>
+    </div>${comment?`<div style="font-size:12px;color:#9C6B00;margin-left:22px;margin-bottom:4px">— ${esc(comment)}</div>`:''}`;
+  }).join('');
+  return `<div style="margin-top:8px;padding:8px 10px;background:var(--paper);border-radius:8px;border:1px solid var(--line)">
+    <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">${t('msg_history')}</div>
+    ${rows}
+  </div>`;
+}
+
+function statusLabelForTimeline(st){
+  if(st==='poslato') return t('btn_poslato');
+  if(st==='uradjeno') return t('status_done_worker');
+  if(st==='completed') return t('btn_primljeno');
+  if(st==='problem') return t('status_problem');
+  if(st==='nema') return t('btn_none_short');
+  return st || '';
+}
+
 // ============ ZAKLJUČAVANJE PO DANU ============
 function isSameLocalDay(iso){
   if(!iso) return false;
@@ -979,27 +1020,31 @@ function renderModal(o){
       ? `<div class="phase-date" style="margin-top:-4px;margin-bottom:6px;color:#9C6B00">👤 ${t('msg_worker')}: ${esc(p.updatedBy||'?')} (${t('modal_company').toLowerCase()} "${esc(p.updatedByCompany)}")</div>`
       : '';
 
+    // ============================================================
+    // VREMENSKA LINIJA — samo za faze 200 i 300
+    // ============================================================
+    const showTimeline = (p.phase==='200' || p.phase==='300');
+    const timelineHtml = showTimeline ? renderHistoryTimeline(p.history) : '';
+
     let bodyHtml='';
 
     // ============================================================
-    // RADNIK (vez / serigrafija) — NOVA LOGIKA
-    // Vidim samo svoju fazu, samo dugmad: Urađeno + Problem
+    // RADNIK (vez / serigrafija)
     // ============================================================
     if(externalWorker){
       const isMyPhase = (currentUser.role==='vez' && String(p.phase)==='300')
                      || (currentUser.role==='serigrafija' && String(p.phase)==='200');
       if(isMyPhase){
         if(p.status==='poslato'){
-          // Klijent poslao → radnik klikne Urađeno
           bodyHtml=`<div class="phase-date" style="color:var(--muted);margin-bottom:6px">${t('msg_received_for_work')}</div>
             <div class="phase-actions">
               <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','uradjeno')">📤 ${t('btn_uradjeno')}</button>
-              <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
+              <button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'${js(p.phase)}')">⚠️ ${t('btn_problem')}</button>
             </div>`;
         } else if(p.status==='problem'){
           bodyHtml=`<div class="phase-actions">
             <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','uradjeno')">📤 ${t('btn_uradjeno')}</button>
-            <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
+            <button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'${js(p.phase)}')">⚠️ ${t('btn_problem')}</button>
           </div>`;
         } else if(p.status==='uradjeno'){
           bodyHtml=`<div class="phase-date" style="color:var(--green);font-weight:600">✅ ${t('status_done_worker')}${dateStr?` — ${dateStr}`:''}</div>`;
@@ -1025,10 +1070,10 @@ function renderModal(o){
       bodyHtml=`${lockedExtra}
         <div class="phase-actions">
           <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ ${t('btn_done')}</button>
-          ${isPoslato ? `<button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>` : ''}
+          ${isPoslato ? `<button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'${js(p.phase)}')">⚠️ ${t('btn_problem')}</button>` : ''}
         </div>`;
     } else {
-      // Nije zaključano — puna dugmad
+      // Nije zaključano
       const isKlijentFaza200ili300 = (currentUser.role==='user') && (p.phase==='200' || p.phase==='300');
       const isAdminFaza200ili300 = (currentUser.role==='admin') && (p.phase==='200' || p.phase==='300');
 
@@ -1037,16 +1082,12 @@ function renderModal(o){
       // ============================================================
       if(isAdminFaza200ili300){
         if(p.status==='poslato' || p.status==='uradjeno'){
-          const statusLabel = p.status==='poslato' ? `📤 ${t('status_sent')}` : `📤 ${t('status_done_worker')}`;
-          bodyHtml=`<div class="phase-date" style="color:var(--muted);margin-bottom:6px">${statusLabel}${dateStr?` — ${dateStr}`:''}</div>
-            <div class="phase-actions">
+          bodyHtml=`<div class="phase-actions">
               <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">📥 ${t('btn_stiglo')} (admin)</button>
-              <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
+              <button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'${js(p.phase)}')">⚠️ ${t('btn_problem')}</button>
             </div>`;
         } else if(p.status==='problem'){
-          bodyHtml=`<div class="phase-date" style="color:#9B2C2C;margin-bottom:6px">⚠️ ${t('status_problem')}${dateStr?` — ${dateStr}`:''}</div>
-            ${comment?`<div class="phase-date" style="margin-bottom:6px">${esc(comment)}</div>`:''}
-            <div class="phase-actions">
+          bodyHtml=`<div class="phase-actions">
               <button class="btn-tag" onclick="updatePhase(${o.id},'${js(p.phase)}','poslato')">📤 ${t('btn_poslato')}</button>
               <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">📥 ${t('btn_stiglo')} (admin)</button>
             </div>`;
@@ -1057,39 +1098,26 @@ function renderModal(o){
             <button class="btn-tag" onclick="updatePhase(${o.id},'${js(p.phase)}','poslato')">📤 ${t('btn_poslato')}</button>
             <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">📥 ${t('btn_stiglo')}</button>
             <button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 ${t('btn_none')}</button>
-            <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
+            <button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'${js(p.phase)}')">⚠️ ${t('btn_problem')}</button>
           </div>
           <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
         }
       }
       // ============================================================
-      // KLIJENT za faze 200 i 300 — NOVA LOGIKA
+      // KLIJENT za faze 200 i 300
       // ============================================================
       else if(isKlijentFaza200ili300){
-        const deptName = p.phase==='200' ? t('phase_200') : t('phase_300');
         if(p.status==='poslato'){
-          // Klijent poslao — samo tekst, bez dugmadi (čeka radnika)
-          bodyHtml=`<div class="phase-date" style="color:#2B4570;font-weight:600;margin-bottom:6px">
-            📤 ${t('status_sent')}${dateStr?` ${dateStr}`:''} — ${t('msg_to_dept')} ${deptName}
-          </div>
-          <div class="phase-actions">
-            <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
+          bodyHtml=`<div class="phase-actions">
+            <button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'${js(p.phase)}')">⚠️ ${t('btn_problem')}</button>
           </div>`;
         } else if(p.status==='uradjeno'){
-          // Radnik uradio — klijent dobija dugme "Primljeno"
-          bodyHtml=`<div class="phase-date" style="color:#2B4570;font-weight:600;margin-bottom:6px">
-            📤 ${t('status_done_worker')}${dateStr?` ${dateStr}`:''} — ${t('msg_awaiting_receive')}
-          </div>
-          <div class="phase-actions">
+          bodyHtml=`<div class="phase-actions">
             <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">📥 ${t('btn_primljeno')}</button>
-            <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
+            <button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'${js(p.phase)}')">⚠️ ${t('btn_problem')}</button>
           </div>`;
         } else if(p.status==='problem'){
-          bodyHtml=`<div class="phase-date" style="color:#9B2C2C;font-weight:600;margin-bottom:6px">
-            ⚠️ ${t('status_problem')}${dateStr?` — ${dateStr}`:''}
-          </div>
-          ${comment?`<div class="phase-date" style="margin-bottom:6px">${esc(comment)}</div>`:''}
-          <div class="phase-actions">
+          bodyHtml=`<div class="phase-actions">
             <button class="btn-tag" onclick="updatePhase(${o.id},'${js(p.phase)}','poslato')">📤 ${t('btn_poslato')}</button>
             <button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 ${t('btn_none')}</button>
           </div>`;
@@ -1098,11 +1126,10 @@ function renderModal(o){
         } else if(p.status==='nema'){
           bodyHtml=`<div class="phase-date" style="color:var(--muted)">🚫 ${t('btn_none_short')}</div>`;
         } else {
-          // pending — klijent bira Poslato, Nema ili Problem
           bodyHtml=`<div class="phase-actions">
             <button class="btn-tag" onclick="updatePhase(${o.id},'${js(p.phase)}','poslato')">📤 ${t('btn_poslato')}</button>
             <button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 ${t('btn_none')}</button>
-            <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
+            <button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'${js(p.phase)}')">⚠️ ${t('btn_problem')}</button>
           </div>
           <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
         }
@@ -1114,7 +1141,7 @@ function renderModal(o){
         const showNemaBtn = (p.phase==='200' || p.phase==='300');
         bodyHtml=`<div class="phase-actions">
             <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ ${t('btn_done')}</button>
-            <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
+            <button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'${js(p.phase)}')">⚠️ ${t('btn_problem')}</button>
             ${showNemaBtn ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 ${t('btn_none')}</button>` : ''}
             ${currentUser?.role==='admin' ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">⬜ ${t('btn_reset')}</button>` : ''}
           </div>
@@ -1138,6 +1165,7 @@ function renderModal(o){
         ${problemLine}
         ${foreignLine}
         ${bodyHtml}
+        ${timelineHtml}
       </div>
     </div>`;
   });
@@ -1258,6 +1286,53 @@ function renderModal(o){
   }
 
   phasesContainer.innerHTML=phases.length ? h : t('msg_no_phases');
+}
+
+// ============ PROBLEM MODAL ============
+let problemModalOrderId=null, problemModalPhase=null;
+
+function ensureProblemModal(){
+  if($('problemModal'))return;
+  const div=document.createElement('div');
+  div.id='problemModal';div.className='modal hidden';
+  div.innerHTML=`<div class="modal-content" style="max-width:460px">
+    <span class="close-modal" onclick="closeProblemModal()">&times;</span>
+    <h2 id="problemModalTitle" style="font-size:18px">⚠️ ${t('msg_problem_title')}</h2>
+    <p style="color:var(--muted);font-size:13px;margin-top:8px">${t('msg_problem_hint')}</p>
+    <textarea id="problemComment" class="phase-note" placeholder="${t('placeholder_comment')}" style="margin-top:10px;min-height:80px"></textarea>
+    <div class="phase-actions" style="margin-top:12px">
+      <button class="btn-tag btn-tag--problem" onclick="confirmProblem()">⚠️ ${t('btn_confirm_problem')}</button>
+      <button class="btn-tag btn-tag--reset" onclick="closeProblemModal()">${t('btn_cancel')}</button>
+    </div>
+  </div>`;
+  document.body.appendChild(div);
+}
+
+function openProblemModal(orderId, phase){
+  ensureProblemModal();
+  problemModalOrderId=orderId;
+  problemModalPhase=phase;
+  const o=orders.find(x=>String(x.id)===String(orderId));
+  const p=o?.progress.find(x=>String(x.phase)===String(phase));
+  $('problemComment').value = p?.comment || '';
+  $('problemModal').classList.remove('hidden');
+  setTimeout(()=>$('problemComment')?.focus(), 100);
+}
+
+function closeProblemModal(){
+  $('problemModal')?.classList.add('hidden');
+  problemModalOrderId=null;
+  problemModalPhase=null;
+}
+
+async function confirmProblem(){
+  const orderId=problemModalOrderId, phase=problemModalPhase;
+  const comment=$('problemComment').value.trim();
+  if(!comment){
+    if(!confirm(t('msg_problem_no_comment'))) return;
+  }
+  closeProblemModal();
+  await updatePhase(orderId, phase, 'problem', comment);
 }
 
 // ============ REPARACIJA - potvrde ============
@@ -1396,20 +1471,21 @@ async function saveComment(id, phase, comment) {
 }
 
 // ============ UPDATE PHASE ============
-async function updatePhase(id,phase,status){
+async function updatePhase(id,phase,status,customComment){
   const o=orders.find(x=>String(x.id)===String(id)),p=o?.progress.find(x=>String(x.phase)===String(phase));
   if(!p)return;
   const old={status:p.status,comment:p.comment,updatedAt:p.updatedAt};
-  p.status=status;p.updatedAt=new Date().toISOString();
+  const newComment = (customComment !== undefined) ? customComment : (p.comment || '');
+  p.status=status;
+  p.comment=newComment;
+  p.updatedAt=new Date().toISOString();
   renderOrders();renderModal(o);
   try{
-    const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,status,comment:p.comment||''})});
+    const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,status,comment:newComment})});
     p.updatedAt=d.updatedAt;
     renderOrders();
-    renderModal(o);
-    if(isExternalWorker()){
-      await loadOrders(searchInput?.value||'',currentPage);
-    }
+    // Osveži listu da bi se dobila nova istorija (history)
+    await loadOrders(searchInput?.value||'',currentPage);
   }catch(e){
     Object.assign(p,old);renderOrders();renderModal(o);alert('❌ '+e.message);
   }
@@ -1444,6 +1520,9 @@ window.confirmSizeModal=confirmSizeModal;
 window.confirmReparacijaClient=confirmReparacijaClient;
 window.confirmReparacijaKontrola=confirmReparacijaKontrola;
 window.submitPrijemOk=submitPrijemOk;
+window.openProblemModal=openProblemModal;
+window.closeProblemModal=closeProblemModal;
+window.confirmProblem=confirmProblem;
 
 // ============ UI: admin collapse, scroll lock, Esc ============
 (()=>{
@@ -1457,6 +1536,12 @@ window.submitPrijemOk=submitPrijemOk;
   new MutationObserver(sync).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
   document.addEventListener('keydown',e=>{
     if(e.key!=='Escape')return;
+    // Ako je otvoren problem modal — zatvori njega
+    const problemModal=$('problemModal');
+    if(problemModal && !problemModal.classList.contains('hidden')){
+      closeProblemModal();
+      return;
+    }
     if(phaseModal && !phaseModal.classList.contains('hidden')){
       phaseModal.classList.add('hidden');
       reopenRemindersIfAny();

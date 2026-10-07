@@ -39,7 +39,6 @@ const isUser = (user) => user.role === 'user';
 const isPrivileged = (user) => isAdmin(user) || isKontrola(user);
 const isExternalWorker = (user) => isVez(user) || isSerigrafija(user);
 
-// Koja faza pripada kom radniku
 const WORKER_PHASE = { 'vez': '300', 'serigrafija': '200' };
 
 const initDb = async () => {
@@ -154,9 +153,6 @@ const initDb = async () => {
             )
         `);
 
-        // ============================================================
-        // Indeksi za brže upite (LATERAL JOIN-ovi u /api/orders)
-        // ============================================================
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_history_lookup ON order_history(order_number, company, phase, changed_at DESC)`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_progress_order ON progress(order_id, phase)`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_reparacije_order_created ON reparacije(order_id, created_at DESC)`);
@@ -562,7 +558,6 @@ app.post('/api/change-password', authenticate, async (req, res) => {
     }
 });
 
-// ============ SLANJE OTPREMNICE MAIL-OM ============
 app.post('/api/poslji-otpremnicu-mail', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
@@ -618,7 +613,6 @@ app.post('/api/poslji-otpremnicu-mail', authenticate, async (req, res) => {
     }
 });
 
-// ============ UPLOAD ============
 app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
@@ -787,10 +781,6 @@ app.get('/api/orders', authenticate, async (req, res) => {
                 paramIndex++;
             }
 
-            // ============================================================
-            // BUG FIX: claim filter sada IZUZIMA faze 200 (Serigrafija) i 300 (Vez)
-            // jer te faze rade eksterni radnici — ne smeju da "zaključaju" nalog klijentu
-            // ============================================================
             const claimClause = `NOT EXISTS (
                 SELECT 1 FROM progress pclaim
                 WHERE pclaim.order_id = o.id
@@ -804,7 +794,7 @@ app.get('/api/orders', authenticate, async (req, res) => {
             paramIndex++;
         }
 
-        // === RADNIK (vez / serigrafija) — sve firme, ali samo ako je klijent kliknuo Poslato ===
+        // === RADNIK (vez / serigrafija) ===
         if (externalWorker) {
             if (search) {
                 const s = search.toLowerCase();
@@ -812,7 +802,7 @@ app.get('/api/orders', authenticate, async (req, res) => {
                     SELECT 1 FROM progress pw
                     WHERE pw.order_id = o.id
                       AND pw.phase = $${paramIndex}
-                      AND pw.status IN ('poslato','primljeno','uradjeno','problem')
+                      AND pw.status IN ('poslato','uradjeno','problem')
                 ) AND (LOWER(order_number) LIKE $${paramIndex + 1} OR LOWER(name) LIKE $${paramIndex + 1} OR LOWER(company) LIKE $${paramIndex + 1} OR LOWER(code) LIKE $${paramIndex + 1})`;
                 params.push(workerPhase);
                 params.push(`%${s}%`);
@@ -822,14 +812,14 @@ app.get('/api/orders', authenticate, async (req, res) => {
                     SELECT 1 FROM progress pw
                     WHERE pw.order_id = o.id
                       AND pw.phase = $${paramIndex}
-                      AND pw.status IN ('poslato','primljeno','uradjeno','problem')
+                      AND pw.status IN ('poslato','uradjeno','problem')
                 )`;
                 params.push(workerPhase);
                 paramIndex++;
             }
         }
 
-        // === ADMIN / KONTROLA — sve firme, opciona pretraga ===
+        // === ADMIN / KONTROLA ===
         if (privileged && search) {
             const s = search.toLowerCase();
             whereClause = `WHERE (LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(company) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex})`;
@@ -843,12 +833,16 @@ app.get('/api/orders', authenticate, async (req, res) => {
 
         const hidePrijem = !privileged;
 
+        // ============================================================
+        // NOVO: LATERAL JOIN za history — vremenska linija po fazi
+        // ============================================================
         const dataQuery = `
             SELECT o.*, 
                    COALESCE(json_agg(json_build_object(
                         'phase', p.phase, 'status', p.status, 'comment', p.comment, 'updatedAt', p.updated_at,
                         'updatedBy', p.updated_by, 'updatedByCompany', p.updated_by_company,
-                        'lastProblemAt', lastprob.changed_at, 'lastProblemComment', lastprob.comment
+                        'lastProblemAt', lastprob.changed_at, 'lastProblemComment', lastprob.comment,
+                        'history', COALESCE(phaseHist.history, '[]'::json)
                    ) ORDER BY p.phase) 
                    FILTER (WHERE p.phase IS NOT NULL), '[]') as progress,
                    rep.id as rep_id, rep.items as rep_items, rep.note as rep_note,
@@ -865,6 +859,21 @@ app.get('/api/orders', authenticate, async (req, res) => {
                   AND oh.phase = p.phase AND oh.new_status = 'problem'
                 ORDER BY oh.changed_at DESC LIMIT 1
             ) lastprob ON true
+            LEFT JOIN LATERAL (
+                SELECT json_agg(json_build_object(
+                    'status', oh2.new_status,
+                    'oldStatus', oh2.old_status,
+                    'comment', oh2.comment,
+                    'changedAt', oh2.changed_at,
+                    'changedBy', oh2.changed_by,
+                    'changedByCompany', oh2.changed_by_company
+                ) ORDER BY oh2.changed_at ASC) as history
+                FROM order_history oh2
+                WHERE oh2.order_number = o.order_number AND oh2.company = o.company
+                  AND oh2.phase = p.phase
+                  AND oh2.new_status IS NOT NULL
+                  AND oh2.new_status != 'pending'
+            ) phaseHist ON true
             LEFT JOIN LATERAL (
                 SELECT * FROM reparacije r
                 WHERE r.order_id = o.id
@@ -941,36 +950,23 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         if (!status) status = oldStatus;
         const finalComment = comment !== undefined ? comment : oldComment;
 
-        // ============================================================
-        // 1) KONTROLA — može samo PRIJEM
-        // ============================================================
         if (isKontrola(req.user) && phase !== 'PRIJEM') {
             return res.status(403).json({ error: 'Kontrola može da menja isključivo fazu Prijem.' });
         }
 
-        // ============================================================
-        // 2) SAMO ADMIN I KONTROLA — mogu PRIJEM
-        // ============================================================
         if (!isAdmin(req.user) && !isKontrola(req.user) && phase === 'PRIJEM') {
             return res.status(403).json({ error: 'Nemate dozvolu za ovu fazu.' });
         }
 
-        // ============================================================
-        // 3) RADNIK (vez / serigrafija) — samo svoja faza
-        // ============================================================
         if (isExternalWorker(req.user)) {
             const workerPhase = WORKER_PHASE[req.user.role];
             if (phase !== workerPhase) {
                 return res.status(403).json({ error: `Možete menjati samo fazu "${workerPhase}".` });
             }
 
-            const allowedStatuses = ['primljeno', 'uradjeno', 'problem'];
+            const allowedStatuses = ['uradjeno', 'problem'];
             if (status && !allowedStatuses.includes(status)) {
-                return res.status(403).json({ error: 'Nedozvoljen status za radnike (dozvoljeno: Primljeno, Urađeno, Problem).' });
-            }
-
-            if (status === 'uradjeno' && oldStatus !== 'primljeno' && oldStatus !== 'problem' && oldStatus !== 'poslato') {
-                return res.status(403).json({ error: 'Prvo označite da ste primili robu ("Primljeno").' });
+                return res.status(403).json({ error: 'Nedozvoljen status za radnike (dozvoljeno: Urađeno, Problem).' });
             }
 
             if (oldStatus === 'pending' || !oldStatus) {
@@ -978,13 +974,7 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
         }
 
-        // ============================================================
-        // 4) KLIJENT (user) — claim check + sekvenca
-        // ============================================================
         if (isUser(req.user)) {
-            // ============================================================
-            // BUG FIX: claim check sada IZUZIMA faze 200 i 300
-            // ============================================================
             if (['100', '200', '300', '400', 'NAPOMENA'].includes(phase)) {
                 const claimCheck = await pool.query(
                     `SELECT DISTINCT updated_by_company FROM progress
@@ -1021,9 +1011,6 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
         }
 
-        // ============================================================
-        // 5) LOCK PO DANU — samo za klijenta
-        // ============================================================
         if (isUser(req.user)) {
             const hasPriorActivity = oldStatus !== 'pending' || oldComment.trim() !== '';
             let sameDay = true;
@@ -1036,9 +1023,8 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
             if (hasPriorActivity && !sameDay) {
                 const isProblemToCompleted = oldStatus === 'problem' && status === 'completed' && finalComment === oldComment;
-                const isPoslatoToCompleted = oldStatus === 'poslato' && status === 'completed';
                 const isUradjenoToCompleted = oldStatus === 'uradjeno' && status === 'completed';
-                if (!isProblemToCompleted && !isPoslatoToCompleted && !isUradjenoToCompleted) {
+                if (!isProblemToCompleted && !isUradjenoToCompleted) {
                     return res.status(403).json({
                         error: '🔒 Ova stavka je zaključana (poslednja izmena je bila ranijeg dana). Obratite se administratoru.'
                     });
@@ -1420,8 +1406,6 @@ app.get('/api/history/export', authenticate, async (req, res) => {
                 lines.push([`⚠️ ${dateStr}`, comment].filter(Boolean).join('  '));
             } else if (entry.status === 'poslato') {
                 lines.push([`📤 Poslato ${dateStr}`, comment].filter(Boolean).join('  '));
-            } else if (entry.status === 'primljeno') {
-                lines.push([`📥 Primljeno ${dateStr}`, comment].filter(Boolean).join('  '));
             } else if (entry.status === 'uradjeno') {
                 lines.push([`📤 Urađeno ${dateStr}`, comment].filter(Boolean).join('  '));
             } else if (comment) {
@@ -1558,7 +1542,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
     }
 });
 
-// ============ PRIJEM - ŠABLONSKI TEKST ZA COPY-PASTE U MAIL ============
+// ============ PRIJEM - ŠABLONSKI TEKST ============
 app.get('/api/prijem-template', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
@@ -1654,7 +1638,7 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
     }
 });
 
-// ============ OTPREMNICA - EXCEL EXPORT (SA A4 PRINT SETUP) ============
+// ============ OTPREMNICA - EXCEL EXPORT ============
 app.get('/api/otpremnica/export', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
@@ -1972,7 +1956,6 @@ app.post('/api/send-report', authenticate, async (req, res) => {
             'pending': '⬜ U toku', 
             'nema': '🚫 Nema',
             'poslato': '📤 Poslato',
-            'primljeno': '📥 Primljeno',
             'uradjeno': '📤 Urađeno (radnik)'
         };
 

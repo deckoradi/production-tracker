@@ -122,6 +122,13 @@ const TRANSLATIONS = {
     msg_repeat_new_password: 'Ponovi NOVU lozinku:',
     msg_password_mismatch: 'Nova lozinka i potvrda se ne poklapaju.',
 
+    // ===== NOVO — vremenska linija i problem modal =====
+    msg_history: 'Istorija',
+    msg_problem_title: 'Prijavi problem',
+    msg_problem_hint: 'Opiši problem (opciono):',
+    btn_confirm_problem: 'Prijavi problem',
+    msg_problem_no_comment: 'Nisi uneo komentar. Prijaviti problem bez komentara?',
+
     // ===== OSTALO =====
     order_count_suffix: 'naloga',
     placeholder_comment: 'Komentar...',
@@ -251,6 +258,13 @@ const TRANSLATIONS = {
     msg_enter_new_password: 'Inserisci la NUOVA password (almeno 6 caratteri):',
     msg_repeat_new_password: 'Ripeti la NUOVA password:',
     msg_password_mismatch: 'La nuova password e la conferma non corrispondono.',
+
+    // ===== NOVO — cronologia e modal problema =====
+    msg_history: 'Cronologia',
+    msg_problem_title: 'Segnala problema',
+    msg_problem_hint: 'Descrivi il problema (opzionale):',
+    btn_confirm_problem: 'Segnala problema',
+    msg_problem_no_comment: 'Nessun commento inserito. Segnalare il problema senza commento?',
 
     // ===== OSTALO =====
     order_count_suffix: 'ordini',
