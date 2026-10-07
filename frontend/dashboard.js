@@ -125,6 +125,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   }
   if(currentUser?.role==='user'){addClientExportControls()}
   if(currentUser?.role==='kontrola'){addKontrolaControls()}
+  if(currentUser?.role==='vez' || currentUser?.role==='serigrafija'){addWorkerExportControls()}
   loadOrders();
   if(currentUser?.role==='user' || currentUser?.role==='kontrola' || currentUser?.role==='admin'){
     checkReminders();
@@ -413,6 +414,49 @@ async function exportMyHistory(){
     const a=document.createElement('a');
     a.href=url;
     a.download=`moja_istorija_${dateFrom||'x'}_${dateTo||'x'}.xlsx`;
+    document.body.appendChild(a);a.click();a.remove();
+    URL.revokeObjectURL(url);
+    status.textContent=t('export_done');status.className='success';
+  }catch(e){status.textContent='❌ '+e.message;status.className='error'}
+}
+
+// ============ NOVO: EXPORT ZA VEZA I SERIGRAFIJA ============
+function addWorkerExportControls(){
+  if($('workerExportPanel'))return;
+  const div=document.createElement('div');div.id='workerExportPanel';div.className='panel';
+  const phaseName = isVezRole() ? t('phase_300') : t('phase_200');
+  div.innerHTML=`<div class="panel-header"><h2>📊 ${t('panel_worker_report')} — ${phaseName}</h2></div>
+    <div class="panel-body">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input type="date" id="workerDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+        <input type="date" id="workerDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+        <button id="workerExportBtn" class="btn-success">📥 ${t('panel_worker_report_download')}</button>
+      </div>
+      <div id="workerExportStatus" style="margin-top:8px"></div>
+    </div>`;
+  const searchPanel = document.querySelector('.search-panel');
+  if(searchPanel){searchPanel.insertAdjacentElement('afterend', div)}
+  else{const dash = document.querySelector('.dashboard-content'); dash?.appendChild(div)}
+  $('workerExportBtn').onclick=exportWorkerHistory;
+}
+
+async function exportWorkerHistory(){
+  const status=$('workerExportStatus');
+  const dateFrom=$('workerDateFrom')?.value||'';
+  const dateTo=$('workerDateTo')?.value||'';
+  status.textContent=t('export_generating');status.className='';
+  try{
+    const params=new URLSearchParams();
+    if(dateFrom)params.append('dateFrom',dateFrom);
+    if(dateTo)params.append('dateTo',dateTo);
+    const r=await fetch(`/api/worker/export?${params.toString()}`,{headers:headers()});
+    if(!r.ok){const d=await r.json().catch(()=>({}));throw Error(d.error||`HTTP ${r.status}`)}
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    const phaseShort = isVezRole() ? 'vez' : 'serigrafija';
+    a.download=`${phaseShort}_${dateFrom||'pocetak'}_${dateTo||'danas'}.xlsx`;
     document.body.appendChild(a);a.click();a.remove();
     URL.revokeObjectURL(url);
     status.textContent=t('export_done');status.className='success';
@@ -750,11 +794,13 @@ async function loadOrders(search='',page=1){
 }
 
 // ============ STATUS NALOGA ============
+// NOVA LOGIKA: prikazuje ime trenutne faze umesto "X/5"
 function computeOrderStatus(o){
   const knownPhases=['100','200','300','400','500'];
   const p=o.progress||[];
   const findRow=ph=>p.find(x=>String(x.phase)===ph);
 
+  // 1) Ako je Prijem problem — prikaži REPARACIJA / ANULIRANO
   if(o.prijem && o.prijem.status==='problem'){
     let parsed={};
     try{parsed=JSON.parse(o.prijem.comment||'{}')}catch(_){}
@@ -769,19 +815,50 @@ function computeOrderStatus(o){
     }
   }
 
+  // 2) Ako bilo koja faza ima problem — prikaži Problem
   const hasProblem=knownPhases.some(ph=>{const r=findRow(ph);return r && r.status==='problem'});
   if(hasProblem)return [t('status_problem'),'status-problem'];
 
-  const hasUradjeno=knownPhases.some(ph=>{const r=findRow(ph);return r && r.status==='uradjeno'});
-  if(hasUradjeno)return [t('status_done_worker'),'status-pending'];
+  // 3) Sve faze gotove?
+  const allPhasesDone=knownPhases.every(ph=>{const r=findRow(ph);return r && (r.status==='completed'||r.status==='nema')});
 
-  const hasPoslato=knownPhases.some(ph=>{const r=findRow(ph);return r && r.status==='poslato'});
-  if(hasPoslato)return [t('status_sent'),'status-pending'];
+  // 4) Proveri da li je Prijem završen (kontrola potvrdila)
+  const prijemFinished = (() => {
+    if(!o.prijem) return false;
+    if(o.prijem.status==='completed') return true;
+    if(o.prijem.status==='problem'){
+      let parsed={};
+      try{parsed=JSON.parse(o.prijem.comment||'{}')}catch(_){}
+      if(parsed.outcome==='reparacija'){
+        return !!(o.reparacija && o.reparacija.kontrolaConfirmedAt);
+      }
+    }
+    return false;
+  })();
 
-  const doneCount=knownPhases.filter(ph=>{const r=findRow(ph);return r && (r.status==='completed'||r.status==='nema')}).length;
-  if(doneCount===knownPhases.length)return [t('status_ok'),'status-completed'];
+  // 5) Ako su sve faze gotove
+  if(allPhasesDone){
+    if(prijemFinished){
+      return [t('status_ok'),'status-completed'];  // U redu (zeleno)
+    } else {
+      return [t('status_sent'),'status-pending'];  // Poslato (žuto) — čeka Prijem
+    }
+  }
 
-  return doneCount>0?[`${doneCount}/${knownPhases.length}`,'status-pending']:[t('status_in_progress'),'status-pending'];
+  // 6) Nađi trenutnu fazu (prva koja nije completed/nema)
+  const currentPhase = knownPhases.find(ph=>{
+    const r=findRow(ph);
+    if(!r) return true;  // nema reda → to je trenutna
+    if(r.status==='completed' || r.status==='nema') return false;
+    return true;  // pending, poslato, uradjeno
+  });
+
+  if(currentPhase){
+    return [phaseLabel(currentPhase),'status-pending'];
+  }
+
+  // 7) Fallback
+  return [t('status_in_progress'),'status-pending'];
 }
 
 // ============ RENDER TABELE ============
@@ -902,7 +979,6 @@ function statusIcon(status){
 }
 
 // ============ HISTORY TIMELINE ============
-// Prikazuje hronologiju svih izmena za datu fazu
 function renderHistoryTimeline(history){
   if(!Array.isArray(history) || history.length === 0) return '';
   const rows = history.map(h => {
@@ -1020,9 +1096,6 @@ function renderModal(o){
       ? `<div class="phase-date" style="margin-top:-4px;margin-bottom:6px;color:#9C6B00">👤 ${t('msg_worker')}: ${esc(p.updatedBy||'?')} (${t('modal_company').toLowerCase()} "${esc(p.updatedByCompany)}")</div>`
       : '';
 
-    // ============================================================
-    // VREMENSKA LINIJA — samo za faze 200 i 300
-    // ============================================================
     const showTimeline = (p.phase==='200' || p.phase==='300');
     const timelineHtml = showTimeline ? renderHistoryTimeline(p.history) : '';
 
@@ -1073,13 +1146,9 @@ function renderModal(o){
           ${isPoslato ? `<button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'${js(p.phase)}')">⚠️ ${t('btn_problem')}</button>` : ''}
         </div>`;
     } else {
-      // Nije zaključano
       const isKlijentFaza200ili300 = (currentUser.role==='user') && (p.phase==='200' || p.phase==='300');
       const isAdminFaza200ili300 = (currentUser.role==='admin') && (p.phase==='200' || p.phase==='300');
 
-      // ============================================================
-      // ADMIN — override za faze 200 i 300
-      // ============================================================
       if(isAdminFaza200ili300){
         if(p.status==='poslato' || p.status==='uradjeno'){
           bodyHtml=`<div class="phase-actions">
@@ -1103,9 +1172,6 @@ function renderModal(o){
           <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
         }
       }
-      // ============================================================
-      // KLIJENT za faze 200 i 300
-      // ============================================================
       else if(isKlijentFaza200ili300){
         if(p.status==='poslato'){
           bodyHtml=`<div class="phase-actions">
@@ -1134,9 +1200,6 @@ function renderModal(o){
           <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
         }
       }
-      // ============================================================
-      // KLIJENT ostale faze (100, 400, 500) i ADMIN ostale faze
-      // ============================================================
       else {
         const showNemaBtn = (p.phase==='200' || p.phase==='300');
         bodyHtml=`<div class="phase-actions">
@@ -1484,7 +1547,6 @@ async function updatePhase(id,phase,status,customComment){
     const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,status,comment:newComment})});
     p.updatedAt=d.updatedAt;
     renderOrders();
-    // Osveži listu da bi se dobila nova istorija (history)
     await loadOrders(searchInput?.value||'',currentPage);
   }catch(e){
     Object.assign(p,old);renderOrders();renderModal(o);alert('❌ '+e.message);
@@ -1536,7 +1598,6 @@ window.confirmProblem=confirmProblem;
   new MutationObserver(sync).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
   document.addEventListener('keydown',e=>{
     if(e.key!=='Escape')return;
-    // Ako je otvoren problem modal — zatvori njega
     const problemModal=$('problemModal');
     if(problemModal && !problemModal.classList.contains('hidden')){
       closeProblemModal();

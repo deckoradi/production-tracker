@@ -558,6 +558,92 @@ app.post('/api/change-password', authenticate, async (req, res) => {
     }
 });
 
+// ============ NOVA RUTA: EXCEL EXPORT ZA RADNIKE (VEZ / SERIGRAFIJA) ============
+app.get('/api/worker/export', authenticate, async (req, res) => {
+    if (!isExternalWorker(req.user)) {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const { dateFrom, dateTo } = req.query;
+        const phase = WORKER_PHASE[req.user.role];
+        if (!phase) return res.status(400).json({ error: 'Nepoznata rola.' });
+
+        let where = [`oh.phase = $1`, `oh.new_status IN ('poslato','uradjeno','problem','completed')`];
+        let params = [phase];
+        let idx = 2;
+
+        if (dateFrom) {
+            where.push(`oh.changed_at >= $${idx}`);
+            params.push(dateFrom + ' 00:00:00');
+            idx++;
+        }
+        if (dateTo) {
+            where.push(`oh.changed_at <= $${idx}`);
+            params.push(dateTo + ' 23:59:59');
+            idx++;
+        }
+        const whereClause = 'WHERE ' + where.join(' AND ');
+
+        const result = await pool.query(
+            `SELECT oh.order_number, oh.company, oh.new_status, oh.comment, oh.changed_by, oh.changed_by_company, oh.changed_at,
+                    o.name, o.code
+             FROM order_history oh
+             LEFT JOIN orders o ON o.order_number = oh.order_number AND o.company = oh.company
+             ${whereClause}
+             ORDER BY oh.changed_at DESC`,
+            params
+        );
+
+        const workbook = new ExcelJS.Workbook();
+        workbook.creator = 'Production Tracker';
+        workbook.created = new Date();
+        const phaseLabelMap = { '200': 'Serigrafija', '300': 'Vez' };
+        const sheet = workbook.addWorksheet(phaseLabelMap[phase] || ('Faza ' + phase));
+        sheet.columns = [
+            { header: 'Datum i vreme', key: 'date', width: 20 },
+            { header: 'Nalog', key: 'order', width: 15 },
+            { header: 'Firma', key: 'company', width: 24 },
+            { header: 'Naziv artikla', key: 'name', width: 32 },
+            { header: 'Šifra', key: 'code', width: 14 },
+            { header: 'Status', key: 'status', width: 20 },
+            { header: 'Komentar', key: 'comment', width: 40 },
+            { header: 'Izmenio', key: 'changed_by', width: 18 }
+        ];
+        sheet.getRow(1).eachCell(cell => {
+            cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2B4570' } };
+            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        });
+        const STATUS_LABELS = {
+            'poslato': '📤 Poslato',
+            'uradjeno': '📤 Urađeno',
+            'problem': '⚠️ Problem',
+            'completed': '📥 Primljeno'
+        };
+        result.rows.forEach(r => {
+            sheet.addRow({
+                date: new Date(r.changed_at).toLocaleString('sr-RS'),
+                order: r.order_number,
+                company: r.company,
+                name: r.name || '',
+                code: r.code || '',
+                status: STATUS_LABELS[r.new_status] || r.new_status,
+                comment: r.comment || '',
+                changed_by: r.changed_by || ''
+            });
+        });
+
+        const fileName = `${phaseLabelMap[phase] || phase}_${dateFrom || 'pocetak'}_${dateTo || 'danas'}.xlsx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (e) {
+        console.error('❌ Worker export error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.post('/api/poslji-otpremnicu-mail', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
@@ -833,9 +919,6 @@ app.get('/api/orders', authenticate, async (req, res) => {
 
         const hidePrijem = !privileged;
 
-        // ============================================================
-        // NOVO: LATERAL JOIN za history — vremenska linija po fazi
-        // ============================================================
         const dataQuery = `
             SELECT o.*, 
                    COALESCE(json_agg(json_build_object(

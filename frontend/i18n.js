@@ -19,6 +19,8 @@ const TRANSLATIONS = {
     panel_my_report_download: '📥 Preuzmi Excel',
     panel_no_orders: '📭 Nema naloga za prikaz',
     panel_loading: '⏳ Učitavanje...',
+    panel_worker_report: 'Izveštaj faze',
+    panel_worker_report_download: 'Preuzmi Excel',
 
     // ===== TABELA =====
     th_order: 'Nalog',
@@ -122,7 +124,7 @@ const TRANSLATIONS = {
     msg_repeat_new_password: 'Ponovi NOVU lozinku:',
     msg_password_mismatch: 'Nova lozinka i potvrda se ne poklapaju.',
 
-    // ===== NOVO — vremenska linija i problem modal =====
+    // ===== VREMENSKA LINIJA I PROBLEM MODAL =====
     msg_history: 'Istorija',
     msg_problem_title: 'Prijavi problem',
     msg_problem_hint: 'Opiši problem (opciono):',
@@ -156,6 +158,8 @@ const TRANSLATIONS = {
     panel_my_report_download: '📥 Scarica Excel',
     panel_no_orders: '📭 Nessun ordine da mostrare',
     panel_loading: '⏳ Caricamento...',
+    panel_worker_report: 'Rapporto fase',
+    panel_worker_report_download: 'Scarica Excel',
 
     // ===== TABELA =====
     th_order: 'Ordine',
@@ -259,7 +263,7 @@ const TRANSLATIONS = {
     msg_repeat_new_password: 'Ripeti la NUOVA password:',
     msg_password_mismatch: 'La nuova password e la conferma non corrispondono.',
 
-    // ===== NOVO — cronologia e modal problema =====
+    // ===== CRONOLOGIA E MODAL PROBLEMA =====
     msg_history: 'Cronologia',
     msg_problem_title: 'Segnala problema',
     msg_problem_hint: 'Descrivi il problema (opzionale):',
