@@ -126,7 +126,7 @@ function showRemindersModal(list){
     const days=Math.floor((Date.now()-new Date(r.deadlineDate).getTime())/86400000);
     const waitLabel=r.waitingOn==='kontrola'?t('msg_waiting_kontrola_confirm'):r.waitingOn==='klijent'?t('msg_waiting_your_confirm'):t('msg_waiting_both');
     const dayWord=days===1?t('msg_day'):t('msg_days');
-    return `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer" onclick="openOrder(${r.orderId})">
+    return `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer" onclick="openOrderFromReminder(${r.orderId},'${js(r.orderNumber)}','${js(r.company)}')">
       <b>${t('th_order')} #${esc(r.orderNumber)}</b>${r.name?` — ${esc(r.name)}`:''}<br>
       <span style="color:var(--muted);font-size:13px">${esc(r.company)} — ${t('msg_late_days')} ${days} ${dayWord} — ${waitLabel}</span>
     </div>`;
@@ -237,7 +237,6 @@ async function deleteCompanyInfo(company){
     loadCompanyInfo();
   }catch(e){alert('❌ '+e.message)}
 }
-
 // ============ FIXED RECIPIENTS ============
 function addFixedRecipientsControls(){
   if(!adminPanel||$('fixedRecipientsPanel'))return;
@@ -700,13 +699,31 @@ function goToPage(p){if(p<1||p>totalPages)return;loadOrders(searchInput?.value||
 
 function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)return;selectedOrderId=id;renderModal(o);phaseModal.classList.remove('hidden')}
 
+// ============ NOVO: otvaranje naloga iz podsetnika (dovlači sa servera ako nije lokalno) ============
+async function openOrderFromReminder(orderId, orderNumber, company){
+  closeRemindersModal();
+  let o = orders.find(x => String(x.id) === String(orderId));
+  if(o){ openOrder(orderId); return; }
+  try{
+    const d = await api(`/api/orders?search=${encodeURIComponent(orderNumber)}&page=1&limit=100`, {headers:headers()});
+    const found = (d.data||[]).find(x => String(x.id) === String(orderId));
+    if(!found){
+      alert('❌ Nalog #' + orderNumber + ' nije pronađen (možda je obrisan).');
+      return;
+    }
+    orders.unshift(found);
+    openOrder(orderId);
+  }catch(e){
+    alert('❌ Greška pri učitavanju naloga: ' + e.message);
+  }
+}
+
 // ============ NAZIVI FAZA ============
 function phaseLabel(p){
   const key='phase_'+String(p);
   const translated=t(key);
   return translated!==key?translated:`Faza ${p}`;
 }
-
 // ============ IKONICE FAZA ============
 const PHASE_ICONS={'100':'✂️','200':'🖨️','300':'🧵','400':'🪡','500':'📦'};
 function phaseIcon(p){return PHASE_ICONS[String(p)]||'●'}
@@ -1109,7 +1126,7 @@ function date(v) {
 
 function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
 function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
-window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;window.resetPassword=resetPassword;window.deleteCompanyInfo=deleteCompanyInfo;window.deleteFixedRecipient=deleteFixedRecipient;window.clearOtpremnicaLog=clearOtpremnicaLog;
+window.openOrder=openOrder;window.openOrderFromReminder=openOrderFromReminder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;window.resetPassword=resetPassword;window.deleteCompanyInfo=deleteCompanyInfo;window.deleteFixedRecipient=deleteFixedRecipient;window.clearOtpremnicaLog=clearOtpremnicaLog;
 // ============ UI: admin collapse, scroll lock, Esc ============
 (()=>{
   const btn=$('adminToggle');
