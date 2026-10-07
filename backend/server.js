@@ -155,7 +155,7 @@ const initDb = async () => {
         `);
 
         // ============================================================
-        // NOVO: Indeksi za brže upite (LATERAL JOIN-ovi u /api/orders)
+        // Indeksi za brže upite (LATERAL JOIN-ovi u /api/orders)
         // ============================================================
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_history_lookup ON order_history(order_number, company, phase, changed_at DESC)`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_progress_order ON progress(order_id, phase)`);
@@ -341,9 +341,6 @@ function generatePassword(length = 8) {
     return pass;
 }
 
-// ============================================================
-// IZMENJENO: /api/users — dozvoljava role vez i serigrafija
-// ============================================================
 app.post('/api/users', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
     try {
@@ -790,11 +787,14 @@ app.get('/api/orders', authenticate, async (req, res) => {
                 paramIndex++;
             }
 
-            // Claim filter za klijenta — ne vidi tuđe preuzete naloge
+            // ============================================================
+            // BUG FIX: claim filter sada IZUZIMA faze 200 (Serigrafija) i 300 (Vez)
+            // jer te faze rade eksterni radnici — ne smeju da "zaključaju" nalog klijentu
+            // ============================================================
             const claimClause = `NOT EXISTS (
                 SELECT 1 FROM progress pclaim
                 WHERE pclaim.order_id = o.id
-                  AND pclaim.phase IN ('100','200','300','400','NAPOMENA')
+                  AND pclaim.phase IN ('100','400','NAPOMENA')
                   AND pclaim.updated_by_company IS NOT NULL
                   AND pclaim.updated_by_company != $${paramIndex}
                   AND (pclaim.status != 'pending' OR (pclaim.comment IS NOT NULL AND pclaim.comment != ''))
@@ -841,7 +841,6 @@ app.get('/api/orders', authenticate, async (req, res) => {
         const countResult = await pool.query(countQuery, params);
         const total = parseInt(countResult.rows[0].count);
 
-        // Admin/kontrola vide PRIJEM; ostali ne
         const hidePrijem = !privileged;
 
         const dataQuery = `
@@ -965,31 +964,31 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
                 return res.status(403).json({ error: `Možete menjati samo fazu "${workerPhase}".` });
             }
 
-            // Dozvoljeni statusi za radnike
             const allowedStatuses = ['primljeno', 'uradjeno', 'problem'];
             if (status && !allowedStatuses.includes(status)) {
                 return res.status(403).json({ error: 'Nedozvoljen status za radnike (dozvoljeno: Primljeno, Urađeno, Problem).' });
             }
 
-            // Sekvenca: ne može "uradjeno" bez "primljeno"
-            if (status === 'uradjeno' && oldStatus !== 'primljeno' && oldStatus !== 'problem') {
+            if (status === 'uradjeno' && oldStatus !== 'primljeno' && oldStatus !== 'problem' && oldStatus !== 'poslato') {
                 return res.status(403).json({ error: 'Prvo označite da ste primili robu ("Primljeno").' });
             }
 
-            // Radnik ne može da menja ako je klijent još uvek na "pending"
             if (oldStatus === 'pending' || !oldStatus) {
                 return res.status(403).json({ error: 'Klijent još nije poslao nalog za ovu fazu.' });
             }
         }
 
         // ============================================================
-        // 4) KLIJENT (user) — claim check + sekvenca + lock
+        // 4) KLIJENT (user) — claim check + sekvenca
         // ============================================================
         if (isUser(req.user)) {
+            // ============================================================
+            // BUG FIX: claim check sada IZUZIMA faze 200 i 300
+            // ============================================================
             if (['100', '200', '300', '400', 'NAPOMENA'].includes(phase)) {
                 const claimCheck = await pool.query(
                     `SELECT DISTINCT updated_by_company FROM progress
-                     WHERE order_id = $1 AND phase IN ('100','200','300','400','NAPOMENA')
+                     WHERE order_id = $1 AND phase IN ('100','400','NAPOMENA')
                        AND updated_by_company IS NOT NULL AND updated_by_company != $2
                        AND (status != 'pending' OR (comment IS NOT NULL AND comment != ''))
                      LIMIT 1`,
@@ -1023,7 +1022,7 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         }
 
         // ============================================================
-        // 5) LOCK PO DANU — samo za klijenta, NE za radnike/admina
+        // 5) LOCK PO DANU — samo za klijenta
         // ============================================================
         if (isUser(req.user)) {
             const hasPriorActivity = oldStatus !== 'pending' || oldComment.trim() !== '';
@@ -1038,7 +1037,8 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             if (hasPriorActivity && !sameDay) {
                 const isProblemToCompleted = oldStatus === 'problem' && status === 'completed' && finalComment === oldComment;
                 const isPoslatoToCompleted = oldStatus === 'poslato' && status === 'completed';
-                if (!isProblemToCompleted && !isPoslatoToCompleted) {
+                const isUradjenoToCompleted = oldStatus === 'uradjeno' && status === 'completed';
+                if (!isProblemToCompleted && !isPoslatoToCompleted && !isUradjenoToCompleted) {
                     return res.status(403).json({
                         error: '🔒 Ova stavka je zaključana (poslednja izmena je bila ranijeg dana). Obratite se administratoru.'
                     });
