@@ -1,5 +1,6 @@
 // PRODUCTION TRACKER - orders.js
 let currentUser=null,orders=[],selectedOrderId=null,currentPage=1,totalPages=1,totalOrders=0;
+let currentReminders=[];
 const LIMIT=100;
 const $=id=>document.getElementById(id);
 const token=localStorage.getItem('token'),userStr=localStorage.getItem('user');
@@ -120,6 +121,7 @@ async function checkReminders(){
 }
 
 function showRemindersModal(list){
+  currentReminders=list;
   let div=$('remindersModal');
   if(!div){div=document.createElement('div');div.id='remindersModal';div.className='modal';document.body.appendChild(div)}
   const rows=list.map(r=>{
@@ -138,10 +140,10 @@ function showRemindersModal(list){
   </div>`;
   div.classList.remove('hidden');
 }
-function closeRemindersModal(){$('remindersModal')?.classList.add('hidden')}
+function closeRemindersModal(){$('remindersModal')?.classList.add('hidden');currentReminders=[]}
 let searchDebounce=null;
 searchInput?.addEventListener('input',()=>{clearTimeout(searchDebounce);searchDebounce=setTimeout(()=>loadOrders(searchInput.value,1),300)});
-searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>phaseModal?.classList.add('hidden'));window.addEventListener('click',e=>{if(e.target===phaseModal)phaseModal.classList.add('hidden')});
+searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>{phaseModal?.classList.add('hidden');reopenRemindersIfAny()});window.addEventListener('click',e=>{if(e.target===phaseModal){phaseModal.classList.add('hidden');reopenRemindersIfAny()}});
 
 function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;const p=document.createElement('div');p.id='orderManagementPanel';p.className='admin-section';p.innerHTML=`<h3>🗂️ Upravljanje nalozima</h3><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="deleteActiveOrdersBtn" class="btn-tag btn-tag--problem" style="padding:10px 16px;font-size:13px">🗑️ Obriši aktivne naloge</button><button id="deleteAllHistoryBtn" class="btn-tag btn-tag--reset" style="padding:10px 16px;font-size:13px">🧹 Obriši sve + istoriju</button></div><div id="orderManagementStatus"></div>`;adminBody.appendChild(p);$('deleteActiveOrdersBtn').onclick=clearActive;$('deleteAllHistoryBtn').onclick=clearAll;
   const h=document.createElement('div');h.id='historyExportPanel';h.className='admin-section';
@@ -471,11 +473,9 @@ async function exportOtpremnica(){
     const blob=await r.blob();
     const fileName=`Otpremnica_${broj}_${company.replace(/\s+/g,'_')}_${date||'danas'}.xlsx`;
 
-    // Sačuvaj u memoriju za kasnije (mail)
     lastGeneratedExcelBlob=blob;
     lastGeneratedFileName=fileName;
 
-    // 1) Download
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
     a.href=url;
@@ -483,7 +483,6 @@ async function exportOtpremnica(){
     document.body.appendChild(a);a.click();a.remove();
     URL.revokeObjectURL(url);
 
-    // 2) Sačuvaj u folder
     try{
       const fh=await otpremnicaFolderHandle.getFileHandle(fileName,{create:true});
       const w=await fh.createWritable();
@@ -496,7 +495,6 @@ async function exportOtpremnica(){
       return;
     }
 
-    // 3) Povećaj broj i sačuvaj
     const nextBroj=broj+1;
     await writeBrojToFile(otpremnicaFolderHandle,nextBroj);
     if(brojInput)brojInput.value=nextBroj;
@@ -701,7 +699,7 @@ function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)r
 
 // ============ NOVO: otvaranje naloga iz podsetnika (dovlači sa servera ako nije lokalno) ============
 async function openOrderFromReminder(orderId, orderNumber, company){
-  closeRemindersModal();
+  $('remindersModal')?.classList.add('hidden');
   let o = orders.find(x => String(x.id) === String(orderId));
   if(o){ openOrder(orderId); return; }
   try{
@@ -709,12 +707,25 @@ async function openOrderFromReminder(orderId, orderNumber, company){
     const found = (d.data||[]).find(x => String(x.id) === String(orderId));
     if(!found){
       alert('❌ Nalog #' + orderNumber + ' nije pronađen (možda je obrisan).');
+      $('remindersModal')?.classList.remove('hidden');
       return;
     }
     orders.unshift(found);
     openOrder(orderId);
   }catch(e){
     alert('❌ Greška pri učitavanju naloga: ' + e.message);
+    $('remindersModal')?.classList.remove('hidden');
+  }
+}
+
+// ============ NOVO: vrati podsetnike kad se zatvori detalj naloga ============
+function reopenRemindersIfAny(){
+  if(currentReminders.length > 0 && $('remindersModal')){
+    setTimeout(()=>{
+      if(phaseModal?.classList.contains('hidden') && $('remindersModal')){
+        $('remindersModal').classList.remove('hidden');
+      }
+    }, 100);
   }
 }
 
@@ -1137,5 +1148,16 @@ window.openOrder=openOrder;window.openOrderFromReminder=openOrderFromReminder;wi
   }
   const sync=()=>document.body.classList.toggle('modal-open',!!document.querySelector('.modal:not(.hidden)'));
   new MutationObserver(sync).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
-  document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;const m=[...document.querySelectorAll('.modal:not(.hidden)')].pop();if(m)m.classList.add('hidden')});
+  document.addEventListener('keydown',e=>{
+    if(e.key!=='Escape')return;
+    // Ako je otvoren detalj naloga — zatvori njega i vrati podsetnike
+    if(phaseModal && !phaseModal.classList.contains('hidden')){
+      phaseModal.classList.add('hidden');
+      reopenRemindersIfAny();
+      return;
+    }
+    // Inače zatvori najgornji modal
+    const m=[...document.querySelectorAll('.modal:not(.hidden)')].pop();
+    if(m)m.classList.add('hidden');
+  });
 })();
