@@ -535,6 +535,63 @@ app.post('/api/change-password', authenticate, async (req, res) => {
     }
 });
 
+// ============ NOVA RUTA: SLANJE OTPREMNICE MAIL-OM ============
+app.post('/api/poslji-otpremnicu-mail', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const { company, number, text, excelBase64, fileName } = req.body;
+        if (!company) return res.status(400).json({ error: 'Firma je obavezna.' });
+        if (!text) return res.status(400).json({ error: 'Tekst je obavezan.' });
+        if (!excelBase64) return res.status(400).json({ error: 'Excel nije priložen.' });
+
+        // Primaoci: admin + fiksni + email firme
+        const recipients = new Set();
+        if (process.env.ADMIN_EMAIL) {
+            recipients.add(process.env.ADMIN_EMAIL.trim().toLowerCase());
+        }
+        try {
+            const fixedResult = await pool.query('SELECT email FROM fixed_recipients');
+            fixedResult.rows.forEach(r => recipients.add(r.email.trim().toLowerCase()));
+        } catch (_) {}
+        try {
+            const companyResult = await pool.query(
+                'SELECT email FROM company_info WHERE company = $1',
+                [company]
+            );
+            if (companyResult.rows[0]?.email) {
+                recipients.add(companyResult.rows[0].email.trim().toLowerCase());
+            }
+        } catch (_) {}
+
+        if (recipients.size === 0) {
+            return res.status(400).json({ error: 'Nema primalaca (ADMIN_EMAIL nije podešen, niti ima fiksnih primalaca, niti email firme).' });
+        }
+
+        const excelBuffer = Buffer.from(excelBase64, 'base64');
+        const finalFileName = fileName || `Otpremnica_${number||'?'}_${company.replace(/\s+/g,'_')}.xlsx`;
+
+        await sendEmail({
+            to: Array.from(recipients),
+            subject: `📦 Otpremnica br. ${number||'?'} — ${company}`,
+            html: `<pre style="font-family:Arial,sans-serif;font-size:14px;white-space:pre-wrap">${text.replace(/</g,'&lt;')}</pre>`,
+            attachments: [{
+                filename: finalFileName,
+                content: excelBuffer
+            }]
+        });
+
+        res.json({
+            message: `✅ Otpremnica poslata na ${recipients.size} primalaca`,
+            recipients: Array.from(recipients)
+        });
+    } catch (e) {
+        console.error('❌ Poslji otpremnicu mail error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ============ UPLOAD ============
 app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
     if (req.user.role !== 'admin') {
@@ -1395,7 +1452,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
     }
 });
 
-// ============ PRIJEM - ŠABLONSKI TEKST ZA COPY-PASTE U MAIL (SA BROJEM OTPREMNICE) ============
+// ============ PRIJEM - ŠABLONSKI TEKST ZA COPY-PASTE U MAIL (SA BROJEM OTPREMNICE, FILTRIRA KAO EXCEL) ============
 app.get('/api/prijem-template', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
@@ -1426,14 +1483,29 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
             effectiveMap.set(`${r.order_number}||${r.company}`, { changedBy: r.changed_by, changedByCompany: r.changed_by_company });
         });
 
-        const result = { rows: rawResult.rows.filter(r => {
+        const filteredRows = rawResult.rows.filter(r => {
             const eff = effectiveMap.get(`${r.order_number}||${r.company}`);
             const effectiveCompany = (eff && eff.changedByCompany) ? eff.changedByCompany : r.company;
-            return effectiveCompany === company;
-        }) };
+            if (effectiveCompany !== company) return false;
+            let d = {};
+            try { d = JSON.parse(r.comment || '{}'); } catch (_) {}
+            return d.outcome === 'reparacija';
+        });
+
+        const skipKeys = new Set();
+        if (filteredRows.length > 0) {
+            const logResult = await pool.query(
+                `SELECT order_number, company, repair_changed_at FROM otpremnica_log`
+            );
+            logResult.rows.forEach(l => {
+                skipKeys.add(`${l.order_number}||${l.company}||${new Date(l.repair_changed_at).toISOString()}`);
+            });
+        }
+
+        const result = { rows: filteredRows.filter(r => !skipKeys.has(`${r.order_number}||${r.company}||${new Date(r.changed_at).toISOString()}`)) };
 
         if (result.rows.length === 0) {
-            return res.json({ text: `Nema Reparacija/Anulirano stavki za "${company}" na dan ${targetDate}.` });
+            return res.json({ text: `Nema novih reparacija za "${company}" na dan ${targetDate} (sve su već poslate u otpremnici).` });
         }
 
         const orderNumbers = [...new Set(result.rows.map(r => r.order_number))];
@@ -1444,22 +1516,17 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
         );
         const nameMap = new Map(infoResult.rows.map(r => [`${r.order_number}||${r.company}`, r.name]));
 
-        let hasReparacija = false;
         const itemLines = [];
         result.rows.forEach(r => {
             const naziv = nameMap.get(`${r.order_number}||${r.company}`) || '';
             let d = {};
             try { d = JSON.parse(r.comment || '{}'); } catch (_) {}
-            const isAnulirano = d.outcome === 'anulirano';
-            if (!isAnulirano) hasReparacija = true;
-            const icon = isAnulirano ? '❌ ANULIRANO' : '🔧 REPARACIJA';
             const items = (d.items || []).map(it => `vel.${it.size} - ${it.qty} pa.`).join(', ');
 
             itemLines.push(`Nalog #${r.order_number}${naziv ? ' — ' + naziv : ''}`);
-            itemLines.push(icon);
+            itemLines.push('🔧 REPARACIJA');
             if (items) itemLines.push(items);
             if (d.note) itemLines.push(`Napomena: ${d.note}`);
-            if (isAnulirano) itemLines.push('Naknadno cemo Vas obavestiti o detaljima naplate.');
             itemLines.push('');
         });
 
@@ -1469,10 +1536,8 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
         lines.push(`danas Vam vraćamo po otpremnici br. ${otpremnicaNumber} sledeće artikle:`);
         lines.push('');
         lines.push(...itemLines);
-        if (hasReparacija) {
-            lines.push('Molimo Vas da uradite reparacije što pre, kako ne bismo kasnili sa isporukama.');
-            lines.push('');
-        }
+        lines.push('Molimo Vas da uradite reparacije što pre, kako ne bismo kasnili sa isporukama.');
+        lines.push('');
         lines.push('Hvala,');
         lines.push('pozdrav.');
 
@@ -1748,7 +1813,7 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
     }
 });
 
-// ============ SEND REPORT ============
+// ============ SEND REPORT (klijentov izveštaj — admin + fiksni + firma) ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
         const logResult = await pool.query(

@@ -28,6 +28,20 @@ const pool = new Pool({
     ssl: { rejectUnauthorized: false }
 });
 
+// ============================================================
+// POMOĆNE FUNKCIJE ZA ROLE
+// ============================================================
+const isAdmin = (user) => user.role === 'admin';
+const isKontrola = (user) => user.role === 'kontrola';
+const isVez = (user) => user.role === 'vez';
+const isSerigrafija = (user) => user.role === 'serigrafija';
+const isUser = (user) => user.role === 'user';
+const isPrivileged = (user) => isAdmin(user) || isKontrola(user);
+const isExternalWorker = (user) => isVez(user) || isSerigrafija(user);
+
+// Koja faza pripada kom radniku
+const WORKER_PHASE = { 'vez': '300', 'serigrafija': '200' };
+
 const initDb = async () => {
     try {
         await pool.query(`
@@ -139,6 +153,15 @@ const initDb = async () => {
                 UNIQUE(order_number, company, repair_changed_at)
             )
         `);
+
+        // ============================================================
+        // NOVO: Indeksi za brže upite (LATERAL JOIN-ovi u /api/orders)
+        // ============================================================
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_history_lookup ON order_history(order_number, company, phase, changed_at DESC)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_progress_order ON progress(order_id, phase)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_reparacije_order_created ON reparacije(order_id, created_at DESC)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_orders_company ON orders(company)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_orders_number_company ON orders(order_number, company)`);
 
         const adminCheck = await pool.query('SELECT * FROM users WHERE username = $1', ['admin']);
         if (adminCheck.rows.length === 0) {
@@ -318,27 +341,34 @@ function generatePassword(length = 8) {
     return pass;
 }
 
+// ============================================================
+// IZMENJENO: /api/users — dozvoljava role vez i serigrafija
+// ============================================================
 app.post('/api/users', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
     try {
         const { username, company, role } = req.body;
-        const finalRole = role === 'kontrola' ? 'kontrola' : 'user';
+        const allowedRoles = ['user', 'kontrola', 'vez', 'serigrafija'];
+        const finalRole = allowedRoles.includes(role) ? role : 'user';
         const exists = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
         if (exists.rows.length > 0) {
             return res.status(400).json({ error: 'Username already exists' });
         }
         const plainPassword = generatePassword();
         const hashedPassword = await bcrypt.hash(plainPassword, 10);
+        const defaultCompany = finalRole === 'kontrola' ? 'Kontrola'
+            : finalRole === 'vez' ? 'Vez'
+            : finalRole === 'serigrafija' ? 'Serigrafija'
+            : '';
         const result = await pool.query(
             'INSERT INTO users (username, password, role, company) VALUES ($1, $2, $3, $4) RETURNING id, username, role, company',
-            [username, hashedPassword, finalRole, company || (finalRole === 'kontrola' ? 'Kontrola' : '')]
+            [username, hashedPassword, finalRole, company || defaultCompany]
         );
         res.status(201).json({ message: 'User created', user: result.rows[0], password: plainPassword });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
 });
-
 app.post('/api/users/:id/reset-password', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
     try {
@@ -535,7 +565,7 @@ app.post('/api/change-password', authenticate, async (req, res) => {
     }
 });
 
-// ============ NOVA RUTA: SLANJE OTPREMNICE MAIL-OM ============
+// ============ SLANJE OTPREMNICE MAIL-OM ============
 app.post('/api/poslji-otpremnicu-mail', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
@@ -546,7 +576,6 @@ app.post('/api/poslji-otpremnicu-mail', authenticate, async (req, res) => {
         if (!text) return res.status(400).json({ error: 'Tekst je obavezan.' });
         if (!excelBase64) return res.status(400).json({ error: 'Excel nije priložen.' });
 
-        // Primaoci: admin + fiksni + email firme
         const recipients = new Set();
         if (process.env.ADMIN_EMAIL) {
             recipients.add(process.env.ADMIN_EMAIL.trim().toLowerCase());
@@ -733,7 +762,6 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
         res.status(500).json({ error: e.message });
     }
 });
-
 // ============ ORDERS ============
 app.get('/api/orders', authenticate, async (req, res) => {
     try {
@@ -744,33 +772,25 @@ app.get('/api/orders', authenticate, async (req, res) => {
         let params = [];
         let paramIndex = 1;
 
-        const isPrivileged = req.user.role === 'admin' || req.user.role === 'kontrola';
+        const privileged = isPrivileged(req.user);
+        const externalWorker = isExternalWorker(req.user);
+        const workerPhase = externalWorker ? WORKER_PHASE[req.user.role] : null;
 
-        if (!isPrivileged) {
+        // === KLIJENT (user) — samo svoje firme ===
+        if (isUser(req.user)) {
             if (search) {
                 const s = search.toLowerCase();
-                whereClause = `WHERE LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex}`;
+                whereClause = `WHERE company = $${paramIndex} AND (LOWER(order_number) LIKE $${paramIndex + 1} OR LOWER(name) LIKE $${paramIndex + 1} OR LOWER(code) LIKE $${paramIndex + 1})`;
+                params.push(req.user.company);
                 params.push(`%${s}%`);
-                paramIndex++;
+                paramIndex += 2;
             } else {
                 whereClause = `WHERE company = $${paramIndex}`;
                 params.push(req.user.company);
                 paramIndex++;
             }
-        }
 
-        if (isPrivileged && search) {
-            const s = search.toLowerCase();
-            if (whereClause) {
-                whereClause += ` AND (LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(company) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex})`;
-            } else {
-                whereClause = `WHERE LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(company) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex}`;
-            }
-            params.push(`%${s}%`);
-            paramIndex++;
-        }
-
-        if (!isPrivileged) {
+            // Claim filter za klijenta — ne vidi tuđe preuzete naloge
             const claimClause = `NOT EXISTS (
                 SELECT 1 FROM progress pclaim
                 WHERE pclaim.order_id = o.id
@@ -779,14 +799,50 @@ app.get('/api/orders', authenticate, async (req, res) => {
                   AND pclaim.updated_by_company != $${paramIndex}
                   AND (pclaim.status != 'pending' OR (pclaim.comment IS NOT NULL AND pclaim.comment != ''))
             )`;
-            whereClause += whereClause ? ` AND ${claimClause}` : `WHERE ${claimClause}`;
+            whereClause += ` AND ${claimClause}`;
             params.push(req.user.company);
+            paramIndex++;
+        }
+
+        // === RADNIK (vez / serigrafija) — sve firme, ali samo ako je klijent kliknuo Poslato ===
+        if (externalWorker) {
+            if (search) {
+                const s = search.toLowerCase();
+                whereClause = `WHERE EXISTS (
+                    SELECT 1 FROM progress pw
+                    WHERE pw.order_id = o.id
+                      AND pw.phase = $${paramIndex}
+                      AND pw.status IN ('poslato','primljeno','uradjeno','problem')
+                ) AND (LOWER(order_number) LIKE $${paramIndex + 1} OR LOWER(name) LIKE $${paramIndex + 1} OR LOWER(company) LIKE $${paramIndex + 1} OR LOWER(code) LIKE $${paramIndex + 1})`;
+                params.push(workerPhase);
+                params.push(`%${s}%`);
+                paramIndex += 2;
+            } else {
+                whereClause = `WHERE EXISTS (
+                    SELECT 1 FROM progress pw
+                    WHERE pw.order_id = o.id
+                      AND pw.phase = $${paramIndex}
+                      AND pw.status IN ('poslato','primljeno','uradjeno','problem')
+                )`;
+                params.push(workerPhase);
+                paramIndex++;
+            }
+        }
+
+        // === ADMIN / KONTROLA — sve firme, opciona pretraga ===
+        if (privileged && search) {
+            const s = search.toLowerCase();
+            whereClause = `WHERE (LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(company) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex})`;
+            params.push(`%${s}%`);
             paramIndex++;
         }
 
         const countQuery = `SELECT COUNT(*) FROM orders o ${whereClause}`;
         const countResult = await pool.query(countQuery, params);
         const total = parseInt(countResult.rows[0].count);
+
+        // Admin/kontrola vide PRIJEM; ostali ne
+        const hidePrijem = !privileged;
 
         const dataQuery = `
             SELECT o.*, 
@@ -803,7 +859,7 @@ app.get('/api/orders', authenticate, async (req, res) => {
                    rep.kontrola_confirmed_at as rep_kontrola_confirmed_at, rep.kontrola_confirmed_by as rep_kontrola_confirmed_by,
                    prijemSt.status as prijem_status, prijemSt.comment as prijem_comment
             FROM orders o
-            LEFT JOIN progress p ON o.id = p.order_id ${isPrivileged ? '' : "AND p.phase != 'PRIJEM'"}
+            LEFT JOIN progress p ON o.id = p.order_id ${hidePrijem ? "AND p.phase != 'PRIJEM'" : ''}
             LEFT JOIN LATERAL (
                 SELECT changed_at, comment FROM order_history oh
                 WHERE oh.order_number = o.order_number AND oh.company = o.company
@@ -886,49 +942,90 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         if (!status) status = oldStatus;
         const finalComment = comment !== undefined ? comment : oldComment;
 
-        if (req.user.role === 'kontrola' && phase !== 'PRIJEM') {
+        // ============================================================
+        // 1) KONTROLA — može samo PRIJEM
+        // ============================================================
+        if (isKontrola(req.user) && phase !== 'PRIJEM') {
             return res.status(403).json({ error: 'Kontrola može da menja isključivo fazu Prijem.' });
         }
-        if (req.user.role !== 'admin' && req.user.role !== 'kontrola' && phase === 'PRIJEM') {
+
+        // ============================================================
+        // 2) SAMO ADMIN I KONTROLA — mogu PRIJEM
+        // ============================================================
+        if (!isAdmin(req.user) && !isKontrola(req.user) && phase === 'PRIJEM') {
             return res.status(403).json({ error: 'Nemate dozvolu za ovu fazu.' });
         }
 
-        if (req.user.role === 'user' && ['100', '200', '300', '400', 'NAPOMENA'].includes(phase)) {
-            const claimCheck = await pool.query(
-                `SELECT DISTINCT updated_by_company FROM progress
-                 WHERE order_id = $1 AND phase IN ('100','200','300','400','NAPOMENA')
-                   AND updated_by_company IS NOT NULL AND updated_by_company != $2
-                   AND (status != 'pending' OR (comment IS NOT NULL AND comment != ''))
-                 LIMIT 1`,
-                [orderId, req.user.company]
-            );
-            if (claimCheck.rows.length > 0) {
-                return res.status(403).json({
-                    error: `🔒 Ovaj nalog je već preuzet od strane firme "${claimCheck.rows[0].updated_by_company}" i nije Vam dostupan.`
-                });
+        // ============================================================
+        // 3) RADNIK (vez / serigrafija) — samo svoja faza
+        // ============================================================
+        if (isExternalWorker(req.user)) {
+            const workerPhase = WORKER_PHASE[req.user.role];
+            if (phase !== workerPhase) {
+                return res.status(403).json({ error: `Možete menjati samo fazu "${workerPhase}".` });
+            }
+
+            // Dozvoljeni statusi za radnike
+            const allowedStatuses = ['primljeno', 'uradjeno', 'problem'];
+            if (status && !allowedStatuses.includes(status)) {
+                return res.status(403).json({ error: 'Nedozvoljen status za radnike (dozvoljeno: Primljeno, Urađeno, Problem).' });
+            }
+
+            // Sekvenca: ne može "uradjeno" bez "primljeno"
+            if (status === 'uradjeno' && oldStatus !== 'primljeno' && oldStatus !== 'problem') {
+                return res.status(403).json({ error: 'Prvo označite da ste primili robu ("Primljeno").' });
+            }
+
+            // Radnik ne može da menja ako je klijent još uvek na "pending"
+            if (oldStatus === 'pending' || !oldStatus) {
+                return res.status(403).json({ error: 'Klijent još nije poslao nalog za ovu fazu.' });
             }
         }
 
-        if (req.user.role === 'user' && ['100', '200', '300', '400', '500'].includes(phase) && status !== 'pending') {
-            const phaseOrder = ['100', '200', '300', '400', '500'];
-            const idx = phaseOrder.indexOf(phase);
-            if (idx > 0) {
-                const priorPhases = phaseOrder.slice(0, idx);
-                const priorResult = await pool.query(
-                    `SELECT phase, status FROM progress WHERE order_id = $1 AND phase = ANY($2::text[])`,
-                    [orderId, priorPhases]
+        // ============================================================
+        // 4) KLIJENT (user) — claim check + sekvenca + lock
+        // ============================================================
+        if (isUser(req.user)) {
+            if (['100', '200', '300', '400', 'NAPOMENA'].includes(phase)) {
+                const claimCheck = await pool.query(
+                    `SELECT DISTINCT updated_by_company FROM progress
+                     WHERE order_id = $1 AND phase IN ('100','200','300','400','NAPOMENA')
+                       AND updated_by_company IS NOT NULL AND updated_by_company != $2
+                       AND (status != 'pending' OR (comment IS NOT NULL AND comment != ''))
+                     LIMIT 1`,
+                    [orderId, req.user.company]
                 );
-                const statusMap = new Map(priorResult.rows.map(r => [r.phase, r.status]));
-                const unresolved = priorPhases.find(p => !statusMap.has(p) || statusMap.get(p) === 'pending' || statusMap.get(p) === 'problem');
-                if (unresolved) {
+                if (claimCheck.rows.length > 0) {
                     return res.status(403).json({
-                        error: `⛔ Morate prvo rešiti fazu "${phaseLabel(unresolved)}" pre nego što označite "${phaseLabel(phase)}".`
+                        error: `🔒 Ovaj nalog je već preuzet od strane firme "${claimCheck.rows[0].updated_by_company}" i nije Vam dostupan.`
                     });
+                }
+            }
+
+            if (['100', '200', '300', '400', '500'].includes(phase) && status !== 'pending') {
+                const phaseOrder = ['100', '200', '300', '400', '500'];
+                const idx = phaseOrder.indexOf(phase);
+                if (idx > 0) {
+                    const priorPhases = phaseOrder.slice(0, idx);
+                    const priorResult = await pool.query(
+                        `SELECT phase, status FROM progress WHERE order_id = $1 AND phase = ANY($2::text[])`,
+                        [orderId, priorPhases]
+                    );
+                    const statusMap = new Map(priorResult.rows.map(r => [r.phase, r.status]));
+                    const unresolved = priorPhases.find(p => !statusMap.has(p) || statusMap.get(p) === 'pending' || statusMap.get(p) === 'problem');
+                    if (unresolved) {
+                        return res.status(403).json({
+                            error: `⛔ Morate prvo rešiti fazu "${phaseLabel(unresolved)}" pre nego što označite "${phaseLabel(phase)}".`
+                        });
+                    }
                 }
             }
         }
 
-        if (req.user.role !== 'admin') {
+        // ============================================================
+        // 5) LOCK PO DANU — samo za klijenta, NE za radnike/admina
+        // ============================================================
+        if (isUser(req.user)) {
             const hasPriorActivity = oldStatus !== 'pending' || oldComment.trim() !== '';
             let sameDay = true;
             if (hasPriorActivity && oldUpdatedAt) {
@@ -940,7 +1037,8 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
             if (hasPriorActivity && !sameDay) {
                 const isProblemToCompleted = oldStatus === 'problem' && status === 'completed' && finalComment === oldComment;
-                if (!isProblemToCompleted) {
+                const isPoslatoToCompleted = oldStatus === 'poslato' && status === 'completed';
+                if (!isProblemToCompleted && !isPoslatoToCompleted) {
                     return res.status(403).json({
                         error: '🔒 Ova stavka je zaključana (poslednja izmena je bila ranijeg dana). Obratite se administratoru.'
                     });
@@ -1083,9 +1181,9 @@ app.post('/api/reparacija/:id/kontrola-confirm', authenticate, async (req, res) 
 
 app.get('/api/reminders', authenticate, async (req, res) => {
     try {
-        const isPrivileged = req.user.role === 'admin' || req.user.role === 'kontrola';
+        const privileged = isPrivileged(req.user);
         let rows;
-        if (isPrivileged) {
+        if (privileged) {
             const result = await pool.query(
                 `SELECT r.*, o.order_number, o.company, o.name
                  FROM reparacije r
@@ -1098,7 +1196,7 @@ app.get('/api/reminders', authenticate, async (req, res) => {
                 deadlineDate: r.deadline_date, clientConfirmedAt: r.client_confirmed_at,
                 waitingOn: r.client_confirmed_at ? 'kontrola' : 'klijent i kontrola'
             }));
-        } else {
+        } else if (isUser(req.user)) {
             const result = await pool.query(
                 `SELECT r.*, o.order_number, o.company, o.name
                  FROM reparacije r
@@ -1117,6 +1215,8 @@ app.get('/api/reminders', authenticate, async (req, res) => {
                 id: r.id, orderId: r.order_id, orderNumber: r.order_number, company: r.company, name: r.name,
                 deadlineDate: r.deadline_date, waitingOn: 'klijent'
             }));
+        } else {
+            rows = [];
         }
         res.json({ reminders: rows });
     } catch (e) {
@@ -1318,6 +1418,12 @@ app.get('/api/history/export', authenticate, async (req, res) => {
                 lines.push('🚫 Nema');
             } else if (entry.status === 'problem') {
                 lines.push([`⚠️ ${dateStr}`, comment].filter(Boolean).join('  '));
+            } else if (entry.status === 'poslato') {
+                lines.push([`📤 Poslato ${dateStr}`, comment].filter(Boolean).join('  '));
+            } else if (entry.status === 'primljeno') {
+                lines.push([`📥 Primljeno ${dateStr}`, comment].filter(Boolean).join('  '));
+            } else if (entry.status === 'uradjeno') {
+                lines.push([`📤 Urađeno ${dateStr}`, comment].filter(Boolean).join('  '));
             } else if (comment) {
                 lines.push([`💬 ${dateStr}`, comment].filter(Boolean).join('  '));
             }
@@ -1452,7 +1558,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
     }
 });
 
-// ============ PRIJEM - ŠABLONSKI TEKST ZA COPY-PASTE U MAIL (SA BROJEM OTPREMNICE, FILTRIRA KAO EXCEL) ============
+// ============ PRIJEM - ŠABLONSKI TEKST ZA COPY-PASTE U MAIL ============
 app.get('/api/prijem-template', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
@@ -1813,7 +1919,7 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
     }
 });
 
-// ============ SEND REPORT (klijentov izveštaj — admin + fiksni + firma) ============
+// ============ SEND REPORT ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
         const logResult = await pool.query(
@@ -1860,7 +1966,15 @@ app.post('/api/send-report', authenticate, async (req, res) => {
             cell.alignment = { vertical: 'middle', horizontal: 'center' };
         });
 
-        const STATUS_LABELS = { 'completed': '✅ Urađeno', 'problem': '⚠️ Problem', 'pending': '⬜ U toku', 'nema': '🚫 Nema' };
+        const STATUS_LABELS = { 
+            'completed': '✅ Urađeno', 
+            'problem': '⚠️ Problem', 
+            'pending': '⬜ U toku', 
+            'nema': '🚫 Nema',
+            'poslato': '📤 Poslato',
+            'primljeno': '📥 Primljeno',
+            'uradjeno': '📤 Urađeno (radnik)'
+        };
 
         historyResult.rows.forEach(r => {
             sheet.addRow({

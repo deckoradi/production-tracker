@@ -1,7 +1,6 @@
 // ============================================================
 // i18n.js — prevodi za Production Tracker
 // Jezik: sr (srpski) i it (italijanski)
-// Koristi se samo za deo koji vidi KLIJENT (user)
 // ============================================================
 
 const TRANSLATIONS = {
@@ -26,6 +25,8 @@ const TRANSLATIONS = {
     th_name: 'Naziv',
     th_quantity: 'Količina',
     th_status: 'Status',
+    th_company: 'Firma',
+    th_delivery: 'Datum',
 
     // ===== STATUSI =====
     status_ok: '✅ U redu',
@@ -33,7 +34,9 @@ const TRANSLATIONS = {
     status_repair: '🔧 REPARACIJA',
     status_cancelled: '❌ ANULIRANO',
     status_in_progress: 'U toku',
-    status_sent: '📤 Poslato',                    // ← DODATO
+    status_sent: 'Poslato',
+    status_received: 'Primljeno',
+    status_done_worker: 'Urađeno',
 
     // ===== FAZE =====
     phase_100: 'Krojenje',
@@ -54,8 +57,24 @@ const TRANSLATIONS = {
     btn_confirm: '✅ Potvrdi',
     btn_cancel: 'Otkaži',
     btn_copy: '📋 Kopiraj tekst',
-    btn_sent: '📤 Poslato',                       // ← DODATO
-    btn_sent_short: 'Poslato',                    // ← DODATO
+    btn_sent: '📤 Poslato',
+    btn_sent_short: 'Poslato',
+    btn_primljeno: 'Primljeno',
+    btn_poslato: 'Poslato',
+    btn_uradjeno: 'Urađeno',
+    btn_stiglo: 'Stiglo',
+    btn_all_ok: 'Sve u redu',
+    btn_repair: 'Reparacija',
+    btn_cancelled: 'Anulirano',
+    btn_reset_password: 'Resetuj lozinku',
+    btn_delete_user: 'Obriši korisnika',
+
+    // ===== ROLE =====
+    role_admin: 'Administrator',
+    role_kontrola: 'Kontrola',
+    role_user: 'Klijent',
+    role_vez: 'Vez (radnik)',
+    role_serigrafija: 'Serigrafija (radnik)',
 
     // ===== MODAL - INFO =====
     modal_company: 'Firma',
@@ -69,6 +88,7 @@ const TRANSLATIONS = {
     msg_first_resolve_phase: '⛔ Prvo rešite fazu',
     msg_waiting_kontrola: '⏳ Čeka potvrdu Kontrole',
     msg_waiting_client: '⏳ Čeka potvrdu klijenta',
+    msg_waiting_client_send: '⏳ Čeka da klijent pošalje nalog',
     msg_confirmed: '✅ Potvrđeno',
     msg_closed: '✅ Zatvoreno',
     msg_deadline: 'Rok',
@@ -80,6 +100,24 @@ const TRANSLATIONS = {
     msg_waiting_your_confirm: 'čeka Vašu potvrdu',
     msg_waiting_both: 'čeka potvrdu obe strane',
     msg_no_phases: 'Nema faza',
+    msg_worker: 'Radio',
+    msg_worker_working: '⏳ Radnik radi...',
+    msg_sent_awaiting_return: '⏳ Poslato — čeka se povratak',
+    msg_size_hint: 'Klikni na broj i upiši količinu (par).',
+    msg_deadline_days: 'Rok za podsetnik (dana)',
+    msg_enter_qty_or_note: 'Unesi bar jedan broj sa količinom, ili komentar.',
+    msg_size_short: 'vel.',
+    msg_pairs_short: 'pa.',
+    msg_user_created: 'Korisnik kreiran:',
+    msg_no_users: 'Nema korisnika',
+    msg_all_companies: 'Sve firme',
+    msg_reset_confirm: 'Generisati novu lozinku za "{user}"? Stara prestaje da važi.',
+    msg_delete_confirm: 'Obrisati korisnika "{user}"? Ova akcija se ne može poništiti.',
+    msg_send_report_confirm: '📧 Pošalji dnevni izveštaj?',
+    msg_enter_current_password: 'Unesi TRENUTNU lozinku:',
+    msg_enter_new_password: 'Unesi NOVU lozinku (bar 6 karaktera):',
+    msg_repeat_new_password: 'Ponovi NOVU lozinku:',
+    msg_password_mismatch: 'Nova lozinka i potvrda se ne poklapaju.',
 
     // ===== OSTALO =====
     order_count_suffix: 'naloga',
@@ -114,6 +152,8 @@ const TRANSLATIONS = {
     th_name: 'Nome',
     th_quantity: 'Quantità',
     th_status: 'Stato',
+    th_company: 'Azienda',
+    th_delivery: 'Data',
 
     // ===== STATUSI =====
     status_ok: '✅ In ordine',
@@ -121,7 +161,9 @@ const TRANSLATIONS = {
     status_repair: '🔧 RIPARAZIONE',
     status_cancelled: '❌ ANNULLATO',
     status_in_progress: 'In corso',
-    status_sent: '📤 Inviato',                    // ← DODATO
+    status_sent: 'Inviato',
+    status_received: 'Ricevuto',
+    status_done_worker: 'Fatto',
 
     // ===== FAZE =====
     phase_100: 'Taglio',
@@ -142,8 +184,24 @@ const TRANSLATIONS = {
     btn_confirm: '✅ Conferma',
     btn_cancel: 'Annulla',
     btn_copy: '📋 Copia testo',
-    btn_sent: '📤 Inviato',                       // ← DODATO
-    btn_sent_short: 'Inviato',                    // ← DODATO
+    btn_sent: '📤 Inviato',
+    btn_sent_short: 'Inviato',
+    btn_primljeno: 'Ricevuto',
+    btn_poslato: 'Inviato',
+    btn_uradjeno: 'Fatto',
+    btn_stiglo: 'Arrivato',
+    btn_all_ok: 'Tutto OK',
+    btn_repair: 'Riparazione',
+    btn_cancelled: 'Annullato',
+    btn_reset_password: 'Reimposta password',
+    btn_delete_user: 'Elimina utente',
+
+    // ===== ROLE =====
+    role_admin: 'Amministratore',
+    role_kontrola: 'Controllo',
+    role_user: 'Cliente',
+    role_vez: 'Ricamo (operaio)',
+    role_serigrafija: 'Serigrafia (operaio)',
 
     // ===== MODAL - INFO =====
     modal_company: 'Azienda',
@@ -157,6 +215,7 @@ const TRANSLATIONS = {
     msg_first_resolve_phase: '⛔ Prima risolvi la fase',
     msg_waiting_kontrola: '⏳ In attesa di conferma dal Controllo',
     msg_waiting_client: '⏳ In attesa di conferma dal cliente',
+    msg_waiting_client_send: '⏳ In attesa che il cliente invii l\'ordine',
     msg_confirmed: '✅ Confermato',
     msg_closed: '✅ Chiuso',
     msg_deadline: 'Scadenza',
@@ -168,6 +227,24 @@ const TRANSLATIONS = {
     msg_waiting_your_confirm: 'in attesa della tua conferma',
     msg_waiting_both: 'in attesa di conferma da entrambe le parti',
     msg_no_phases: 'Nessuna fase',
+    msg_worker: 'Ha lavorato',
+    msg_worker_working: '⏳ L\'operaio sta lavorando...',
+    msg_sent_awaiting_return: '⏳ Inviato — in attesa del ritorno',
+    msg_size_hint: 'Clicca sul numero e inserisci la quantità (paia).',
+    msg_deadline_days: 'Scadenza per il promemoria (giorni)',
+    msg_enter_qty_or_note: 'Inserisci almeno un numero con quantità, o un commento.',
+    msg_size_short: 'mis.',
+    msg_pairs_short: 'pa.',
+    msg_user_created: 'Utente creato:',
+    msg_no_users: 'Nessun utente',
+    msg_all_companies: 'Tutte le aziende',
+    msg_reset_confirm: 'Generare una nuova password per "{user}"? La vecchia smetterà di funzionare.',
+    msg_delete_confirm: 'Eliminare l\'utente "{user}"? Questa azione non può essere annullata.',
+    msg_send_report_confirm: '📧 Inviare il rapporto giornaliero?',
+    msg_enter_current_password: 'Inserisci la password ATTUALE:',
+    msg_enter_new_password: 'Inserisci la NUOVA password (almeno 6 caratteri):',
+    msg_repeat_new_password: 'Ripeti la NUOVA password:',
+    msg_password_mismatch: 'La nuova password e la conferma non corrispondono.',
 
     // ===== OSTALO =====
     order_count_suffix: 'ordini',
@@ -191,7 +268,6 @@ function getCurrentLang() {
 
 // ============================================================
 // Glavna funkcija za prevođenje
-// Koristi se kao: t('nav_logout') -> 'Odjava' ili 'Disconnetti'
 // ============================================================
 function t(key) {
   const lang = getCurrentLang();

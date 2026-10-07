@@ -1,5 +1,6 @@
 // PRODUCTION TRACKER - orders.js
 let currentUser=null,orders=[],selectedOrderId=null,currentPage=1,totalPages=1,totalOrders=0;
+let currentReminders=[];
 const LIMIT=100;
 const $=id=>document.getElementById(id);
 const token=localStorage.getItem('token'),userStr=localStorage.getItem('user');
@@ -120,13 +121,14 @@ async function checkReminders(){
 }
 
 function showRemindersModal(list){
+  currentReminders=list;
   let div=$('remindersModal');
   if(!div){div=document.createElement('div');div.id='remindersModal';div.className='modal';document.body.appendChild(div)}
   const rows=list.map(r=>{
     const days=Math.floor((Date.now()-new Date(r.deadlineDate).getTime())/86400000);
     const waitLabel=r.waitingOn==='kontrola'?t('msg_waiting_kontrola_confirm'):r.waitingOn==='klijent'?t('msg_waiting_your_confirm'):t('msg_waiting_both');
     const dayWord=days===1?t('msg_day'):t('msg_days');
-    return `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer" onclick="closeRemindersModal();openOrder(${r.orderId})">
+    return `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer" onclick="openOrderFromReminder(${r.orderId},'${js(r.orderNumber)}','${js(r.company)}')">
       <b>${t('th_order')} #${esc(r.orderNumber)}</b>${r.name?` — ${esc(r.name)}`:''}<br>
       <span style="color:var(--muted);font-size:13px">${esc(r.company)} — ${t('msg_late_days')} ${days} ${dayWord} — ${waitLabel}</span>
     </div>`;
@@ -138,10 +140,10 @@ function showRemindersModal(list){
   </div>`;
   div.classList.remove('hidden');
 }
-function closeRemindersModal(){$('remindersModal')?.classList.add('hidden')}
+function closeRemindersModal(){$('remindersModal')?.classList.add('hidden');currentReminders=[]}
 let searchDebounce=null;
 searchInput?.addEventListener('input',()=>{clearTimeout(searchDebounce);searchDebounce=setTimeout(()=>loadOrders(searchInput.value,1),300)});
-searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>phaseModal?.classList.add('hidden'));window.addEventListener('click',e=>{if(e.target===phaseModal)phaseModal.classList.add('hidden')});
+searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>{phaseModal?.classList.add('hidden');reopenRemindersIfAny()});window.addEventListener('click',e=>{if(e.target===phaseModal){phaseModal.classList.add('hidden');reopenRemindersIfAny()}});
 
 function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;const p=document.createElement('div');p.id='orderManagementPanel';p.className='admin-section';p.innerHTML=`<h3>🗂️ Upravljanje nalozima</h3><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="deleteActiveOrdersBtn" class="btn-tag btn-tag--problem" style="padding:10px 16px;font-size:13px">🗑️ Obriši aktivne naloge</button><button id="deleteAllHistoryBtn" class="btn-tag btn-tag--reset" style="padding:10px 16px;font-size:13px">🧹 Obriši sve + istoriju</button></div><div id="orderManagementStatus"></div>`;adminBody.appendChild(p);$('deleteActiveOrdersBtn').onclick=clearActive;$('deleteAllHistoryBtn').onclick=clearAll;
   const h=document.createElement('div');h.id='historyExportPanel';h.className='admin-section';
@@ -237,7 +239,6 @@ async function deleteCompanyInfo(company){
     loadCompanyInfo();
   }catch(e){alert('❌ '+e.message)}
 }
-
 // ============ FIXED RECIPIENTS ============
 function addFixedRecipientsControls(){
   if(!adminPanel||$('fixedRecipientsPanel'))return;
@@ -472,11 +473,9 @@ async function exportOtpremnica(){
     const blob=await r.blob();
     const fileName=`Otpremnica_${broj}_${company.replace(/\s+/g,'_')}_${date||'danas'}.xlsx`;
 
-    // Sačuvaj u memoriju za kasnije (mail)
     lastGeneratedExcelBlob=blob;
     lastGeneratedFileName=fileName;
 
-    // 1) Download
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
     a.href=url;
@@ -484,7 +483,6 @@ async function exportOtpremnica(){
     document.body.appendChild(a);a.click();a.remove();
     URL.revokeObjectURL(url);
 
-    // 2) Sačuvaj u folder
     try{
       const fh=await otpremnicaFolderHandle.getFileHandle(fileName,{create:true});
       const w=await fh.createWritable();
@@ -497,7 +495,6 @@ async function exportOtpremnica(){
       return;
     }
 
-    // 3) Povećaj broj i sačuvaj
     const nextBroj=broj+1;
     await writeBrojToFile(otpremnicaFolderHandle,nextBroj);
     if(brojInput)brojInput.value=nextBroj;
@@ -539,7 +536,6 @@ async function sendOtpremnicaMail(){
 
   status.textContent='⏳ Šaljem mail...';status.className='';
   try{
-    // Konvertuj blob u base64
     const arrayBuffer=await lastGeneratedExcelBlob.arrayBuffer();
     const bytes=new Uint8Array(arrayBuffer);
     let binary='';
@@ -671,6 +667,9 @@ function computeOrderStatus(o){
   const hasProblem=knownPhases.some(ph=>{const r=findRow(ph);return r && r.status==='problem'});
   if(hasProblem)return [t('status_problem'),'status-problem'];
 
+  const hasPoslato=knownPhases.some(ph=>{const r=findRow(ph);return r && r.status==='poslato'});
+  if(hasPoslato)return [t('status_sent'),'status-pending'];
+
   const doneCount=knownPhases.filter(ph=>{const r=findRow(ph);return r && (r.status==='completed'||r.status==='nema')}).length;
   if(doneCount===knownPhases.length)return [t('status_ok'),'status-completed'];
 
@@ -701,13 +700,44 @@ function goToPage(p){if(p<1||p>totalPages)return;loadOrders(searchInput?.value||
 
 function openOrder(id){const o=orders.find(x=>String(x.id)===String(id));if(!o)return;selectedOrderId=id;renderModal(o);phaseModal.classList.remove('hidden')}
 
+// ============ NOVO: otvaranje naloga iz podsetnika (dovlači sa servera ako nije lokalno) ============
+async function openOrderFromReminder(orderId, orderNumber, company){
+  $('remindersModal')?.classList.add('hidden');
+  let o = orders.find(x => String(x.id) === String(orderId));
+  if(o){ openOrder(orderId); return; }
+  try{
+    const d = await api(`/api/orders?search=${encodeURIComponent(orderNumber)}&page=1&limit=100`, {headers:headers()});
+    const found = (d.data||[]).find(x => String(x.id) === String(orderId));
+    if(!found){
+      alert('❌ Nalog #' + orderNumber + ' nije pronađen (možda je obrisan).');
+      $('remindersModal')?.classList.remove('hidden');
+      return;
+    }
+    orders.unshift(found);
+    openOrder(orderId);
+  }catch(e){
+    alert('❌ Greška pri učitavanju naloga: ' + e.message);
+    $('remindersModal')?.classList.remove('hidden');
+  }
+}
+
+// ============ NOVO: vrati podsetnike kad se zatvori detalj naloga ============
+function reopenRemindersIfAny(){
+  if(currentReminders.length > 0 && $('remindersModal')){
+    setTimeout(()=>{
+      if(phaseModal?.classList.contains('hidden') && $('remindersModal')){
+        $('remindersModal').classList.remove('hidden');
+      }
+    }, 100);
+  }
+}
+
 // ============ NAZIVI FAZA ============
 function phaseLabel(p){
   const key='phase_'+String(p);
   const translated=t(key);
   return translated!==key?translated:`Faza ${p}`;
 }
-
 // ============ IKONICE FAZA ============
 const PHASE_ICONS={'100':'✂️','200':'🖨️','300':'🧵','400':'🪡','500':'📦'};
 function phaseIcon(p){return PHASE_ICONS[String(p)]||'●'}
@@ -724,6 +754,7 @@ function phaseLockState(p){
   if(!hasActivity) return {locked:false, onlyCompleteAllowed:false};
   if(isSameLocalDay(p.updatedAt)) return {locked:false, onlyCompleteAllowed:false};
   if(p.status==='problem') return {locked:true, onlyCompleteAllowed:true};
+  if(p.status==='poslato') return {locked:true, onlyCompleteAllowed:true};
   return {locked:true, onlyCompleteAllowed:false};
 }
 
@@ -786,8 +817,11 @@ function renderModal(o){
       badge=`<span class="phase-state">⚠️${dateStr?` ${dateStr}`:''}${comment?` — ${esc(comment)}`:''}</span>`;
     } else if(p.status==='nema'){
       badge=`<span class="phase-state">🚫 ${t('btn_none_short')}${dateStr?` ${dateStr}`:''}</span>`;
+    } else if(p.status==='poslato'){
+      badge=`<span class="phase-state">📤 ${t('btn_sent_short')}${dateStr?` ${dateStr}`:''}</span>`;
     }
     const showNemaBtn = (p.phase==='200' || p.phase==='300');
+    const showPoslatoBtn = (p.phase==='200' || p.phase==='300') && !isPrivileged;
     const problemDateStr = p.lastProblemAt && p.status!=='problem' ? date(p.lastProblemAt) : null;
     const problemComment = (p.lastProblemComment||'').trim();
     const problemLine = problemDateStr ? `<div class="phase-date" style="margin-top:-4px;margin-bottom:6px">⚠️ ${problemDateStr}${problemComment?` — ${esc(problemComment)}`:''}</div>` : '';
@@ -800,12 +834,16 @@ function renderModal(o){
       bodyHtml=`<div class="phase-date" style="color:var(--muted)">${t('msg_first_resolve_phase')} "${esc(phaseLabel(sequenceBlockedOn))}"</div>`;
     } else if(lock.locked){
       const lockedExtra = (p.status==='completed' && comment) ? `<div class="phase-date" style="margin-top:2px">${esc(comment)}</div>` : '';
+      // Ako je status 'poslato' — dozvoli i "Urađeno" i "Problem" (da se vrati sa greškom)
+      const isPoslato = p.status==='poslato';
       bodyHtml=`${lockedExtra}
-        ${lock.onlyCompleteAllowed
-          ? `<div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">${t('btn_done')}</button></div>`
-          : ''}`;
+        <div class="phase-actions">
+          <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">${t('btn_done')}</button>
+          ${isPoslato ? `<button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">${t('btn_problem')}</button>` : ''}
+        </div>`;
     } else {
       bodyHtml=`<div class="phase-actions">
+          ${showPoslatoBtn ? `<button class="btn-tag" style="background:#2B4570;color:white" onclick="updatePhase(${o.id},'${js(p.phase)}','poslato')">${t('btn_sent')}</button>` : ''}
           <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">${t('btn_done')}</button>
           <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">${t('btn_problem')}</button>
           ${showNemaBtn ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">${t('btn_none')}</button>` : ''}
@@ -1110,7 +1148,7 @@ function date(v) {
 
 function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
 function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
-window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;window.resetPassword=resetPassword;window.deleteCompanyInfo=deleteCompanyInfo;window.deleteFixedRecipient=deleteFixedRecipient;window.clearOtpremnicaLog=clearOtpremnicaLog;
+window.openOrder=openOrder;window.openOrderFromReminder=openOrderFromReminder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;window.resetPassword=resetPassword;window.deleteCompanyInfo=deleteCompanyInfo;window.deleteFixedRecipient=deleteFixedRecipient;window.clearOtpremnicaLog=clearOtpremnicaLog;
 // ============ UI: admin collapse, scroll lock, Esc ============
 (()=>{
   const btn=$('adminToggle');
@@ -1121,5 +1159,14 @@ window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePha
   }
   const sync=()=>document.body.classList.toggle('modal-open',!!document.querySelector('.modal:not(.hidden)'));
   new MutationObserver(sync).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
-  document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;const m=[...document.querySelectorAll('.modal:not(.hidden)')].pop();if(m)m.classList.add('hidden')});
+  document.addEventListener('keydown',e=>{
+    if(e.key!=='Escape')return;
+    if(phaseModal && !phaseModal.classList.contains('hidden')){
+      phaseModal.classList.add('hidden');
+      reopenRemindersIfAny();
+      return;
+    }
+    const m=[...document.querySelectorAll('.modal:not(.hidden)')].pop();
+    if(m)m.classList.add('hidden');
+  });
 })();
