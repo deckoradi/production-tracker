@@ -667,6 +667,9 @@ function computeOrderStatus(o){
   const hasProblem=knownPhases.some(ph=>{const r=findRow(ph);return r && r.status==='problem'});
   if(hasProblem)return [t('status_problem'),'status-problem'];
 
+  const hasPoslato=knownPhases.some(ph=>{const r=findRow(ph);return r && r.status==='poslato'});
+  if(hasPoslato)return [t('status_sent'),'status-pending'];
+
   const doneCount=knownPhases.filter(ph=>{const r=findRow(ph);return r && (r.status==='completed'||r.status==='nema')}).length;
   if(doneCount===knownPhases.length)return [t('status_ok'),'status-completed'];
 
@@ -751,6 +754,7 @@ function phaseLockState(p){
   if(!hasActivity) return {locked:false, onlyCompleteAllowed:false};
   if(isSameLocalDay(p.updatedAt)) return {locked:false, onlyCompleteAllowed:false};
   if(p.status==='problem') return {locked:true, onlyCompleteAllowed:true};
+  if(p.status==='poslato') return {locked:true, onlyCompleteAllowed:true};
   return {locked:true, onlyCompleteAllowed:false};
 }
 
@@ -813,8 +817,11 @@ function renderModal(o){
       badge=`<span class="phase-state">⚠️${dateStr?` ${dateStr}`:''}${comment?` — ${esc(comment)}`:''}</span>`;
     } else if(p.status==='nema'){
       badge=`<span class="phase-state">🚫 ${t('btn_none_short')}${dateStr?` ${dateStr}`:''}</span>`;
+    } else if(p.status==='poslato'){
+      badge=`<span class="phase-state">📤 ${t('btn_sent_short')}${dateStr?` ${dateStr}`:''}</span>`;
     }
     const showNemaBtn = (p.phase==='200' || p.phase==='300');
+    const showPoslatoBtn = (p.phase==='200' || p.phase==='300') && !isPrivileged;
     const problemDateStr = p.lastProblemAt && p.status!=='problem' ? date(p.lastProblemAt) : null;
     const problemComment = (p.lastProblemComment||'').trim();
     const problemLine = problemDateStr ? `<div class="phase-date" style="margin-top:-4px;margin-bottom:6px">⚠️ ${problemDateStr}${problemComment?` — ${esc(problemComment)}`:''}</div>` : '';
@@ -827,12 +834,16 @@ function renderModal(o){
       bodyHtml=`<div class="phase-date" style="color:var(--muted)">${t('msg_first_resolve_phase')} "${esc(phaseLabel(sequenceBlockedOn))}"</div>`;
     } else if(lock.locked){
       const lockedExtra = (p.status==='completed' && comment) ? `<div class="phase-date" style="margin-top:2px">${esc(comment)}</div>` : '';
+      // Ako je status 'poslato' — dozvoli i "Urađeno" i "Problem" (da se vrati sa greškom)
+      const isPoslato = p.status==='poslato';
       bodyHtml=`${lockedExtra}
-        ${lock.onlyCompleteAllowed
-          ? `<div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">${t('btn_done')}</button></div>`
-          : ''}`;
+        <div class="phase-actions">
+          <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">${t('btn_done')}</button>
+          ${isPoslato ? `<button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">${t('btn_problem')}</button>` : ''}
+        </div>`;
     } else {
       bodyHtml=`<div class="phase-actions">
+          ${showPoslatoBtn ? `<button class="btn-tag" style="background:#2B4570;color:white" onclick="updatePhase(${o.id},'${js(p.phase)}','poslato')">${t('btn_sent')}</button>` : ''}
           <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">${t('btn_done')}</button>
           <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">${t('btn_problem')}</button>
           ${showNemaBtn ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">${t('btn_none')}</button>` : ''}
@@ -1150,13 +1161,11 @@ window.openOrder=openOrder;window.openOrderFromReminder=openOrderFromReminder;wi
   new MutationObserver(sync).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
   document.addEventListener('keydown',e=>{
     if(e.key!=='Escape')return;
-    // Ako je otvoren detalj naloga — zatvori njega i vrati podsetnike
     if(phaseModal && !phaseModal.classList.contains('hidden')){
       phaseModal.classList.add('hidden');
       reopenRemindersIfAny();
       return;
     }
-    // Inače zatvori najgornji modal
     const m=[...document.querySelectorAll('.modal:not(.hidden)')].pop();
     if(m)m.classList.add('hidden');
   });

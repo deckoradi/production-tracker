@@ -33,6 +33,7 @@ const TRANSLATIONS = {
     status_repair: '🔧 REPARACIJA',
     status_cancelled: '❌ ANULIRANO',
     status_in_progress: 'U toku',
+    status_sent: '📤 Poslato',                    // ← DODATO
 
     // ===== FAZE =====
     phase_100: 'Krojenje',
@@ -53,6 +54,8 @@ const TRANSLATIONS = {
     btn_confirm: '✅ Potvrdi',
     btn_cancel: 'Otkaži',
     btn_copy: '📋 Kopiraj tekst',
+    btn_sent: '📤 Poslato',                       // ← DODATO
+    btn_sent_short: 'Poslato',                    // ← DODATO
 
     // ===== MODAL - INFO =====
     modal_company: 'Firma',
@@ -118,6 +121,7 @@ const TRANSLATIONS = {
     status_repair: '🔧 RIPARAZIONE',
     status_cancelled: '❌ ANNULLATO',
     status_in_progress: 'In corso',
+    status_sent: '📤 Inviato',                    // ← DODATO
 
     // ===== FAZE =====
     phase_100: 'Taglio',
@@ -138,6 +142,8 @@ const TRANSLATIONS = {
     btn_confirm: '✅ Conferma',
     btn_cancel: 'Annulla',
     btn_copy: '📋 Copia testo',
+    btn_sent: '📤 Inviato',                       // ← DODATO
+    btn_sent_short: 'Inviato',                    // ← DODATO
 
     // ===== MODAL - INFO =====
     modal_company: 'Azienda',
