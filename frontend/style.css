@@ -4,7 +4,6 @@
    Existing JS hooks, IDs and business behaviour are preserved.
    ============================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@500;600&display=swap');
 
 :root {
     --navy-950: #07111f;
@@ -1203,4 +1202,98 @@ tbody tr:last-child td { border-bottom: 0; }
         transition: none !important;
         animation: none !important;
     }
+}
+
+/* ============================================================
+   RESPONSIVE PATCH v2
+   ============================================================ */
+:root { --muted-2: #6f7f94; }
+html { -webkit-text-size-adjust: 100%; }
+body, .dashboard { min-height: 100vh; min-height: 100dvh; }
+.dashboard { padding-bottom: max(70px, env(safe-area-inset-bottom)); }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+body.modal-open { overflow: hidden; }
+.modal-content { max-height: 90vh; max-height: 90dvh; overscroll-behavior: contain; }
+.navbar {
+    padding-top: max(12px, env(safe-area-inset-top));
+    padding-left: max(clamp(16px, 3vw, 38px), env(safe-area-inset-left));
+    padding-right: max(clamp(16px, 3vw, 38px), env(safe-area-inset-right));
+}
+
+.eyebrow, .panel-hint, .panel-accent, .live-label, .modal-kicker,
+.timeline-label, th, .status-badge, .order-info b { font-size: 10px; }
+.brand-subtitle { font-size: 9px; }
+.phase-date { font-size: 11px; }
+.btn-tag { font-size: 11px; }
+
+.panel-toggle { display: inline-flex; align-items: center; gap: 8px; padding: 2px; border: 0; background: none; cursor: pointer; color: var(--blue-dark); }
+.panel-toggle .chev { transition: transform .2s ease; }
+.panel.is-collapsed .panel-toggle .chev { transform: rotate(-90deg); }
+.panel.is-collapsed .panel-body { display: none; }
+.users-section ~ .admin-section { margin-top: 14px; }
+#ciList, #frList { overflow-x: auto; }
+#ciList table, #frList table { min-width: 0; }
+#ciList th, #frList th { background: var(--paper); color: var(--muted); border-bottom: 1px solid var(--line); }
+.user-item--5 { grid-template-columns: minmax(100px, 1fr) minmax(100px, 1fr) auto auto auto; }
+
+#ordersContainer tbody tr { cursor: pointer; }
+#ordersContainer tbody tr:nth-child(even) td { background: var(--paper); }
+#ordersContainer tbody tr:hover td { background: #eef4ff; }
+#ordersContainer .row-status-problem td:first-child   { box-shadow: inset 3px 0 0 var(--red); }
+#ordersContainer .row-status-completed td:first-child { box-shadow: inset 3px 0 0 var(--green); }
+
+@media (pointer: coarse) {
+    .btn-tag { min-height: 40px; padding: 8px 13px; font-size: 12px; }
+    .close-modal { width: 40px; height: 40px; }
+    .pagination button { min-height: 42px; min-width: 44px; }
+    .lang-flag { padding: 6px 8px; }
+}
+
+@media (max-width: 800px) {
+    input, select, textarea { font-size: 16px !important; }
+}
+
+@media (max-width: 620px) {
+    .navbar { position: static; }
+    .nav-right { display: grid; grid-template-columns: repeat(3, 1fr); }
+    .nav-right button { padding: 9px 6px; font-size: 11px; white-space: nowrap; }
+
+    #ordersContainer > table { min-width: 0; display: block; }
+    #ordersContainer > table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    #ordersContainer > table tbody { display: block; padding: 10px; }
+    #ordersContainer > table tr {
+        display: block; margin-bottom: 10px; overflow: hidden;
+        background: #fff; border: 1px solid var(--line);
+        border-left: 4px solid var(--line-strong); border-radius: 12px;
+    }
+    #ordersContainer > table tr.row-status-problem   { border-left-color: var(--red); }
+    #ordersContainer > table tr.row-status-completed { border-left-color: var(--green); }
+    #ordersContainer > table td {
+        display: flex; justify-content: space-between; align-items: center; gap: 14px;
+        padding: 9px 14px !important; background: #fff !important;
+        border-bottom: 1px solid var(--line); text-align: right !important;
+        box-shadow: none !important;
+    }
+    #ordersContainer > table td:last-child { border-bottom: 0; }
+    #ordersContainer > table td::before {
+        content: attr(data-label); flex: 0 0 auto; text-align: left;
+        color: var(--muted); font: 600 10px var(--font-mono);
+        letter-spacing: .08em; text-transform: uppercase;
+    }
+
+    .modal { align-items: flex-end; padding: 0; }
+    .modal-content {
+        width: 100%; max-width: none !important; max-height: 92vh; max-height: 92dvh;
+        border-radius: 20px 20px 0 0;
+        padding-bottom: max(18px, env(safe-area-inset-bottom));
+    }
+
+    #kontrolaPanel button, #historyExportPanel button, #companyInfoPanel button,
+    #fixedRecipientsPanel button, #otpremnicaLogPanel button, #clientExportPanel button { flex: 1 1 100%; }
+    input[type="date"] { flex: 1 1 100%; }
+
+    .user-item--5 { grid-template-columns: 1fr auto auto; }
+    .user-item--5 span:nth-child(-n+3) { grid-column: 1; }
+    .user-item--5 span:nth-child(4) { grid-column: 2; grid-row: 1; }
+    .user-item--5 span:nth-child(5) { grid-column: 3; grid-row: 1; }
 }

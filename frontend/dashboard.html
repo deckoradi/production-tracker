@@ -2,12 +2,14 @@
 <html lang="sr">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#07111f">
     <title>Production Tracker</title>
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="lang-switcher.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@500;600&display=swap">
     <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
     <link rel="apple-touch-icon" href="icon-192.png">
     <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
@@ -45,7 +47,7 @@
                         <span class="eyebrow">CONTROL CENTER</span>
                         <h2>⚙️ Admin</h2>
                     </div>
-                    <span class="panel-accent">ADMIN</span>
+                    <button type="button" id="adminToggle" class="panel-toggle" aria-expanded="true"><span class="panel-accent">ADMIN</span><span class="chev" aria-hidden="true">▾</span></button>
                 </div>
                 <div class="panel-body">
                     <div class="admin-grid">
@@ -134,11 +136,11 @@
         </div>
     </div>
 
-    <div id="phaseModal" class="modal hidden">
+    <div id="phaseModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="phaseModalTitle">
         <div class="modal-content">
             <button class="close-modal" aria-label="Zatvori">&times;</button>
             <div class="modal-kicker">PRODUCTION ORDER</div>
-            <h2><span id="modalOrderNumber"></span></h2>
+            <h2 id="phaseModalTitle"><span id="modalOrderNumber"></span></h2>
             <div id="modalOrderInfo" class="order-info"></div>
             <div class="timeline-label">Production flow</div>
             <div id="phasesContainer" class="phases-grid"></div>
