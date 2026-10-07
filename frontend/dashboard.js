@@ -115,7 +115,6 @@ function updateFolderStatusNeedsPermission(){
 document.addEventListener('DOMContentLoaded',()=>{ setTimeout(loadFolderHandleFromIdb,300); });
 
 document.addEventListener('DOMContentLoaded',()=>{
-  // Samo admin vidi Admin panel
   if(currentUser?.role==='admin'){
     adminPanel?.classList.remove('hidden');
     addAdminControls();
@@ -124,12 +123,9 @@ document.addEventListener('DOMContentLoaded',()=>{
     addFixedRecipientsControls();
     addOtpremnicaLogControls();
   }
-  // Klijent ima "Moj izveštaj" panel (ali ne vez/serigrafija)
   if(currentUser?.role==='user'){addClientExportControls()}
-  // Kontrola ima šablon za mail
   if(currentUser?.role==='kontrola'){addKontrolaControls()}
   loadOrders();
-  // Podsetnici samo za klijente, kontrolu i admina (ne za vez/serigrafija)
   if(currentUser?.role==='user' || currentUser?.role==='kontrola' || currentUser?.role==='admin'){
     checkReminders();
   }
@@ -907,6 +903,8 @@ function phaseLockState(p){
   if(isSameLocalDay(p.updatedAt)) return {locked:false, onlyCompleteAllowed:false};
   if(p.status==='problem') return {locked:true, onlyCompleteAllowed:true};
   if(p.status==='poslato') return {locked:true, onlyCompleteAllowed:true};
+  if(p.status==='primljeno') return {locked:true, onlyCompleteAllowed:true};
+  if(p.status==='uradjeno') return {locked:true, onlyCompleteAllowed:true};
   return {locked:true, onlyCompleteAllowed:false};
 }
 
@@ -966,7 +964,7 @@ function renderModal(o){
     if(p.status==='completed'){
       badge=`<span class="phase-state">✅${dateStr?` ${dateStr}`:''}</span>`;
     } else if(p.status==='problem'){
-      badge=`<span class="phase-state">⚠️${dateStr?` ${dateStr}`:''}${comment?` — ${esc(comment)}`:''}</span>`;
+      badge=`<span class="phase-state">⚠️${dateStr?` ${dateStr}`:''}</span>`;
     } else if(p.status==='nema'){
       badge=`<span class="phase-state">🚫 ${t('btn_none_short')}${dateStr?` ${dateStr}`:''}</span>`;
     } else if(p.status==='poslato'){
@@ -987,83 +985,104 @@ function renderModal(o){
     let bodyHtml='';
 
     // ============================================================
-    // RADNIK (vez / serigrafija) — posebna logika
+    // RADNIK (vez / serigrafija)
     // ============================================================
     if(externalWorker){
       const isMyPhase = (currentUser.role==='vez' && String(p.phase)==='300')
                      || (currentUser.role==='serigrafija' && String(p.phase)==='200');
       if(isMyPhase){
-        // Prikazujem dugmad samo za svoju fazu
         if(p.status==='poslato'){
-          // Klijent poslao → radnik treba da klikne Primljeno
           bodyHtml=`<div class="phase-actions">
             <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','primljeno')">📥 ${t('btn_primljeno')}</button>
             <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
           </div>`;
         } else if(p.status==='primljeno'){
-          // Radnik primio → treba da klikne Uradjeno (poslao nazad)
           bodyHtml=`<div class="phase-actions">
             <button class="btn-tag btn-tag--done" style="background:#2B4570;color:white" onclick="updatePhase(${o.id},'${js(p.phase)}','uradjeno')">📤 ${t('btn_uradjeno')}</button>
             <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
           </div>`;
         } else if(p.status==='problem'){
-          // Problem — dozvoli da klikne Primljeno ili Uradjeno
           bodyHtml=`<div class="phase-actions">
             <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','primljeno')">📥 ${t('btn_primljeno')}</button>
             <button class="btn-tag btn-tag--done" style="background:#2B4570;color:white" onclick="updatePhase(${o.id},'${js(p.phase)}','uradjeno')">📤 ${t('btn_uradjeno')}</button>
           </div>`;
         } else if(p.status==='uradjeno'){
-          bodyHtml=`<div class="phase-date" style="color:var(--green);font-weight:600">✅ ${t('status_done_worker')} — ${dateStr||''}</div>`;
+          bodyHtml=`<div class="phase-date" style="color:var(--green);font-weight:600">✅ ${t('status_done_worker')}${dateStr?` — ${dateStr}`:''}</div>`;
         } else if(p.status==='completed'){
-          bodyHtml=`<div class="phase-date" style="color:var(--green);font-weight:600">✅ ${t('status_ok')} — ${dateStr||''}</div>`;
+          bodyHtml=`<div class="phase-date" style="color:var(--green);font-weight:600">✅ ${t('status_ok')}${dateStr?` — ${dateStr}`:''}</div>`;
         } else if(p.status==='nema'){
           bodyHtml=`<div class="phase-date" style="color:var(--muted)">🚫 ${t('btn_none_short')}</div>`;
         } else {
-          // pending — klijent još nije poslao
           bodyHtml=`<div class="phase-date" style="color:var(--muted)">${t('msg_waiting_client_send')}</div>`;
         }
       } else {
-        // Nije moja faza — samo prikaz
         bodyHtml=``;
       }
     }
     // ============================================================
-    // KLIJENT (user) i ADMIN/KONTROLA — postojeća logika
+    // KLIJENT i ADMIN — postojeća logika + admin override
     // ============================================================
     else if(sequenceBlockedOn){
       bodyHtml=`<div class="phase-date" style="color:var(--muted)">${t('msg_first_resolve_phase')} "${esc(phaseLabel(sequenceBlockedOn))}"</div>`;
-    } else if(lock.locked){
+    } else if(lock.locked && currentUser?.role!=='admin'){
       const lockedExtra = (p.status==='completed' && comment) ? `<div class="phase-date" style="margin-top:2px">${esc(comment)}</div>` : '';
       const isPoslato = p.status==='poslato';
       bodyHtml=`${lockedExtra}
         <div class="phase-actions">
-          <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">${t('btn_done')}</button>
-          ${isPoslato ? `<button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">${t('btn_problem')}</button>` : ''}
+          <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ ${t('btn_done')}</button>
+          ${isPoslato ? `<button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>` : ''}
         </div>`;
     } else {
       // Nije zaključano — puna dugmad
       const isKlijentFaza200ili300 = (currentUser.role==='user') && (p.phase==='200' || p.phase==='300');
+      const isAdminFaza200ili300 = (currentUser.role==='admin') && (p.phase==='200' || p.phase==='300');
 
-      // Klijent za faze 200 i 300: Poslato, Stiglo, Nema, Problem (bez Urađeno)
-      if(isKlijentFaza200ili300){
-        // Ako je status poslato ili primljeno ili uradjeno — prikaži "Stiglo"
+      // ADMIN — override za faze 200 i 300
+      if(isAdminFaza200ili300){
+        if(p.status==='poslato' || p.status==='primljeno' || p.status==='uradjeno'){
+          const statusLabel = p.status==='poslato' ? `📤 ${t('status_sent')}` : p.status==='primljeno' ? `📥 ${t('status_received')}` : `📤 ${t('status_done_worker')}`;
+          bodyHtml=`<div class="phase-date" style="color:var(--muted);margin-bottom:6px">${statusLabel}${dateStr?` — ${dateStr}`:''}</div>
+            <div class="phase-actions">
+              <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">📥 ${t('btn_stiglo')} (admin)</button>
+              <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
+            </div>`;
+        } else if(p.status==='problem'){
+          bodyHtml=`<div class="phase-date" style="color:#9B2C2C;margin-bottom:6px">⚠️ ${t('status_problem')}${dateStr?` — ${dateStr}`:''}</div>
+            ${comment?`<div class="phase-date" style="margin-bottom:6px">${esc(comment)}</div>`:''}
+            <div class="phase-actions">
+              <button class="btn-tag" style="background:#2B4570;color:white" onclick="updatePhase(${o.id},'${js(p.phase)}','poslato')">📤 ${t('btn_poslato')}</button>
+              <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">📥 ${t('btn_stiglo')} (admin)</button>
+            </div>`;
+        } else if(p.status==='completed'){
+          bodyHtml=`<div class="phase-date" style="color:var(--green);font-weight:600">✅ ${t('status_ok')}${dateStr?` — ${dateStr}`:''}</div>`;
+        } else {
+          bodyHtml=`<div class="phase-actions">
+            <button class="btn-tag" style="background:#2B4570;color:white" onclick="updatePhase(${o.id},'${js(p.phase)}','poslato')">📤 ${t('btn_poslato')}</button>
+            <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">📥 ${t('btn_stiglo')}</button>
+            <button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 ${t('btn_none')}</button>
+            <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
+          </div>
+          <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
+        }
+      }
+      // KLIJENT za faze 200 i 300
+      else if(isKlijentFaza200ili300){
         if(p.status==='poslato'){
-          bodyHtml=`<div class="phase-date" style="color:var(--muted);margin-bottom:6px">📤 ${t('msg_sent_awaiting_return')}</div>
+          bodyHtml=`<div class="phase-date" style="color:var(--muted);margin-bottom:6px">${t('msg_sent_awaiting_return')}</div>
             <div class="phase-actions">
               <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">📥 ${t('btn_stiglo')}</button>
               <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
             </div>`;
         } else if(p.status==='primljeno'){
-          bodyHtml=`<div class="phase-date" style="color:#2B4570;font-weight:600;margin-bottom:6px">📥 ${t('status_received')} — ${dateStr||''}</div>
+          bodyHtml=`<div class="phase-date" style="color:#2B4570;font-weight:600;margin-bottom:6px">📥 ${t('status_received')}${dateStr?` — ${dateStr}`:''}</div>
             <div class="phase-date" style="color:var(--muted);margin-bottom:6px">${t('msg_worker_working')}</div>`;
         } else if(p.status==='uradjeno'){
-          bodyHtml=`<div class="phase-date" style="color:#2B4570;font-weight:600;margin-bottom:6px">📤 ${t('status_done_worker')} — ${dateStr||''}</div>
+          bodyHtml=`<div class="phase-date" style="color:#2B4570;font-weight:600;margin-bottom:6px">📤 ${t('status_done_worker')}${dateStr?` — ${dateStr}`:''}</div>
             <div class="phase-actions">
               <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">📥 ${t('btn_stiglo')}</button>
               <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
             </div>`;
         } else {
-          // pending — klijent treba da klikne Poslato
           bodyHtml=`<div class="phase-actions">
             <button class="btn-tag" style="background:#2B4570;color:white" onclick="updatePhase(${o.id},'${js(p.phase)}','poslato')">📤 ${t('btn_poslato')}</button>
             <button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 ${t('btn_none')}</button>
@@ -1071,20 +1090,21 @@ function renderModal(o){
           </div>
           <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
         }
-      } else {
-        // Klijent za ostale faze (100, 400, 500) — standardna dugmad
+      }
+      // KLIJENT ostale faze (100, 400, 500) i ADMIN ostale faze
+      else {
         const showNemaBtn = (p.phase==='200' || p.phase==='300');
         bodyHtml=`<div class="phase-actions">
-            <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">${t('btn_done')}</button>
-            <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">${t('btn_problem')}</button>
-            ${showNemaBtn ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">${t('btn_none')}</button>` : ''}
-            ${currentUser?.role==='admin' ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">${t('btn_reset')}</button>` : ''}
+            <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ ${t('btn_done')}</button>
+            <button class="btn-tag btn-tag--problem" onclick="updatePhase(${o.id},'${js(p.phase)}','problem')">⚠️ ${t('btn_problem')}</button>
+            ${showNemaBtn ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 ${t('btn_none')}</button>` : ''}
+            ${currentUser?.role==='admin' ? `<button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','pending')">⬜ ${t('btn_reset')}</button>` : ''}
           </div>
           <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
       }
     }
 
-    const lockIcon = (lock.locked && !lock.onlyCompleteAllowed) ? `<span class="phase-lock" title="${t('lock_tooltip')}">🔒</span>` : '';
+    const lockIcon = (lock.locked && !lock.onlyCompleteAllowed && currentUser?.role!=='admin') ? `<span class="phase-lock" title="${t('lock_tooltip')}">🔒</span>` : '';
 
     h+=`<div class="phase-row ${stateClass}">
       <div class="phase-spine">
@@ -1134,13 +1154,13 @@ function renderModal(o){
     const kontrolaDone=!!rep.kontrolaConfirmedAt;
     let repBody;
     if(kontrolaDone){
-      repBody=`<div class="phase-date">${t('msg_closed')} ${date(rep.kontrolaConfirmedAt)}</div>`;
+      repBody=`<div class="phase-date">✅ ${t('msg_closed')} ${date(rep.kontrolaConfirmedAt)}</div>`;
     } else if(clientDone){
-      repBody=`<div class="phase-date" style="margin-bottom:4px">${t('msg_confirmed')}: ${esc(rep.clientConfirmedBy||'?')} — ${date(rep.clientConfirmedAt)}</div>
+      repBody=`<div class="phase-date" style="margin-bottom:4px">✅ ${t('msg_confirmed')}: ${esc(rep.clientConfirmedBy||'?')} — ${date(rep.clientConfirmedAt)}</div>
         <div class="phase-date" style="color:var(--muted)">${t('msg_waiting_kontrola')}</div>`;
     } else {
       repBody=`<div class="phase-date" style="margin-bottom:6px">🔧 ${date(rep.createdAt)}${items?` — ${esc(items)}`:''}${rep.note?` — ${esc(rep.note)}`:''}</div>
-        <div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="confirmReparacijaClient(${rep.id})">${t('btn_done')}</button></div>`;
+        <div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="confirmReparacijaClient(${rep.id})">✅ ${t('btn_done')}</button></div>`;
     }
     h+=`<div class="phase-row" style="margin-top:6px">
       <div class="phase-spine">
@@ -1199,7 +1219,7 @@ function renderModal(o){
         repSection=`<div class="phase-date" style="margin-top:8px">${date(rep.clientConfirmedAt)} — ${esc(rep.clientConfirmedBy||'')}</div>
           <div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="confirmReparacijaKontrola(${rep.id})">✅ ${t('btn_all_ok')}</button></div>`;
       } else {
-        repSection=`<div class="phase-date" style="margin-top:8px;color:var(--muted)">⏳ ${t('msg_waiting_client')} (${t('msg_deadline').toLowerCase()}: ${rep.deadlineDate?date(rep.deadlineDate):'-'})</div>`;
+        repSection=`<div class="phase-date" style="margin-top:8px;color:var(--muted)">${t('msg_waiting_client')} (${t('msg_deadline').toLowerCase()}: ${rep.deadlineDate?date(rep.deadlineDate):'-'})</div>`;
       }
     }
 
@@ -1369,8 +1389,6 @@ async function updatePhase(id,phase,status){
     p.updatedAt=d.updatedAt;
     renderOrders();
     renderModal(o);
-    // Ako je radnik uradio svoju fazu — može da se desi da nalog više nije u listi
-    // (jer je status promenjen), pa osvežavamo listu
     if(isExternalWorker()){
       await loadOrders(searchInput?.value||'',currentPage);
     }
