@@ -126,7 +126,7 @@ function showRemindersModal(list){
     const days=Math.floor((Date.now()-new Date(r.deadlineDate).getTime())/86400000);
     const waitLabel=r.waitingOn==='kontrola'?t('msg_waiting_kontrola_confirm'):r.waitingOn==='klijent'?t('msg_waiting_your_confirm'):t('msg_waiting_both');
     const dayWord=days===1?t('msg_day'):t('msg_days');
-    return `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer" onclick="closeRemindersModal();openOrder(${r.orderId})">
+    return `<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer" onclick="openOrder(${r.orderId})">
       <b>${t('th_order')} #${esc(r.orderNumber)}</b>${r.name?` — ${esc(r.name)}`:''}<br>
       <span style="color:var(--muted);font-size:13px">${esc(r.company)} — ${t('msg_late_days')} ${days} ${dayWord} — ${waitLabel}</span>
     </div>`;
@@ -539,7 +539,6 @@ async function sendOtpremnicaMail(){
 
   status.textContent='⏳ Šaljem mail...';status.className='';
   try{
-    // Konvertuj blob u base64
     const arrayBuffer=await lastGeneratedExcelBlob.arrayBuffer();
     const bytes=new Uint8Array(arrayBuffer);
     let binary='';

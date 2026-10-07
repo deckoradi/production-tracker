@@ -6,6 +6,7 @@ const token=localStorage.getItem('token'),userStr=localStorage.getItem('user');
 if(!token||!userStr){location.href='index.html'}else{try{currentUser=JSON.parse(userStr)}catch(e){localStorage.clear();location.href='index.html'}}
 const companyDisplay=$('companyDisplay'),adminPanel=$('adminPanel'),ordersContainer=$('ordersContainer'),searchInput=$('searchInput'),searchBtn=$('searchBtn'),clearSearchBtn=$('clearSearchBtn'),logoutBtn=$('logoutBtn'),sendReportBtn=$('sendReportBtn'),changePasswordBtn=$('changePasswordBtn'),phaseModal=$('phaseModal'),modalOrderNumber=$('modalOrderNumber'),modalOrderInfo=$('modalOrderInfo'),phasesContainer=$('phasesContainer'),closeModal=document.querySelector('.close-modal'),orderCount=$('orderCount');
 if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
+const adminBody=adminPanel?.querySelector('.panel-body')||adminPanel;
 const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
 async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error(t('msg_session_expired'))}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
 
@@ -142,7 +143,7 @@ let searchDebounce=null;
 searchInput?.addEventListener('input',()=>{clearTimeout(searchDebounce);searchDebounce=setTimeout(()=>loadOrders(searchInput.value,1),300)});
 searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));searchInput?.addEventListener('keyup',e=>{if(e.key==='Enter')loadOrders(searchInput.value,1)});clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='';loadOrders('',1)});logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});closeModal?.addEventListener('click',()=>phaseModal?.classList.add('hidden'));window.addEventListener('click',e=>{if(e.target===phaseModal)phaseModal.classList.add('hidden')});
 
-function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;const p=document.createElement('div');p.id='orderManagementPanel';p.className='admin-section';p.innerHTML=`<h3>🗂️ Upravljanje nalozima</h3><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="deleteActiveOrdersBtn" class="btn-tag btn-tag--problem" style="padding:10px 16px;font-size:13px">🗑️ Obriši aktivne naloge</button><button id="deleteAllHistoryBtn" class="btn-tag btn-tag--reset" style="padding:10px 16px;font-size:13px">🧹 Obriši sve + istoriju</button></div><div id="orderManagementStatus"></div>`;adminPanel.appendChild(p);$('deleteActiveOrdersBtn').onclick=clearActive;$('deleteAllHistoryBtn').onclick=clearAll;
+function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;const p=document.createElement('div');p.id='orderManagementPanel';p.className='admin-section';p.innerHTML=`<h3>🗂️ Upravljanje nalozima</h3><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px"><button id="deleteActiveOrdersBtn" class="btn-tag btn-tag--problem" style="padding:10px 16px;font-size:13px">🗑️ Obriši aktivne naloge</button><button id="deleteAllHistoryBtn" class="btn-tag btn-tag--reset" style="padding:10px 16px;font-size:13px">🧹 Obriši sve + istoriju</button></div><div id="orderManagementStatus"></div>`;adminBody.appendChild(p);$('deleteActiveOrdersBtn').onclick=clearActive;$('deleteAllHistoryBtn').onclick=clearAll;
   const h=document.createElement('div');h.id='historyExportPanel';h.className='admin-section';
   h.innerHTML=`<h3>📊 Istorija aktivnosti (Excel izveštaj)</h3>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
@@ -154,7 +155,7 @@ function addAdminControls(){if(!adminPanel||$('orderManagementPanel'))return;con
       <button id="exportHistoryBtn" class="btn-success" style="padding:10px 16px">📥 Preuzmi Excel</button>
     </div>
     <div id="historyExportStatus"></div>`;
-  adminPanel.appendChild(h);
+  adminBody.appendChild(h);
   $('exportHistoryBtn').onclick=exportHistory;
 }
 
@@ -184,7 +185,7 @@ function addCompanyInfoControls(){
     </div>
     <div id="ciStatus" style="margin-top:8px"></div>
     <div id="ciList" style="margin-top:12px"></div>`;
-  adminPanel.appendChild(div);
+  adminBody.appendChild(div);
   $('ciSaveBtn').onclick=saveCompanyInfo;
   loadCompanyInfo();
 }
@@ -251,7 +252,7 @@ function addFixedRecipientsControls(){
     </div>
     <div id="frStatus" style="margin-top:8px"></div>
     <div id="frList" style="margin-top:12px"></div>`;
-  adminPanel.appendChild(div);
+  adminBody.appendChild(div);
   $('frAddBtn').onclick=addFixedRecipient;
   $('frEmail')?.addEventListener('keyup',e=>{if(e.key==='Enter')addFixedRecipient()});
   loadFixedRecipients();
@@ -306,7 +307,7 @@ function addOtpremnicaLogControls(){
       <button id="clearOtpremnicaLogBtn" class="btn-tag btn-tag--problem" style="padding:10px 16px;font-size:13px">🗑️ Obriši log otpremnica</button>
     </div>
     <div id="otpremnicaLogStatus" style="margin-top:8px"></div>`;
-  adminPanel.appendChild(div);
+  adminBody.appendChild(div);
   $('clearOtpremnicaLogBtn').onclick=clearOtpremnicaLog;
 }
 
@@ -611,7 +612,7 @@ async function clearAll(){
 $('uploadForm')?.addEventListener('submit',async e=>{e.preventDefault();const f=$('fileInput'),s=$('uploadStatus');if(!f?.files?.[0]){s.textContent='Molimo izaberite Excel fajl';s.className='error';return}s.textContent='⏳ Analiziram Excel i sinhronizujem...';s.className='';const fd=new FormData();fd.append('file',f.files[0]);try{const r=await fetch('/api/upload',{method:'POST',headers:headers(),body:fd});const d=await r.json();if(!r.ok)throw Error(d.error);s.className='success';s.innerHTML=`✅ Sinhronizovano: 🟢 ${d.updated} postojećih, 🔵 ${d.inserted} novih, 🔴 ${d.removed} uklonjeno. Istorija sačuvana.`;f.value='';await loadOrders('',1)}catch(e){s.textContent='❌ '+e.message;s.className='error'}});
 
 $('createUserForm')?.addEventListener('submit',async e=>{e.preventDefault();try{const d=await api('/api/users',{method:'POST',headers:headers(true),body:JSON.stringify({username:$('newUsername').value.trim(),company:$('newCompany').value.trim(),role:$('newRole')?.value||'user'})});$('userStatus').textContent=`✅ Korisnik ${d.user.username} kreiran (${d.user.role==='kontrola'?'Kontrola':'Klijent'})`;$('userStatus').className='success';$('newUsername').value='';$('newCompany').value='';loadUsers();alert(`✅ Korisnik "${d.user.username}" kreiran.\n\n🔑 Lozinka: ${d.password}\n\nZapiši je i prosledi korisniku - prikazuje se samo ovaj put!`)}catch(e){$('userStatus').textContent='❌ '+e.message;$('userStatus').className='error'}});
-async function loadUsers(){try{const u=await api('/api/users',{headers:headers()});const x=$('usersList');if(x)x.innerHTML=u.map(a=>`<div class="user-item" style="grid-template-columns:1fr 1fr auto auto auto"><span>${esc(a.username)}</span><span>${esc(a.company)}</span><span>${esc(a.role)}</span><span class="clickable" style="color:var(--denim);font-weight:700" onclick="resetPassword(${a.id},'${js(a.username)}')" title="Resetuj lozinku">🔑</span>${a.role!=='admin'?`<span class="clickable" style="color:var(--red);font-weight:700" onclick="deleteUser(${a.id},'${js(a.username)}')" title="Obriši korisnika">🗑️</span>`:'<span></span>'}</div>`).join('')||'Nema korisnika';const sel=$('historyCompany');if(sel){const companies=[...new Set(u.map(a=>a.company).filter(Boolean))].sort();sel.innerHTML='<option value="">Sve firme</option>'+companies.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}}catch(e){console.error(e)}}
+async function loadUsers(){try{const u=await api('/api/users',{headers:headers()});const x=$('usersList');if(x)x.innerHTML=u.map(a=>`<div class="user-item user-item--5"><span>${esc(a.username)}</span><span>${esc(a.company)}</span><span>${esc(a.role)}</span><span class="clickable" style="color:var(--blue-dark);font-weight:700" onclick="resetPassword(${a.id},'${js(a.username)}')" title="Resetuj lozinku">🔑</span>${a.role!=='admin'?`<span class="clickable" style="color:var(--red);font-weight:700" onclick="deleteUser(${a.id},'${js(a.username)}')" title="Obriši korisnika">🗑️</span>`:'<span></span>'}</div>`).join('')||'Nema korisnika';const sel=$('historyCompany');if(sel){const companies=[...new Set(u.map(a=>a.company).filter(Boolean))].sort();sel.innerHTML='<option value="">Sve firme</option>'+companies.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('')}}catch(e){console.error(e)}}
 
 async function resetPassword(id,username){
   if(!confirm(`Generisati novu lozinku za "${username}"? Stara prestaje da važi.`))return;
@@ -685,9 +686,11 @@ function renderOrders(){
   let h='<table><thead><tr>'+(admin?'<th>Firma</th><th>Šifra</th><th>Naziv</th><th>Nalog</th><th>Količina</th><th>Datum</th><th>Status</th>':`<th>${t('th_order')}</th><th>${t('th_name')}</th><th>${t('th_quantity')}</th><th>${t('th_status')}</th>`)+'</tr></thead><tbody>';
   orders.forEach((o,i)=>{
     const st=computeOrderStatus(o);
-    h+=`<tr style="${i%2===0?'background:var(--paper)':''}">`;
-    if(admin)h+=`<td>${esc(o.company)}</td><td class="clickable" style="cursor:default;font-weight:600">${esc(o.code)}</td><td>${esc(o.name)}</td><td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td style="text-align:center">${o.quantity||0}</td><td>${esc(o.deliveryDate||'-')}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;
-    else h+=`<td class="clickable" onclick="openOrder(${o.id})">${esc(o.orderNumber)}</td><td>${esc(o.name)}</td><td style="text-align:center">${o.quantity||0}</td><td><span class="status-badge ${st[1]}">${st[0]}</span></td>`;
+    h+=`<tr class="row-${st[1]}" onclick="openOrder(${o.id})">`;
+    const L=admin?['Firma','Šifra','Naziv','Nalog','Količina','Datum','Status']:[t('th_order'),t('th_name'),t('th_quantity'),t('th_status')];
+    const cells=admin?[esc(o.company),`<span style="font-weight:600">${esc(o.code)}</span>`,esc(o.name),esc(o.orderNumber),o.quantity||0,esc(o.deliveryDate||'-'),`<span class="status-badge ${st[1]}">${st[0]}</span>`]:[esc(o.orderNumber),esc(o.name),o.quantity||0,`<span class="status-badge ${st[1]}">${st[0]}</span>`];
+    const clk=admin?3:0;
+    cells.forEach((c,k)=>{h+=`<td data-label="${L[k]}"${k===clk?' class="clickable"':''}>${c}</td>`});
     h+='</tr>';
   });
   h+='</tbody></table>';
@@ -1108,3 +1111,15 @@ function date(v) {
 function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
 function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
 window.openOrder=openOrder;window.goToPage=goToPage;window.updatePhase=updatePhase;window.saveComment=saveComment;window.deleteUser=deleteUser;window.resetPassword=resetPassword;window.deleteCompanyInfo=deleteCompanyInfo;window.deleteFixedRecipient=deleteFixedRecipient;window.clearOtpremnicaLog=clearOtpremnicaLog;
+// ============ UI: admin collapse, scroll lock, Esc ============
+(()=>{
+  const btn=$('adminToggle');
+  if(btn&&adminPanel){
+    const set=c=>{adminPanel.classList.toggle('is-collapsed',c);btn.setAttribute('aria-expanded',String(!c))};
+    set(window.innerWidth<=800);
+    btn.addEventListener('click',()=>set(!adminPanel.classList.contains('is-collapsed')));
+  }
+  const sync=()=>document.body.classList.toggle('modal-open',!!document.querySelector('.modal:not(.hidden)'));
+  new MutationObserver(sync).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
+  document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;const m=[...document.querySelectorAll('.modal:not(.hidden)')].pop();if(m)m.classList.add('hidden')});
+})();

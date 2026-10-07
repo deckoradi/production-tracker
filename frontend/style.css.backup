@@ -782,16 +782,6 @@ tbody tr:last-child td { border-bottom: 0; }
     -webkit-backdrop-filter: blur(8px);
 }
 
-/* Podsetnici (remindersModal) moraju biti ISPOD phaseModal-a
-   da bi se detalj naloga video iznad liste podsetnika. */
-#remindersModal {
-    z-index: 999;
-}
-
-#phaseModal {
-    z-index: 1000;
-}
-
 .modal-content {
     position: relative;
     width: min(720px, 100%);
@@ -1306,25 +1296,4 @@ body.modal-open { overflow: hidden; }
     .user-item--5 span:nth-child(-n+3) { grid-column: 1; }
     .user-item--5 span:nth-child(4) { grid-column: 2; grid-row: 1; }
     .user-item--5 span:nth-child(5) { grid-column: 3; grid-row: 1; }
-}
-
-/* ============================================================
-   FINAL OVERRIDES — remindersModal ispod phaseModal
-   ============================================================ */
-#remindersModal {
-    z-index: 999;
-}
-
-#phaseModal {
-    z-index: 1000;
-}
-
-/* Kada je phaseModal otvoren, remindersModal ostaje u pozadini ali se ne sklanja */
-body:has(#phaseModal:not(.hidden)) #remindersModal {
-    z-index: 999;
-}
-
-/* Fallback za browsere bez :has() — nema štete */
-@supports not selector(:has(*)) {
-    /* ništa dodatno, z-index je dovoljan */
 }
