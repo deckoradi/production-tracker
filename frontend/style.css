@@ -782,6 +782,16 @@ tbody tr:last-child td { border-bottom: 0; }
     -webkit-backdrop-filter: blur(8px);
 }
 
+/* Podsetnici (remindersModal) moraju biti ISPOD phaseModal-a
+   da bi se detalj naloga video iznad liste podsetnika. */
+#remindersModal {
+    z-index: 999;
+}
+
+#phaseModal {
+    z-index: 1000;
+}
+
 .modal-content {
     position: relative;
     width: min(720px, 100%);
@@ -1299,55 +1309,22 @@ body.modal-open { overflow: hidden; }
 }
 
 /* ============================================================
-   COMPACT ORDER LIST (mobile): one line per order
+   FINAL OVERRIDES — remindersModal ispod phaseModal
    ============================================================ */
-@media (max-width: 620px) {
-    #ordersContainer > table tbody { padding: 8px; }
-    #ordersContainer > table tr {
-        display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto;
-        align-items: center; column-gap: 10px;
-        margin: 0; padding: 0 10px; min-height: 46px;
-        border-radius: 0; border-width: 0 0 1px 4px;
-        border-style: solid; border-color: var(--line); border-left-color: var(--line-strong);
-    }
-    #ordersContainer > table tr.row-status-problem   { border-left-color: var(--red); }
-    #ordersContainer > table tr.row-status-completed { border-left-color: var(--green); }
-    #ordersContainer > table tr:first-child { border-radius: 12px 12px 0 0; }
-    #ordersContainer > table tr:last-child  { border-radius: 0 0 12px 12px; }
-    #ordersContainer > table td {
-        display: block; padding: 0 !important; border: 0; text-align: left !important;
-        background: transparent !important; font-size: 13px;
-    }
-    #ordersContainer > table td::before { content: none; }
-    #ordersContainer > table td[data-col="firma"],
-    #ordersContainer > table td[data-col="sifra"],
-    #ordersContainer > table td[data-col="datum"] { display: none; }
-    #ordersContainer > table td[data-col="nalog"] { font-family: var(--font-mono); font-weight: 700; white-space: nowrap; }
-    #ordersContainer > table td[data-col="naziv"] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
-    #ordersContainer > table td[data-col="kol"]   { font-family: var(--font-mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
-    #ordersContainer > table td[data-col="kol"]::before { content: "×"; margin-right: 1px; }
-    #ordersContainer > table td[data-col="status"] { white-space: nowrap; }
-    #ordersContainer > table .status-badge { padding: 3px 8px; }
-    #ordersContainer > table tr:active { background: var(--paper); }
+#remindersModal {
+    z-index: 999;
 }
 
-/* ============================================================
-   MOBILE LIST BY ROLE
-   client: one clear line, larger text
-   staff (admin/kontrola): same line + company as small second line
-   ============================================================ */
-@media (max-width: 620px) {
-    #ordersContainer > table.orders-table--client tr { min-height: 54px; }
-    #ordersContainer > table.orders-table--client td { font-size: 14px; }
-    #ordersContainer > table.orders-table--client td[data-col="naziv"] { color: inherit; font-weight: 500; }
-    #ordersContainer > table.orders-table--client td[data-col="nalog"] { font-size: 14px; }
-    #ordersContainer > table.orders-table--client td[data-col="kol"] { font-size: 13px; }
-    #ordersContainer > table.orders-table--client .status-badge { font-size: 11px; padding: 4px 10px; }
+#phaseModal {
+    z-index: 1000;
+}
 
-    #ordersContainer > table.orders-table--staff tr { padding-top: 8px; padding-bottom: 8px; row-gap: 2px; }
-    #ordersContainer > table.orders-table--staff td { grid-row: 1; }
-    #ordersContainer > table.orders-table--staff td[data-col="firma"] {
-        display: block; grid-row: 2; grid-column: 1 / -1;
-        font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
+/* Kada je phaseModal otvoren, remindersModal ostaje u pozadini ali se ne sklanja */
+body:has(#phaseModal:not(.hidden)) #remindersModal {
+    z-index: 999;
+}
+
+/* Fallback za browsere bez :has() — nema štete */
+@supports not selector(:has(*)) {
+    /* ništa dodatno, z-index je dovoljan */
 }
