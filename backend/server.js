@@ -41,6 +41,22 @@ const isExternalWorker = (user) => isVez(user) || isSerigrafija(user);
 
 const WORKER_PHASE = { 'vez': '300', 'serigrafija': '200' };
 
+// ============================================================
+// ZAJEDNIČKI DIZAJN ZA EXCEL (plava zaglavlja, boje)
+// ============================================================
+const EXCEL_HEADER_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2B4570' } };
+const EXCEL_HEADER_FONT = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+const EXCEL_HEADER_ALIGN = { vertical: 'middle', horizontal: 'center', wrapText: true };
+
+const STATUS_LABELS_WORKER = {
+    'poslato': '📤 Poslato',
+    'uradjeno': '📤 Urađeno',
+    'problem': '⚠️ Problem',
+    'completed': '📥 Primljeno',
+    'nema': '🚫 Nema',
+    'pending': '⬜ U toku'
+};
+
 const initDb = async () => {
     try {
         await pool.query(`
@@ -623,26 +639,29 @@ app.get('/api/worker/export', authenticate, async (req, res) => {
             { header: 'Izmenio', key: 'changed_by', width: 18 }
         ];
         sheet.getRow(1).eachCell(cell => {
-            cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2B4570' } };
-            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+            cell.font = EXCEL_HEADER_FONT;
+            cell.fill = EXCEL_HEADER_FILL;
+            cell.alignment = EXCEL_HEADER_ALIGN;
+            cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
         });
-        const STATUS_LABELS = {
-            'poslato': '📤 Poslato',
-            'uradjeno': '📤 Urađeno',
-            'problem': '⚠️ Problem',
-            'completed': '📥 Primljeno'
-        };
+        sheet.getRow(1).height = 24;
+        sheet.autoFilter = { from: 'A1', to: 'H1' };
+
         result.rows.forEach(r => {
-            sheet.addRow({
+            const row = sheet.addRow({
                 date: new Date(r.changed_at).toLocaleString('sr-RS'),
                 order: r.order_number,
                 company: r.company,
                 name: r.name || '',
                 code: r.code || '',
-                status: STATUS_LABELS[r.new_status] || r.new_status,
+                status: STATUS_LABELS_WORKER[r.new_status] || r.new_status,
                 comment: r.comment || '',
                 changed_by: r.changed_by || ''
+            });
+            row.font = { name: 'Arial', size: 10 };
+            row.alignment = { vertical: 'middle', wrapText: true };
+            row.eachCell(cell => {
+                cell.border = { top: { style: 'thin', color: { argb: 'FFE2E8F0' } }, bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } }, left: { style: 'thin', color: { argb: 'FFE2E8F0' } }, right: { style: 'thin', color: { argb: 'FFE2E8F0' } } };
             });
         });
 
@@ -866,12 +885,8 @@ app.get('/api/orders', authenticate, async (req, res) => {
         const externalWorker = isExternalWorker(req.user);
         const workerPhase = externalWorker ? WORKER_PHASE[req.user.role] : null;
 
-        // ============================================================
-        // KLIJENT (user) — vidi SVOJE + preuzete + pretraga za tuđe
-        // ============================================================
         if (isUser(req.user)) {
             const userCompany = req.user.company;
-
             if (search) {
                 const s = search.toLowerCase();
                 whereClause = `WHERE (LOWER(o.order_number) LIKE $${paramIndex} OR LOWER(o.name) LIKE $${paramIndex} OR LOWER(o.code) LIKE $${paramIndex})`;
@@ -887,9 +902,6 @@ app.get('/api/orders', authenticate, async (req, res) => {
             }
         }
 
-        // ============================================================
-        // RADNIK (vez / serigrafija)
-        // ============================================================
         if (externalWorker) {
             if (search) {
                 const s = search.toLowerCase();
@@ -914,9 +926,6 @@ app.get('/api/orders', authenticate, async (req, res) => {
             }
         }
 
-        // ============================================================
-        // ADMIN / KONTROLA
-        // ============================================================
         if (privileged && search) {
             const s = search.toLowerCase();
             whereClause = `WHERE (LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(company) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex})`;
@@ -1038,7 +1047,7 @@ app.get('/api/orders', authenticate, async (req, res) => {
     }
 });
 
-// ============ UPDATE PHASE SA ISTORIJOM ============
+// ============ UPDATE PHASE ============
 app.post('/api/update-phase', authenticate, async (req, res) => {
     try {
         const { orderId, phase, comment } = req.body;
@@ -1063,23 +1072,14 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         const claimInfo = await pool.query('SELECT * FROM order_claims WHERE order_id = $1', [orderId]);
         const existingClaim = claimInfo.rows[0] || null;
 
-        // ============================================================
-        // 1) KONTROLA — može samo PRIJEM
-        // ============================================================
         if (isKontrola(req.user) && phase !== 'PRIJEM') {
             return res.status(403).json({ error: 'Kontrola može da menja isključivo fazu Prijem.' });
         }
 
-        // ============================================================
-        // 2) ADMIN I KONTROLA — samo oni mogu PRIJEM
-        // ============================================================
         if (!isAdmin(req.user) && !isKontrola(req.user) && phase === 'PRIJEM') {
             return res.status(403).json({ error: 'Nemate dozvolu za ovu fazu.' });
         }
 
-        // ============================================================
-        // 3) KONTROLA — LOCK
-        // ============================================================
         if (isKontrola(req.user) && phase === 'PRIJEM') {
             if (oldStatus === 'completed') {
                 return res.status(403).json({ error: '🔒 Prijem je već potvrđen. Ne možete menjati.' });
@@ -1107,9 +1107,6 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
         }
 
-        // ============================================================
-        // 4) RADNIK (vez / serigrafija)
-        // ============================================================
         if (isExternalWorker(req.user)) {
             const workerPhase = WORKER_PHASE[req.user.role];
             if (phase !== workerPhase) {
@@ -1126,9 +1123,6 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
         }
 
-        // ============================================================
-        // 5) KLIJENT (user)
-        // ============================================================
         if (isUser(req.user)) {
             const userCompany = req.user.company;
             const isOwnOrder = (orderCompany === userCompany);
@@ -1199,9 +1193,6 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
         }
 
-        // ============================================================
-        // 6) LOCK PO DANU — samo za klijenta
-        // ============================================================
         if (isUser(req.user)) {
             const hasPriorActivity = oldStatus !== 'pending' || oldComment.trim() !== '';
             let sameDay = true;
@@ -1444,36 +1435,41 @@ app.post('/api/clear-all', authenticate, async (req, res) => {
 const PHASE_LABELS = { '100': 'Krojenje', '200': 'Serigrafija', '300': 'Vez', '400': 'Šivenje', '500': 'Poslato' };
 function phaseLabel(p) { return PHASE_LABELS[String(p)] || `Faza ${p}`; }
 
-// ============ EXPORT ISTORIJE U EXCEL (SA PRIKAZOM KO JE URADIO) ============
+// ============ EXPORT ISTORIJE U EXCEL — JEDINSTVENI DIZAJN ============
 app.get('/api/history/export', authenticate, async (req, res) => {
     try {
         let { company, dateFrom, dateTo } = req.query;
         let changedBy = null;
+
+        // ============================================================
+        // NOVO: Klijent vidi sve izmene za SVOJU firmu + preuzete
+        // ============================================================
         if (req.user.role !== 'admin') {
-            company = null;
-            changedBy = req.user.username;
+            company = req.user.company;
+            changedBy = null;
         }
+
         let where = [];
         let params = [];
         let idx = 1;
 
         if (company) {
-            where.push(`company = $${idx}`);
+            // Firma: ili originalna firma naloga ili preuzeto od strane te firme
+            where.push(`(oh.company = $${idx} OR oh.order_number IN (
+                SELECT o2.order_number FROM orders o2
+                JOIN order_claims oc ON oc.order_id = o2.id
+                WHERE oc.claimed_by_company = $${idx}
+            ))`);
             params.push(company);
             idx++;
         }
-        if (changedBy) {
-            where.push(`changed_by = $${idx}`);
-            params.push(changedBy);
-            idx++;
-        }
         if (dateFrom) {
-            where.push(`changed_at >= $${idx}`);
+            where.push(`oh.changed_at >= $${idx}`);
             params.push(dateFrom + ' 00:00:00');
             idx++;
         }
         if (dateTo) {
-            where.push(`changed_at <= $${idx}`);
+            where.push(`oh.changed_at <= $${idx}`);
             params.push(dateTo + ' 23:59:59');
             idx++;
         }
@@ -1481,7 +1477,7 @@ app.get('/api/history/export', authenticate, async (req, res) => {
 
         const lastActivityResult = await pool.query(
             `SELECT DISTINCT ON (order_number, company) order_number, company, comment, changed_by, changed_at
-             FROM order_history
+             FROM order_history oh
              ${whereClause}
              ORDER BY order_number, company, changed_at DESC`,
             params
@@ -1501,9 +1497,6 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             return res.end();
         }
 
-        // ============================================================
-        // NOVO: phaseStatusResult sada vraća i changed_by i changed_by_company
-        // ============================================================
         const phaseStatusResult = await pool.query(
             `SELECT DISTINCT ON (order_number, company, phase) order_number, company, phase, new_status, comment, changed_at, changed_by, changed_by_company
              FROM order_history
@@ -1531,9 +1524,6 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             if (!repairMap.has(key)) repairMap.set(key, r);
         });
 
-        // ============================================================
-        // NOVO: problemMap sada ima changedBy i changedByCompany
-        // ============================================================
         const problemMap = new Map();
         lastProblemResult.rows.forEach(r => {
             problemMap.set(`${r.order_number}||${r.company}||${r.phase}`, { 
@@ -1559,9 +1549,6 @@ app.get('/api/history/export', authenticate, async (req, res) => {
                 return;
             }
             if (!phaseMap.has(key)) phaseMap.set(key, {});
-            // ============================================================
-            // NOVO: skladištimo changedBy i changedByCompany
-            // ============================================================
             phaseMap.get(key)[r.phase] = { 
                 status: r.new_status, 
                 comment: r.comment || '', 
@@ -1573,6 +1560,20 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         });
         const phases = [...phaseSet].sort((a, b) => parseInt(a) - parseInt(b));
         const finalPhases = phases.length ? phases : ['100', '200', '300', '400', '500'];
+
+        // ============================================================
+        // NOVO: Klijent vidi firmu za svoje + preuzete naloge
+        // ============================================================
+        let claimedOrderNumbers = new Set();
+        if (req.user.role === 'user') {
+            const claimsResult = await pool.query(
+                `SELECT o.order_number FROM orders o
+                 JOIN order_claims oc ON oc.order_id = o.id
+                 WHERE oc.claimed_by_company = $1`,
+                [req.user.company]
+            );
+            claimedOrderNumbers = new Set(claimsResult.rows.map(x => x.order_number));
+        }
 
         const prijemCellText = (entry, key) => {
             if (!entry || entry.status === 'pending') return '';
@@ -1601,14 +1602,10 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         const statusFill = s => s === 'completed' ? 'FFC6F6D5' : s === 'problem' ? 'FFFED7D7' : null;
         const statusFont = s => s === 'completed' ? 'FF276749' : s === 'problem' ? 'FF9B2C2C' : 'FF4A5568';
 
-        // ============================================================
-        // NOVO: phaseCellText sada prikazuje i ko je uradio
-        // ============================================================
         const phaseCellText = (entry, orderNumber, comp, phaseCode) => {
             if (!entry) return '';
             const comment = (entry.comment || '').trim();
             const dateStr = entry.changedAt ? new Date(entry.changedAt).toLocaleDateString('sr-RS') : '';
-            // Ko je uradio? Firma ima prioritet (npr. "Serigrafija", "Vez", "Kontrola", "Administrator", "Firma A")
             const byCompany = (entry.changedByCompany || '').trim();
             const byUser = (entry.changedBy || '').trim();
             const byLabel = byCompany || byUser;
@@ -1667,14 +1664,14 @@ app.get('/api/history/export', authenticate, async (req, res) => {
 
         const fixedCols = [
             { key: 'changed_at', width: 20 },
-            { key: 'company', width: 22 },
+            { key: 'company', width: 24 },
             { key: 'order_number', width: 15 }
         ];
         const phaseCols = finalPhases.map(p => ({ key: 'phase_' + p, width: 30 }));
         const tailCols = [
             { key: 'prijem', width: 36 },
             { key: 'napomena', width: 30 },
-            { key: 'changed_by', width: 16 }
+            { key: 'changed_by', width: 18 }
         ];
         sheet.columns = [...fixedCols, ...phaseCols, ...tailCols];
 
@@ -1697,9 +1694,9 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             'Napomena', 'Izmenio'
         ];
         headerRow.eachCell(cell => {
-            cell.font = { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF667EEA' } };
-            cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+            cell.font = EXCEL_HEADER_FONT;
+            cell.fill = EXCEL_HEADER_FILL;
+            cell.alignment = EXCEL_HEADER_ALIGN;
             cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
         });
         headerRow.height = 26;
@@ -1709,7 +1706,19 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             const key = `${r.order_number}||${r.company}`;
             const phaseData = phaseMap.get(key) || {};
             const napomena = napomenaMap.get(key);
-            const visibleCompany = (req.user.role === 'admin' || req.user.role === 'kontrola' || r.company === req.user.company) ? r.company : '—';
+            
+            // ============================================================
+            // NOVO: Klijent vidi firmu za svoje + preuzete
+            // ============================================================
+            let visibleCompany = r.company;
+            if (req.user.role === 'user') {
+                const isOwnCompany = (r.company === req.user.company);
+                const isClaimedByMe = claimedOrderNumbers.has(r.order_number);
+                if (!isOwnCompany && !isClaimedByMe) {
+                    visibleCompany = '—';
+                }
+            }
+            
             const rowData = {
                 changed_at: new Date(r.changed_at).toLocaleString('sr-RS'),
                 company: visibleCompany,
@@ -1729,9 +1738,9 @@ app.get('/api/history/export', authenticate, async (req, res) => {
             });
 
             let hasComment = false;
-            finalPhases.forEach((p, idx) => {
+            finalPhases.forEach((p, idx2) => {
                 const entry = phaseData[p];
-                const cell = row.getCell(4 + idx);
+                const cell = row.getCell(4 + idx2);
                 const fill = entry ? statusFill(entry.status) : null;
                 cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
                 cell.font = { name: 'Arial', size: 10, bold: !!(entry && entry.status && entry.status !== 'pending'), color: { argb: entry ? statusFont(entry.status) : 'FF4A5568' } };
@@ -1860,7 +1869,7 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
     }
 });
 
-// ============ OTPREMNICA - EXCEL EXPORT ============
+// ============ OTPREMNICA - EXCEL EXPORT (A4 print, ostaje isti) ============
 app.get('/api/otpremnica/export', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
@@ -1954,11 +1963,7 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
                 fitToPage: true,
                 fitToWidth: 1,
                 fitToHeight: 0,
-                margins: {
-                    left: 0.3, right: 0.3,
-                    top: 0.3, bottom: 0.3,
-                    header: 0.1, footer: 0.1
-                },
+                margins: { left: 0.3, right: 0.3, top: 0.3, bottom: 0.3, header: 0.1, footer: 0.1 },
                 horizontalCentered: true
             }
         });
@@ -2125,7 +2130,7 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
     }
 });
 
-// ============ SEND REPORT ============
+// ============ SEND REPORT — JEDINSTVENI DIZAJN ============
 app.post('/api/send-report', authenticate, async (req, res) => {
     try {
         const logResult = await pool.query(
@@ -2161,34 +2166,33 @@ app.post('/api/send-report', authenticate, async (req, res) => {
             { header: 'Datum', key: 'date', width: 20 },
             { header: 'Nalog', key: 'order', width: 15 },
             { header: 'Faza', key: 'phase', width: 18 },
-            { header: 'Status', key: 'status', width: 15 },
+            { header: 'Status', key: 'status', width: 20 },
             { header: 'Komentar', key: 'comment', width: 40 },
             { header: 'Izmenio', key: 'changed_by', width: 18 }
         ];
 
         sheet.getRow(1).eachCell(cell => {
-            cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF667EEA' } };
-            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+            cell.font = EXCEL_HEADER_FONT;
+            cell.fill = EXCEL_HEADER_FILL;
+            cell.alignment = EXCEL_HEADER_ALIGN;
+            cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
         });
-
-        const STATUS_LABELS = { 
-            'completed': '✅ Urađeno', 
-            'problem': '⚠️ Problem', 
-            'pending': '⬜ U toku', 
-            'nema': '🚫 Nema',
-            'poslato': '📤 Poslato',
-            'uradjeno': '📤 Urađeno (radnik)'
-        };
+        sheet.getRow(1).height = 24;
+        sheet.autoFilter = { from: 'A1', to: 'F1' };
 
         historyResult.rows.forEach(r => {
-            sheet.addRow({
+            const row = sheet.addRow({
                 date: new Date(r.changed_at).toLocaleString('sr-RS'),
                 order: r.order_number,
                 phase: PHASE_LABELS[r.phase] || r.phase,
-                status: STATUS_LABELS[r.new_status] || r.new_status,
+                status: STATUS_LABELS_WORKER[r.new_status] || r.new_status,
                 comment: r.comment || '',
                 changed_by: r.changed_by || ''
+            });
+            row.font = { name: 'Arial', size: 10 };
+            row.alignment = { vertical: 'middle', wrapText: true };
+            row.eachCell(cell => {
+                cell.border = { top: { style: 'thin', color: { argb: 'FFE2E8F0' } }, bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } }, left: { style: 'thin', color: { argb: 'FFE2E8F0' } }, right: { style: 'thin', color: { argb: 'FFE2E8F0' } } };
             });
         });
 
