@@ -17,33 +17,25 @@ const isSerigrafijaRole = () => currentUser?.role === 'serigrafija';
 const isExternalWorker = () => isVezRole() || isSerigrafijaRole();
 const isPrivileged = () => currentUser?.role === 'admin' || currentUser?.role === 'kontrola';
 const isUserRole = () => currentUser?.role === 'user';
+const isKontrolaRole = () => currentUser?.role === 'kontrola';
 
 // ============ POMOĆNE ZA PREUZIMANJE ============
-// Vraća claim objekat iz order-a (ako postoji)
 const getClaim = (o) => o?.claim || null;
-
-// Da li je nalog tuđi za trenutnog klijenta
 const isForeignOrderForMe = (o) => {
   if (!isUserRole()) return false;
   return o.company !== currentUser.company;
 };
-
-// Da li sam ja preuzeo ovaj tuđi nalog
 const isClaimedByMe = (o) => {
   if (!isUserRole()) return false;
   const c = getClaim(o);
   return !!(c && c.claimedByCompany === currentUser.company);
 };
-
-// Da li je nalog zauzet od strane nekog drugog (ne mene)
 const isClaimedByOther = (o) => {
   const c = getClaim(o);
   if (!c) return false;
   if (isUserRole() && c.claimedByCompany === currentUser.company) return false;
   return true;
 };
-
-// Da li je Krojenje (100) slobodno (niko nije dirao)
 const isKrojenjeFree = (o) => {
   const p = (o.progress || []).find(x => String(x.phase) === '100');
   if (!p) return true;
@@ -896,7 +888,6 @@ function renderOrders(){
   }
   const privileged=isPrivileged();
   const worker=isExternalWorker();
-  const isUser=isUserRole();
 
   let h='<table><thead><tr>';
   if(privileged){
@@ -904,7 +895,6 @@ function renderOrders(){
   } else if(worker){
     h+=`<th>${t('th_company')}</th><th>${t('th_order')}</th><th>${t('th_name')}</th><th>${t('th_quantity')}</th><th>${t('th_delivery')}</th><th>${t('th_status')}</th>`;
   } else {
-    // KLIJENT — bez kolone "Firma"
     h+=`<th>${t('th_order')}</th><th>${t('th_name')}</th><th>${t('th_quantity')}</th><th>${t('th_status')}</th>`;
   }
   h+='</tr></thead><tbody>';
@@ -934,9 +924,7 @@ function renderOrders(){
       ];
       cells.forEach((c,k)=>{h+=`<td${k===1?' class="clickable"':''}>${c}</td>`});
     } else {
-      // KLIJENT
       const L=[t('th_order'),t('th_name'),t('th_quantity'),t('th_status')];
-      // Ako je nalog tuđi, prikazujemo naziv sa sufiksom "📌" (opciono)
       const isForeign = (o.company !== currentUser.company);
       const claimed = getClaim(o);
       const claimIcon = isForeign ? (claimed && claimed.claimedByCompany === currentUser.company ? ' 📌' : (claimed ? ' 🔒' : '')) : '';
@@ -1065,16 +1053,18 @@ function renderModal(o){
   modalOrderNumber.textContent=o.orderNumber||'N/A';
   const privileged=isPrivileged();
   const worker=isExternalWorker();
-  const isUser=isUserRole();
+  const user=isUserRole();
   const isOwnCompany=o.company===currentUser?.company;
   const claim=getClaim(o);
-  const isClaimedByMeLocal = isUser && claim && claim.claimedByCompany === currentUser.company;
-  const isForeign = isUser && o.company !== currentUser.company;
+  const isClaimedByMeLocal = user && claim && claim.claimedByCompany === currentUser.company;
+  const isForeign = user && o.company !== currentUser.company;
+
+  // ============================================================
+  // NOVO: Da li je nalog ZAUZET od nekog DRUGOG (ne mene)
+  // ============================================================
+  const isLockedForMeAsClient = user && isForeign && !isClaimedByMeLocal && (claim || !isKrojenjeFree(o));
 
   // Firma se prikazuje:
-  // - privilegovanima (admin/kontrola) UVEK
-  // - radnicima (vez/serigrafija) UVEK
-  // - klijentu: samo ako je njegov nalog (isOwnCompany) ili ako je on preuzeo (isClaimedByMeLocal)
   const showFirma = privileged || worker || isOwnCompany || isClaimedByMeLocal;
 
   const firmaLine = showFirma ? `<p><b>${t('modal_company')}:</b> ${esc(o.company)}</p>` : '';
@@ -1124,7 +1114,6 @@ function renderModal(o){
         for(let i=0;i<idx;i++){
           const priorRow=findPhaseRow(knownOrder[i]);
           const priorStatus=priorRow?.status;
-          // Faza je "rešena" samo ako je completed ili nema
           if(!priorRow || (priorStatus!=='completed' && priorStatus!=='nema')){
             sequenceBlockedOn=knownOrder[i];
             break;
@@ -1149,8 +1138,6 @@ function renderModal(o){
     const problemDateStr = p.lastProblemAt && p.status!=='problem' ? date(p.lastProblemAt) : null;
     const problemComment = (p.lastProblemComment||'').trim();
     const problemLine = problemDateStr ? `<div class="phase-date" style="margin-top:-4px;margin-bottom:6px">⚠️ ${problemDateStr}${problemComment?` — ${esc(problemComment)}`:''}</div>` : '';
-
-    // Foreign line — samo za privilegovane, i NE prikazujemo "ko radi" klijentu
     const foreignLine = (privileged && p.updatedByCompany && p.updatedByCompany!==o.company)
       ? `<div class="phase-date" style="margin-top:-4px;margin-bottom:6px;color:#9C6B00">👤 ${t('msg_worker')}: ${esc(p.updatedBy||'?')} (${t('modal_company').toLowerCase()} "${esc(p.updatedByCompany)}")</div>`
       : '';
@@ -1194,6 +1181,13 @@ function renderModal(o){
     // ============================================================
     // KLIJENT i ADMIN
     // ============================================================
+    // ============================================================
+    // NOVO: Ako je klijent i nalog je tuđi + zauzet od nekog drugog → ne može ništa
+    // ============================================================
+    else if(isLockedForMeAsClient){
+      const claimerName = claim ? claim.claimedByCompany : (findPhaseRow('100')?.updatedByCompany || '?');
+      bodyHtml=`<div class="phase-date" style="color:#9B2C2C;font-weight:600">🔒 ${t('msg_claim_locked')} — ${esc(claimerName)}</div>`;
+    }
     else if(sequenceBlockedOn){
       bodyHtml=`<div class="phase-date" style="color:var(--muted)">${t('msg_first_resolve_phase')} "${esc(phaseLabel(sequenceBlockedOn))}"</div>`;
     } else if(lock.locked && currentUser?.role!=='admin'){
@@ -1209,30 +1203,22 @@ function renderModal(o){
       const isAdminFaza200ili300 = (currentUser.role==='admin') && (p.phase==='200' || p.phase==='300');
 
       // ============================================================
-      // KLIJENT — specijalno za prvu fazu (100) i tuđe naloge
+      // KLIJENT — specijalno za prvu fazu (100)
       // ============================================================
-      if(isUser && p.phase==='100'){
-        // Da li je nalog tuđi i nije preuzet od mene?
-        if(isForeign && !isClaimedByMeLocal){
-          if(isKrojenjeFree(o) && (p.status==='pending' || !p.status)){
-            // Slobodan — može da preuzme
-            bodyHtml=`<div class="phase-date" style="color:#2B4570;font-weight:600;margin-bottom:6px">📌 ${t('msg_claim_you_can_take')}</div>
-              <div class="phase-actions">
-                <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'100','completed')">✅ ${t('btn_done')} (Preuzmi nalog)</button>
-              </div>`;
-          } else {
-            // Zauzet
-            const claimerName = claim ? claim.claimedByCompany : (p.updatedByCompany || '?');
-            bodyHtml=`<div class="phase-date" style="color:#9B2C2C;font-weight:600">${t('msg_claim_locked')} — ${esc(claimerName)}</div>`;
-          }
-        } else {
-          // Moj nalog ili sam preuzeo — standardna dugmad
-          const showNemaBtn = false; // Krojenje nema "Nema"
+      if(user && p.phase==='100'){
+        if(isForeign && !isClaimedByMeLocal && isKrojenjeFree(o) && (p.status==='pending' || !p.status)){
+          bodyHtml=`<div class="phase-date" style="color:#2B4570;font-weight:600;margin-bottom:6px">📌 ${t('msg_claim_you_can_take')}</div>
+            <div class="phase-actions">
+              <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'100','completed')">✅ ${t('btn_done')} (Preuzmi nalog)</button>
+            </div>`;
+        } else if(!isForeign || isClaimedByMeLocal){
           bodyHtml=`<div class="phase-actions">
               <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'100','completed')">✅ ${t('btn_done')}</button>
               <button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'100')">⚠️ ${t('btn_problem')}</button>
             </div>
             <textarea class="phase-note" onblur="saveComment(${o.id},'100',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
+        } else {
+          bodyHtml=`<div class="phase-date" style="color:#9B2C2C;font-weight:600">🔒 ${t('msg_claim_locked')}</div>`;
         }
       }
       // ============================================================
@@ -1293,7 +1279,7 @@ function renderModal(o){
         }
       }
       // ============================================================
-      // Ostale faze (100 osim gore, 400, 500)
+      // Ostale faze (400, 500)
       // ============================================================
       else {
         bodyHtml=`<div class="phase-actions">
@@ -1350,7 +1336,7 @@ function renderModal(o){
 
   // REPARACIJA (samo za klijenta)
   const rep=o.reparacija;
-  if(currentUser?.role==='user' && rep){
+  if(user && rep){
     const items=formatPrijemItems(rep.items);
     const clientDone=!!rep.clientConfirmedAt;
     const kontrolaDone=!!rep.kontrolaConfirmedAt;
@@ -1396,7 +1382,7 @@ function renderModal(o){
     }
     const pLockIcon = (pLock.locked && !pLock.onlyCompleteAllowed) ? `<span class="phase-lock" title="${t('lock_tooltip')}">🔒</span>` : '';
 
-    // NOVA LOGIKA ZA KONTROLU — lock
+    // Kontrola lock
     let kontrolaLocked = false;
     if (isKontrolaRole()) {
       if (prijem.status === 'completed') {
@@ -1407,7 +1393,6 @@ function renderModal(o){
         if (parsed.outcome === 'anulirano') {
           kontrolaLocked = true;
         } else if (parsed.outcome === 'reparacija') {
-          // Ako klijent nije potvrdio da je uradio reparaciju — zaključano
           const clientConfirmed = rep && rep.clientConfirmedAt;
           const kontrolaConfirmed = rep && rep.kontrolaConfirmedAt;
           if (!clientConfirmed || kontrolaConfirmed) {
@@ -1418,7 +1403,6 @@ function renderModal(o){
     }
 
     if (kontrolaLocked) {
-      // Prikaz samo zaključano
       if(prijem.status==='completed'){
         pBody = `<div class="phase-date" style="color:var(--green);font-weight:600">✅ ${t('status_ok')}${prijem.updatedAt?` — ${date(prijem.updatedAt)}`:''}</div>`;
       } else if (pParsed && pParsed.outcome === 'anulirano') {
@@ -1476,11 +1460,6 @@ function renderModal(o){
   }
 
   phasesContainer.innerHTML=phases.length ? h : t('msg_no_phases');
-}
-
-// ============ POMOĆNA: KONTROLA ROLE ============
-function isKontrolaRole(){
-  return currentUser?.role === 'kontrola';
 }
 
 // ============ PROBLEM MODAL ============
