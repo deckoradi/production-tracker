@@ -41,6 +41,25 @@ const isExternalWorker = (user) => isVez(user) || isSerigrafija(user);
 
 const WORKER_PHASE = { 'vez': '300', 'serigrafija': '200' };
 
+// ============================================================
+// POMOĆNE ZA PREUZIMANJE NALOGA
+// ============================================================
+// Vraća firmu koja je "preuzela" nalog (ako postoji)
+// Nalog je preuzet ako postoji faza (100-500) sa updated_by_company != original
+const getClaimedByCompany = (progressRows, originalCompany) => {
+    if (!Array.isArray(progressRows)) return null;
+    // Gledamo samo faze 100-500 (ne PRIJEM, NAPOMENA)
+    const relevantPhases = ['100','200','300','400','500'];
+    for (const row of progressRows) {
+        if (!relevantPhases.includes(String(row.phase))) continue;
+        const ubc = row.updatedByCompany || row.updated_by_company;
+        if (ubc && ubc !== originalCompany && row.status && row.status !== 'pending') {
+            return ubc;
+        }
+    }
+    return null;
+};
+
 const initDb = async () => {
     try {
         await pool.query(`
@@ -152,6 +171,22 @@ const initDb = async () => {
                 UNIQUE(order_number, company, repair_changed_at)
             )
         `);
+
+        // ============================================================
+        // NOVO: order_claims — kada klijent preuzme tuđi nalog
+        // ============================================================
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS order_claims (
+                id SERIAL PRIMARY KEY,
+                order_id BIGINT NOT NULL,
+                claimed_by_company VARCHAR(255) NOT NULL,
+                claimed_by_user VARCHAR(100) NOT NULL,
+                original_company VARCHAR(255) NOT NULL,
+                claimed_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(order_id)
+            )
+        `);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_order_claims_order ON order_claims(order_id)`);
 
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_history_lookup ON order_history(order_number, company, phase, changed_at DESC)`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_progress_order ON progress(order_id, phase)`);
@@ -558,7 +593,7 @@ app.post('/api/change-password', authenticate, async (req, res) => {
     }
 });
 
-// ============ NOVA RUTA: EXCEL EXPORT ZA RADNIKE (VEZ / SERIGRAFIJA) ============
+// ============ WORKER EXPORT (VEZ / SERIGRAFIJA) ============
 app.get('/api/worker/export', authenticate, async (req, res) => {
     if (!isExternalWorker(req.user)) {
         return res.status(403).json({ error: 'Access denied' });
@@ -853,34 +888,32 @@ app.get('/api/orders', authenticate, async (req, res) => {
         const externalWorker = isExternalWorker(req.user);
         const workerPhase = externalWorker ? WORKER_PHASE[req.user.role] : null;
 
-        // === KLIJENT (user) — samo svoje firme ===
+        // ============================================================
+        // KLIJENT (user) — vidi SVOJE + preuzete + pretraga za tuđe
+        // ============================================================
         if (isUser(req.user)) {
+            const userCompany = req.user.company;
+
             if (search) {
+                // Pretraga: klijent može da vidi i tuđe naloge
                 const s = search.toLowerCase();
-                whereClause = `WHERE company = $${paramIndex} AND (LOWER(order_number) LIKE $${paramIndex + 1} OR LOWER(name) LIKE $${paramIndex + 1} OR LOWER(code) LIKE $${paramIndex + 1})`;
-                params.push(req.user.company);
+                whereClause = `WHERE (LOWER(o.order_number) LIKE $${paramIndex} OR LOWER(o.name) LIKE $${paramIndex} OR LOWER(o.code) LIKE $${paramIndex})`;
                 params.push(`%${s}%`);
-                paramIndex += 2;
+                paramIndex++;
             } else {
-                whereClause = `WHERE company = $${paramIndex}`;
-                params.push(req.user.company);
+                // Bez pretrage: samo svoje + preuzete
+                whereClause = `WHERE (
+                    o.company = $${paramIndex}
+                    OR EXISTS (SELECT 1 FROM order_claims oc WHERE oc.order_id = o.id AND oc.claimed_by_company = $${paramIndex})
+                )`;
+                params.push(userCompany);
                 paramIndex++;
             }
-
-            const claimClause = `NOT EXISTS (
-                SELECT 1 FROM progress pclaim
-                WHERE pclaim.order_id = o.id
-                  AND pclaim.phase IN ('100','400','NAPOMENA')
-                  AND pclaim.updated_by_company IS NOT NULL
-                  AND pclaim.updated_by_company != $${paramIndex}
-                  AND (pclaim.status != 'pending' OR (pclaim.comment IS NOT NULL AND pclaim.comment != ''))
-            )`;
-            whereClause += ` AND ${claimClause}`;
-            params.push(req.user.company);
-            paramIndex++;
         }
 
-        // === RADNIK (vez / serigrafija) ===
+        // ============================================================
+        // RADNIK (vez / serigrafija)
+        // ============================================================
         if (externalWorker) {
             if (search) {
                 const s = search.toLowerCase();
@@ -905,7 +938,9 @@ app.get('/api/orders', authenticate, async (req, res) => {
             }
         }
 
-        // === ADMIN / KONTROLA ===
+        // ============================================================
+        // ADMIN / KONTROLA
+        // ============================================================
         if (privileged && search) {
             const s = search.toLowerCase();
             whereClause = `WHERE (LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(company) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex})`;
@@ -933,7 +968,11 @@ app.get('/api/orders', authenticate, async (req, res) => {
                    rep.client_confirmed_at as rep_client_confirmed_at, rep.client_confirmed_by as rep_client_confirmed_by,
                    rep.client_confirmed_by_company as rep_client_confirmed_by_company,
                    rep.kontrola_confirmed_at as rep_kontrola_confirmed_at, rep.kontrola_confirmed_by as rep_kontrola_confirmed_by,
-                   prijemSt.status as prijem_status, prijemSt.comment as prijem_comment
+                   prijemSt.status as prijem_status, prijemSt.comment as prijem_comment,
+                   oc.claimed_by_company as claim_by_company,
+                   oc.claimed_by_user as claim_by_user,
+                   oc.original_company as claim_original_company,
+                   oc.claimed_at as claim_at
             FROM orders o
             LEFT JOIN progress p ON o.id = p.order_id ${hidePrijem ? "AND p.phase != 'PRIJEM'" : ''}
             LEFT JOIN LATERAL (
@@ -967,10 +1006,12 @@ app.get('/api/orders', authenticate, async (req, res) => {
                 WHERE p4.order_id = o.id AND p4.phase = 'PRIJEM'
                 LIMIT 1
             ) prijemSt ON true
+            LEFT JOIN order_claims oc ON oc.order_id = o.id
             ${whereClause}
             GROUP BY o.id, rep.id, rep.items, rep.note, rep.deadline_date, rep.created_at,
                      rep.client_confirmed_at, rep.client_confirmed_by, rep.client_confirmed_by_company,
-                     rep.kontrola_confirmed_at, rep.kontrola_confirmed_by, prijemSt.status, prijemSt.comment
+                     rep.kontrola_confirmed_at, rep.kontrola_confirmed_by, prijemSt.status, prijemSt.comment,
+                     oc.claimed_by_company, oc.claimed_by_user, oc.original_company, oc.claimed_at
             ORDER BY o.id DESC
             LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
         `;
@@ -988,6 +1029,12 @@ app.get('/api/orders', authenticate, async (req, res) => {
             deliveryDate: row.delivery_date,
             progress: row.progress || [],
             prijem: row.prijem_status ? { status: row.prijem_status, comment: row.prijem_comment } : null,
+            claim: row.claim_by_company ? {
+                claimedByCompany: row.claim_by_company,
+                claimedByUser: row.claim_by_user,
+                originalCompany: row.claim_original_company,
+                claimedAt: row.claim_at
+            } : null,
             reparacija: row.rep_id ? {
                 id: row.rep_id,
                 items: row.rep_items || [],
@@ -1023,24 +1070,73 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         console.log(`🔄 Menjam fazu ${phase} za nalog ${orderId}`, status ? `na ${status}` : '(samo komentar)');
 
         const current = await pool.query(
-            'SELECT status, comment, updated_at FROM progress WHERE order_id = $1 AND phase = $2',
+            'SELECT status, comment, updated_at, updated_by_company FROM progress WHERE order_id = $1 AND phase = $2',
             [orderId, phase]
         );
         const oldStatus = current.rows[0]?.status || 'pending';
         const oldComment = current.rows[0]?.comment || '';
         const oldUpdatedAt = current.rows[0]?.updated_at || null;
+        const oldUpdatedByCompany = current.rows[0]?.updated_by_company || null;
 
         if (!status) status = oldStatus;
         const finalComment = comment !== undefined ? comment : oldComment;
 
+        // Informacije o nalogu
+        const orderInfo = await pool.query('SELECT order_number, company FROM orders WHERE id = $1', [orderId]);
+        const orderCompany = orderInfo.rows[0]?.company || '';
+
+        // Claim info
+        const claimInfo = await pool.query('SELECT * FROM order_claims WHERE order_id = $1', [orderId]);
+        const existingClaim = claimInfo.rows[0] || null;
+
+        // ============================================================
+        // 1) KONTROLA — može samo PRIJEM
+        // ============================================================
         if (isKontrola(req.user) && phase !== 'PRIJEM') {
             return res.status(403).json({ error: 'Kontrola može da menja isključivo fazu Prijem.' });
         }
 
+        // ============================================================
+        // 2) ADMIN I KONTROLA — samo oni mogu PRIJEM
+        // ============================================================
         if (!isAdmin(req.user) && !isKontrola(req.user) && phase === 'PRIJEM') {
             return res.status(403).json({ error: 'Nemate dozvolu za ovu fazu.' });
         }
 
+        // ============================================================
+        // 3) KONTROLA — LOCK: ne može da menja Prijem ako je već odlučila
+        //    (osim ako je klijent poslao reparaciju nazad — tada može "Sve u redu")
+        // ============================================================
+        if (isKontrola(req.user) && phase === 'PRIJEM') {
+            // Proveri da li je Prijem već odlučen (completed ili problem)
+            if (oldStatus === 'completed') {
+                return res.status(403).json({ error: '🔒 Prijem je već potvrđen. Ne možete menjati.' });
+            }
+            // Ako je problem (reparacija ili anulirano) — proveri da li je klijent odradio
+            if (oldStatus === 'problem') {
+                let parsed = {};
+                try { parsed = JSON.parse(oldComment || '{}'); } catch (_) {}
+                if (parsed.outcome === 'anulirano') {
+                    // Anulirano — zaključano zauvek
+                    return res.status(403).json({ error: '🔒 Prijem je anuliran. Ne možete menjati.' });
+                }
+                if (parsed.outcome === 'reparacija') {
+                    // Proveri da li je klijent potvrdio da je uradio reparaciju
+                    const rep = await pool.query(
+                        'SELECT client_confirmed_at FROM reparacije WHERE order_id = $1 ORDER BY created_at DESC LIMIT 1',
+                        [orderId]
+                    );
+                    const clientConfirmed = rep.rows[0]?.client_confirmed_at;
+                    if (!clientConfirmed && status === 'completed') {
+                        return res.status(403).json({ error: '🔒 Klijent još nije potvrdio da je reparacija urađena.' });
+                    }
+                }
+            }
+        }
+
+        // ============================================================
+        // 4) RADNIK (vez / serigrafija) — samo svoja faza, samo uradjeno/problem
+        // ============================================================
         if (isExternalWorker(req.user)) {
             const workerPhase = WORKER_PHASE[req.user.role];
             if (phase !== workerPhase) {
@@ -1057,15 +1153,58 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             }
         }
 
+        // ============================================================
+        // 5) KLIJENT (user) — kompleksna logika
+        // ============================================================
         if (isUser(req.user)) {
-            if (['100', '200', '300', '400', 'NAPOMENA'].includes(phase)) {
+            const userCompany = req.user.company;
+            const isOwnOrder = (orderCompany === userCompany);
+            const isClaimedByMe = existingClaim && existingClaim.claimed_by_company === userCompany;
+
+            // Ako je tuđi nalog i nije preuzet od mene — dozvoli preuzimanje SAMO na Krojenje (100)
+            if (!isOwnOrder && !isClaimedByMe) {
+                // Tuđi nalog, nije moj
+                if (phase !== '100') {
+                    return res.status(403).json({ error: '🔒 Ovo je tuđi nalog. Možete ga preuzeti samo klikom na fazu Krojenje.' });
+                }
+                // Može da preuzme SAMO ako Krojenje nije dirano
+                if (oldStatus !== 'pending' || oldComment.trim() !== '') {
+                    return res.status(403).json({ error: '🔒 Nalog je već zauzet (Krojenje je već započeto).' });
+                }
+                if (status !== 'completed') {
+                    return res.status(403).json({ error: '🔒 Da preuzmete nalog, kliknite Krojenje → Urađeno.' });
+                }
+                // OK — kreiraj claim
+                await pool.query(
+                    `INSERT INTO order_claims (order_id, claimed_by_company, claimed_by_user, original_company)
+                     VALUES ($1, $2, $3, $4)
+                     ON CONFLICT (order_id) DO NOTHING`,
+                    [orderId, userCompany, req.user.username, orderCompany]
+                );
+                console.log(`📢 PREUZIMANJE: ${userCompany} (${req.user.username}) je preuzeo nalog ${orderInfo.rows[0].order_number} od ${orderCompany}`);
+            }
+
+            // Ako je tuđi nalog ali preuzet od mene — mogu dalje da radim
+            // Ako je moj nalog — mogu da radim
+            // Claim check: da li je neko DRUGI preuzeo moj nalog?
+            if (isOwnOrder && existingClaim && existingClaim.claimed_by_company !== userCompany) {
+                return res.status(403).json({
+                    error: `🔒 Ovaj nalog je preuzet od strane firme "${existingClaim.claimed_by_company}" i nije Vam dostupan.`
+                });
+            }
+            if (isClaimedByMe && existingClaim && existingClaim.claimed_by_company !== userCompany) {
+                return res.status(403).json({ error: '🔒 Nemate dozvolu za ovaj nalog.' });
+            }
+
+            // Claim filter za faze 100, 400, NAPOMENA (kao i pre)
+            if (['100', '400', 'NAPOMENA'].includes(phase)) {
                 const claimCheck = await pool.query(
                     `SELECT DISTINCT updated_by_company FROM progress
                      WHERE order_id = $1 AND phase IN ('100','400','NAPOMENA')
                        AND updated_by_company IS NOT NULL AND updated_by_company != $2
                        AND (status != 'pending' OR (comment IS NOT NULL AND comment != ''))
                      LIMIT 1`,
-                    [orderId, req.user.company]
+                    [orderId, userCompany]
                 );
                 if (claimCheck.rows.length > 0) {
                     return res.status(403).json({
@@ -1074,6 +1213,10 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
                 }
             }
 
+            // ============================================================
+            // NOVA SEKVENCA — faze 200 i 300 zahtevaju da prethodna faza
+            // bude u statusu 'completed' (ne samo 'poslato' ili 'uradjeno')
+            // ============================================================
             if (['100', '200', '300', '400', '500'].includes(phase) && status !== 'pending') {
                 const phaseOrder = ['100', '200', '300', '400', '500'];
                 const idx = phaseOrder.indexOf(phase);
@@ -1084,16 +1227,24 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
                         [orderId, priorPhases]
                     );
                     const statusMap = new Map(priorResult.rows.map(r => [r.phase, r.status]));
-                    const unresolved = priorPhases.find(p => !statusMap.has(p) || statusMap.get(p) === 'pending' || statusMap.get(p) === 'problem');
+                    // Faza je "rešena" samo ako je completed ili nema (ne poslato/uradjeno/problem)
+                    const unresolved = priorPhases.find(p => {
+                        const st = statusMap.get(p);
+                        return !st || (st !== 'completed' && st !== 'nema');
+                    });
                     if (unresolved) {
+                        const unresolvedLabel = phaseLabel(unresolved);
                         return res.status(403).json({
-                            error: `⛔ Morate prvo rešiti fazu "${phaseLabel(unresolved)}" pre nego što označite "${phaseLabel(phase)}".`
+                            error: `⛔ Morate prvo završiti fazu "${unresolvedLabel}" (poslato → urađeno → primljeno) pre nego što nastavite.`
                         });
                     }
                 }
             }
         }
 
+        // ============================================================
+        // 6) LOCK PO DANU — samo za klijenta
+        // ============================================================
         if (isUser(req.user)) {
             const hasPriorActivity = oldStatus !== 'pending' || oldComment.trim() !== '';
             let sameDay = true;
@@ -1107,7 +1258,8 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
             if (hasPriorActivity && !sameDay) {
                 const isProblemToCompleted = oldStatus === 'problem' && status === 'completed' && finalComment === oldComment;
                 const isUradjenoToCompleted = oldStatus === 'uradjeno' && status === 'completed';
-                if (!isProblemToCompleted && !isUradjenoToCompleted) {
+                const isPoslatoToProblem = oldStatus === 'poslato' && status === 'problem';
+                if (!isProblemToCompleted && !isUradjenoToCompleted && !isPoslatoToProblem) {
                     return res.status(403).json({
                         error: '🔒 Ova stavka je zaključana (poslednja izmena je bila ranijeg dana). Obratite se administratoru.'
                     });
@@ -1140,19 +1292,12 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
         );
 
         if (status !== oldStatus || finalCommentToStore !== oldComment) {
-            const orderInfo = await pool.query(
-                'SELECT order_number, company FROM orders WHERE id = $1',
-                [orderId]
+            await pool.query(
+                `INSERT INTO order_history 
+                    (order_number, company, phase, old_status, new_status, comment, changed_by, changed_by_company)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                [orderInfo.rows[0].order_number, orderCompany, phase, oldStatus, status, finalCommentToStore, req.user.username, req.user.company]
             );
-            if (orderInfo.rows.length > 0) {
-                const { order_number, company } = orderInfo.rows[0];
-                await pool.query(
-                    `INSERT INTO order_history 
-                        (order_number, company, phase, old_status, new_status, comment, changed_by, changed_by_company)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-                    [order_number, company, phase, oldStatus, status, finalCommentToStore, req.user.username, req.user.company]
-                );
-            }
         }
 
         if (phase === 'PRIJEM') {
@@ -1300,6 +1445,7 @@ app.post('/api/clear-orders', authenticate, async (req, res) => {
     }
     try {
         await pool.query('DELETE FROM reparacije');
+        await pool.query('DELETE FROM order_claims');
         const deletedOrders = await pool.query('DELETE FROM orders RETURNING id');
         const deletedProgress = await pool.query('DELETE FROM progress RETURNING id');
         
@@ -1320,6 +1466,7 @@ app.post('/api/clear-all', authenticate, async (req, res) => {
     }
     try {
         await pool.query('DELETE FROM reparacije');
+        await pool.query('DELETE FROM order_claims');
         const deletedOrders = await pool.query('DELETE FROM orders RETURNING id');
         const deletedProgress = await pool.query('DELETE FROM progress RETURNING id');
         const deletedHistory = await pool.query('DELETE FROM order_history RETURNING id');
