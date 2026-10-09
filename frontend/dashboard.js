@@ -1128,7 +1128,7 @@ async function loadOrders(search='',page=1){
     if(search) params.append('search', search);
     params.append('page', page);
     params.append('limit', limit);
-    if(isPrivileged() && activeFilter && activeFilter !== 'all'){
+    if(activeFilter && activeFilter !== 'all'){
       params.append('filter', activeFilter);
     }
     const u = `/api/orders?${params.toString()}`;

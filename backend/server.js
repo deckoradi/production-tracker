@@ -1196,7 +1196,7 @@ app.get('/api/orders', authenticate, async (req, res) => {
         }
 
         // KPI filter (late / active / done / cancelled / repair / all)
-        if (filter && filter !== 'all' && privileged) {
+        if (filter && filter !== 'all') {
             const fc = whereClause ? 'AND' : 'WHERE';
             const PRIJEM_COMPLETED = `EXISTS (SELECT 1 FROM progress pc WHERE pc.order_id = o.id AND pc.phase='PRIJEM' AND pc.status='completed')`;
             const ANULIRANO = `EXISTS (SELECT 1 FROM progress pa WHERE pa.order_id = o.id AND pa.phase='PRIJEM' AND pa.status='problem' AND pa.comment LIKE '%"outcome":"anulirano"%')`;
