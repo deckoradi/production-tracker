@@ -782,8 +782,6 @@ tbody tr:last-child td { border-bottom: 0; }
     -webkit-backdrop-filter: blur(8px);
 }
 
-/* Podsetnici (remindersModal) moraju biti ISPOD phaseModal-a
-   da bi se detalj naloga video iznad liste podsetnika. */
 #remindersModal {
     z-index: 999;
 }
@@ -879,8 +877,6 @@ tbody tr:last-child td { border-bottom: 0; }
 }
 
 .timeline-label { margin-bottom: 4px; }
-
-/* Existing phase markup is deliberately preserved. */
 
 .phase-timeline { margin-top: 15px; }
 
@@ -1319,33 +1315,43 @@ body.modal-open { overflow: hidden; }
     z-index: 1000;
 }
 
-/* Kada je phaseModal otvoren, remindersModal ostaje u pozadini ali se ne sklanja */
 body:has(#phaseModal:not(.hidden)) #remindersModal {
     z-index: 999;
 }
 
-/* Fallback za browsere bez :has() — nema štete */
 @supports not selector(:has(*)) {
     /* ništa dodatno, z-index je dovoljan */
 }
+
 /* ============================================================
-   STATUSNE BOJE REDOVA U TABELI
+   STATUSNE BOJE REDOVA U TABELI — override za td
    ============================================================ */
-.status-row--red {
+#ordersContainer tr.status-row--red td {
     background-color: #FDECEA !important;
 }
-.status-row--red:hover {
+#ordersContainer tr.status-row--red:hover td {
     background-color: #F8D7D3 !important;
 }
-.status-row--green {
+#ordersContainer tr.status-row--green td {
     background-color: #E8F5E9 !important;
 }
-.status-row--green:hover {
+#ordersContainer tr.status-row--green:hover td {
     background-color: #D4EDDA !important;
 }
-.status-row--orange {
+#ordersContainer tr.status-row--orange td {
     background-color: #FFF3E0 !important;
 }
-.status-row--orange:hover {
+#ordersContainer tr.status-row--orange:hover td {
     background-color: #FFE0B2 !important;
+}
+
+/* Leva ivica reda — boja po statusu */
+#ordersContainer tr.status-row--red td:first-child {
+    box-shadow: inset 3px 0 0 #c43f48 !important;
+}
+#ordersContainer tr.status-row--green td:first-child {
+    box-shadow: inset 3px 0 0 #16845b !important;
+}
+#ordersContainer tr.status-row--orange td:first-child {
+    box-shadow: inset 3px 0 0 #e9b949 !important;
 }
