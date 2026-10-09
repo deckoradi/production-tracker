@@ -770,11 +770,11 @@ tbody tr:last-child td { border-bottom: 0; }
     border-color: #f2c6cb;
 }
 
-/* Narandžasto — faze (Krojenje, Serigrafija, Vez, Šivenje, Poslato) */
+/* Plavo — faze (Krojenje, Serigrafija, Vez, Šivenje, Poslato) */
 .status-phase {
-    background: #FFF3E0;
-    color: #B45309;
-    border-color: #FCD34D;
+    background: #EAF1FF;
+    color: #2057C8;
+    border-color: #BFD3FA;
 }
 
 /* ========================= MODAL / PRODUCTION FLOW ========================= */

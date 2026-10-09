@@ -83,7 +83,6 @@ const initDb = async () => {
             )
         `);
 
-        // Sekvenca za orders.id
         await pool.query(`CREATE SEQUENCE IF NOT EXISTS orders_id_seq`);
         const maxIdInit = await pool.query('SELECT COALESCE(MAX(id), 0) AS max_id FROM orders');
         const startId = parseInt(maxIdInit.rows[0].max_id) + 1;
@@ -176,7 +175,6 @@ const initDb = async () => {
                 UNIQUE(order_number, company, repair_changed_at)
             )
         `);
-        // Dodaj kolonu ako ne postoji (za starije baze)
         await pool.query(`ALTER TABLE otpremnica_log ADD COLUMN IF NOT EXISTS otpremnica_number INT`);
 
         await pool.query(`
@@ -563,9 +561,7 @@ app.delete('/api/fixed-recipients/:id', authenticate, async (req, res) => {
     }
 });
 
-// ============================================================
-// OTPREMNICE — LISTA I BRISANJE (samo Kontrola)
-// ============================================================
+// ============ OTPREMNICE — LISTA I BRISANJE ============
 app.get('/api/otpremnice', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
@@ -740,7 +736,7 @@ app.get('/api/worker/export', authenticate, async (req, res) => {
     }
 });
 
-// ============ KONTROLA EXPORT — sve faze u periodu ============
+// ============ KONTROLA EXPORT — sve faze u periodu (backup ruta, koristi se retko) ============
 app.get('/api/kontrola/export', authenticate, async (req, res) => {
     if (!isKontrola(req.user) && !isAdmin(req.user)) {
         return res.status(403).json({ error: 'Access denied' });
@@ -1230,7 +1226,6 @@ app.post('/api/reset-phase', authenticate, async (req, res) => {
             return res.status(404).json({ error: 'Nalog ne postoji.' });
         }
 
-        // Postavi fazu na pending, obriši komentar
         await pool.query(
             `INSERT INTO progress (order_id, phase, status, comment, updated_at, updated_by, updated_by_company)
              VALUES ($1, $2, 'pending', '', NOW(), $3, $4)
@@ -1243,7 +1238,6 @@ app.post('/api/reset-phase', authenticate, async (req, res) => {
             [orderId, phase, req.user.username, req.user.company]
         );
 
-        // Upiši u istoriju
         await pool.query(
             `INSERT INTO order_history 
                 (order_number, company, phase, old_status, new_status, comment, changed_by, changed_by_company)
@@ -1647,16 +1641,21 @@ app.post('/api/clear-all', authenticate, async (req, res) => {
 const PHASE_LABELS = { '100': 'Krojenje', '200': 'Serigrafija', '300': 'Vez', '400': 'Šivenje', '500': 'Poslato' };
 function phaseLabel(p) { return PHASE_LABELS[String(p)] || `Faza ${p}`; }
 
-// ============ EXPORT ISTORIJE U EXCEL ============
+// ============ EXPORT ISTORIJE U EXCEL — KLJUČNA IZMENA: KONTROLA VIDI SVE ============
 app.get('/api/history/export', authenticate, async (req, res) => {
     try {
         let { company, dateFrom, dateTo } = req.query;
         let changedBy = null;
 
-        if (req.user.role !== 'admin') {
+        // ============================================================
+        // IZMENA: KONTROLA sada ima iste privilegije kao ADMIN
+        // ============================================================
+        if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
+            // Ostali (klijent, vez, serigrafija) vide samo svoju firmu
             company = req.user.company;
             changedBy = null;
         }
+        // Admin i Kontrola — NE postavljamo ništa, vide SVE firme
 
         let where = [];
         let params = [];
@@ -2071,7 +2070,7 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
     }
 });
 
-// ============ OTPREMNICA - EXCEL EXPORT (čuva broj u bazu) ============
+// ============ OTPREMNICA - EXCEL EXPORT ============
 app.get('/api/otpremnica/export', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
@@ -2311,7 +2310,6 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
         sheet.getCell(`B${potpisRow2}`).value = '__________________________';
         sheet.getCell(`D${potpisRow2}`).value = '__________________________';
 
-        // Upiši u otpremnica_log sa brojem otpremnice
         for (const r of rows) {
             await pool.query(
                 `INSERT INTO otpremnica_log (order_number, company, repair_changed_at, otpremnica_number)

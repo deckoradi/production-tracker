@@ -57,7 +57,7 @@ function getBadgeClass(statusText, statusType){
   if (s.includes('u redu') || s.includes('in ordine')) {
     return 'status-completed';
   }
-  // Narandžasto — sve ostale faze (Krojenje, Serigrafija, Vez, Šivenje, Poslato, U toku)
+  // Plavo — sve ostale faze (Krojenje, Serigrafija, Vez, Šivenje, Poslato, U toku)
   return 'status-phase';
 }
 
@@ -648,13 +648,13 @@ async function obrisiOtpremnicu(broj, firma){
   }
 }
 
-// ============ KONTROLA — EXCEL IZVEŠTAJ ============
+// ============ KONTROLA — EXCEL IZVEŠTAJ (isti kao Admin) ============
 function addKontrolaExportPanel(){
   if($('kontrolaExportPanel'))return;
   const div=document.createElement('div');div.id='kontrolaExportPanel';div.className='panel';
   div.innerHTML=`<div class="panel-header"><h2>📊 Izveštaj — Kontrola</h2></div>
     <div class="panel-body">
-      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Sve izmene u izabranom periodu.</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Isti format kao Admin izveštaj — matrica sa svim fazama.</p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
         <div style="flex:1;min-width:160px">
           <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Firma</label>
@@ -681,6 +681,7 @@ function addKontrolaExportPanel(){
   $('kontrolaExportBtn').onclick=exportKontrola;
 }
 
+// ============ IZMENJENO: Kontrola koristi isti endpoint kao Admin ============
 async function exportKontrola(){
   const status=$('kontrolaExportStatus');
   const company=$('kontrolaExportCompany')?.value||'';
@@ -692,7 +693,8 @@ async function exportKontrola(){
     if(company)params.append('company',company);
     if(dateFrom)params.append('dateFrom',dateFrom);
     if(dateTo)params.append('dateTo',dateTo);
-    const r=await fetch(`/api/kontrola/export?${params.toString()}`,{headers:headers()});
+    // ← Promenjeno: /api/history/export umesto /api/kontrola/export
+    const r=await fetch(`/api/history/export?${params.toString()}`,{headers:headers()});
     if(!r.ok){const d=await r.json().catch(()=>({}));throw Error(d.error||`HTTP ${r.status}`)}
     const blob=await r.blob();
     const url=URL.createObjectURL(blob);
@@ -1058,7 +1060,6 @@ function renderOrders(){
 
   orders.forEach(o=>{
     const st=computeOrderStatus(o);
-    // Samo klasa row-status-* (boja po statusu), bez bojenja celog reda
     h+=`<tr class="row-${st[1]}" onclick="openOrder(${o.id})">`;
     
     if(privileged){
