@@ -736,7 +736,7 @@ app.get('/api/worker/export', authenticate, async (req, res) => {
     }
 });
 
-// ============ KONTROLA EXPORT — sve faze u periodu (backup ruta, koristi se retko) ============
+// ============ KONTROLA EXPORT ============
 app.get('/api/kontrola/export', authenticate, async (req, res) => {
     if (!isKontrola(req.user) && !isAdmin(req.user)) {
         return res.status(403).json({ error: 'Access denied' });
@@ -886,7 +886,6 @@ app.post('/api/poslji-otpremnicu-mail', authenticate, async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
-
 // ============ UPLOAD ============
 app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
     if (req.user.role !== 'admin') {
@@ -1029,10 +1028,115 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
         res.status(500).json({ error: e.message });
     }
 });
+
+// ============================================================
+// KPI STATS — nova ruta, tačni brojevi za sve naloge
+// ============================================================
+app.get('/api/stats', authenticate, async (req, res) => {
+    try {
+        const privileged = isPrivileged(req.user);
+        const externalWorker = isExternalWorker(req.user);
+        const userCompany = req.user.company;
+        const workerPhase = externalWorker ? WORKER_PHASE[req.user.role] : null;
+
+        // Bazni WHERE po roli
+        let baseWhere = '';
+        let baseParams = [];
+        if (isUser(req.user)) {
+            baseWhere = `WHERE (o.company = $1 OR EXISTS (
+                SELECT 1 FROM order_claims oc WHERE oc.order_id = o.id AND oc.claimed_by_company = $1
+            ))`;
+            baseParams = [userCompany];
+        } else if (externalWorker) {
+            baseWhere = `WHERE EXISTS (
+                SELECT 1 FROM progress pw
+                WHERE pw.order_id = o.id AND pw.phase = $1
+                  AND pw.status IN ('poslato','uradjeno','problem')
+            )`;
+            baseParams = [workerPhase];
+        }
+
+        // Definicija anuliranog naloga (JSON u PRIJEM komentaru)
+        const ANULIRANO_SQL = `EXISTS (
+            SELECT 1 FROM progress pa WHERE pa.order_id = o.id
+              AND pa.phase = 'PRIJEM' AND pa.status = 'problem'
+              AND pa.comment LIKE '%"outcome":"anulirano"%'
+        )`;
+        const PRIJEM_COMPLETED_SQL = `EXISTS (
+            SELECT 1 FROM progress pc WHERE pc.order_id = o.id
+              AND pc.phase = 'PRIJEM' AND pc.status = 'completed'
+        )`;
+
+        // 1. UKUPNO
+        const total = (await pool.query(
+            `SELECT COUNT(*)::int AS c FROM orders o ${baseWhere}`,
+            baseParams
+        )).rows[0].c;
+
+        // 2. AKTIVNI = nije završeno (PRIJEM nije completed) I nije anulirano
+        const connector = baseWhere ? 'AND' : 'WHERE';
+        const active = (await pool.query(
+            `SELECT COUNT(*)::int AS c FROM orders o ${baseWhere} ${connector}
+             NOT (${PRIJEM_COMPLETED_SQL}) AND NOT (${ANULIRANO_SQL})`,
+            baseParams
+        )).rows[0].c;
+
+        // 3. KAŠNJENJA = delivery_date < danas I nije završeno I nije anulirano
+        const late = (await pool.query(
+            `SELECT COUNT(*)::int AS c FROM orders o ${baseWhere} ${connector}
+             o.delivery_date IS NOT NULL AND o.delivery_date != ''
+             AND o.delivery_date < to_char(NOW(), 'YYYY-MM-DD')
+             AND NOT (${PRIJEM_COMPLETED_SQL}) AND NOT (${ANULIRANO_SQL})`,
+            baseParams
+        )).rows[0].c;
+
+        // 4. REPARACIJE = aktivne (kontrola nije potvrdila)
+        let repWhere = '';
+        let repParams = [];
+        if (isUser(req.user)) {
+            repWhere = `WHERE (o.company = $1 OR EXISTS (
+                SELECT 1 FROM order_claims oc WHERE oc.order_id = o.id AND oc.claimed_by_company = $1
+            ))`;
+            repParams = [userCompany];
+        } else if (externalWorker) {
+            repWhere = `WHERE EXISTS (
+                SELECT 1 FROM progress pw WHERE pw.order_id = o.id AND pw.phase = $1
+            )`;
+            repParams = [workerPhase];
+        }
+        const repConnector = repWhere ? 'AND' : 'WHERE';
+        const repairs = (await pool.query(
+            `SELECT COUNT(*)::int AS c FROM reparacije r
+             JOIN orders o ON o.id = r.order_id
+             ${repWhere} ${repConnector} r.kontrola_confirmed_at IS NULL`,
+            repParams
+        )).rows[0].c;
+
+        // 5. ZAVRŠENO (sve vreme) = PRIJEM completed
+        const done = (await pool.query(
+            `SELECT COUNT(*)::int AS c FROM orders o ${baseWhere} ${connector}
+             ${PRIJEM_COMPLETED_SQL}`,
+            baseParams
+        )).rows[0].c;
+
+        // 6. ANULIRANO
+        const cancelled = (await pool.query(
+            `SELECT COUNT(*)::int AS c FROM orders o ${baseWhere} ${connector}
+             ${ANULIRANO_SQL}`,
+            baseParams
+        )).rows[0].c;
+
+        res.json({ total, active, late, repairs, done, cancelled });
+    } catch (e) {
+        console.error('❌ Stats error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // ============ ORDERS ============
 app.get('/api/orders', authenticate, async (req, res) => {
     try {
-        const { search, page = 1, limit = 100 } = req.query;
+        const { search, page = 1, limit = 100, filter } = req.query;
         const offset = (parseInt(page) - 1) * parseInt(limit);
 
         let whereClause = '';
@@ -1089,6 +1193,27 @@ app.get('/api/orders', authenticate, async (req, res) => {
             whereClause = `WHERE (LOWER(order_number) LIKE $${paramIndex} OR LOWER(name) LIKE $${paramIndex} OR LOWER(company) LIKE $${paramIndex} OR LOWER(code) LIKE $${paramIndex})`;
             params.push(`%${s}%`);
             paramIndex++;
+        }
+
+        // KPI filter (late / active / done / cancelled / repair / all)
+        if (filter && filter !== 'all' && privileged) {
+            const fc = whereClause ? 'AND' : 'WHERE';
+            const PRIJEM_COMPLETED = `EXISTS (SELECT 1 FROM progress pc WHERE pc.order_id = o.id AND pc.phase='PRIJEM' AND pc.status='completed')`;
+            const ANULIRANO = `EXISTS (SELECT 1 FROM progress pa WHERE pa.order_id = o.id AND pa.phase='PRIJEM' AND pa.status='problem' AND pa.comment LIKE '%"outcome":"anulirano"%')`;
+
+            if (filter === 'late') {
+                whereClause += ` ${fc} o.delivery_date IS NOT NULL AND o.delivery_date != ''
+                    AND o.delivery_date < to_char(NOW(), 'YYYY-MM-DD')
+                    AND NOT (${PRIJEM_COMPLETED}) AND NOT (${ANULIRANO})`;
+            } else if (filter === 'active') {
+                whereClause += ` ${fc} NOT (${PRIJEM_COMPLETED}) AND NOT (${ANULIRANO})`;
+            } else if (filter === 'done') {
+                whereClause += ` ${fc} ${PRIJEM_COMPLETED}`;
+            } else if (filter === 'cancelled') {
+                whereClause += ` ${fc} ${ANULIRANO}`;
+            } else if (filter === 'repair') {
+                whereClause += ` ${fc} EXISTS (SELECT 1 FROM reparacije rr WHERE rr.order_id = o.id AND rr.kontrola_confirmed_at IS NULL)`;
+            }
         }
 
         const countQuery = `SELECT COUNT(*) FROM orders o ${whereClause}`;
@@ -1641,21 +1766,16 @@ app.post('/api/clear-all', authenticate, async (req, res) => {
 const PHASE_LABELS = { '100': 'Krojenje', '200': 'Serigrafija', '300': 'Vez', '400': 'Šivenje', '500': 'Poslato' };
 function phaseLabel(p) { return PHASE_LABELS[String(p)] || `Faza ${p}`; }
 
-// ============ EXPORT ISTORIJE U EXCEL — KLJUČNA IZMENA: KONTROLA VIDI SVE ============
+// ============ EXPORT ISTORIJE U EXCEL ============
 app.get('/api/history/export', authenticate, async (req, res) => {
     try {
         let { company, dateFrom, dateTo } = req.query;
         let changedBy = null;
 
-        // ============================================================
-        // IZMENA: KONTROLA sada ima iste privilegije kao ADMIN
-        // ============================================================
         if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
-            // Ostali (klijent, vez, serigrafija) vide samo svoju firmu
             company = req.user.company;
             changedBy = null;
         }
-        // Admin i Kontrola — NE postavljamo ništa, vide SVE firme
 
         let where = [];
         let params = [];

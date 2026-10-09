@@ -12,10 +12,12 @@ const TRANSLATIONS = {
     nav_tracker: '🏭 Tracker',
 
     // ===== KPI =====
+    kpi_total: 'Ukupno naloga',
     kpi_active: 'Aktivni nalozi',
-    kpi_in_progress: 'U toku',
     kpi_late: 'Kašnjenja',
-    kpi_done_today: 'Završeno danas',
+    kpi_repair: 'Reparacije',
+    kpi_done: 'Završeno',
+    kpi_cancelled: 'Anulirano',
 
     // ===== PANELI (klijent) =====
     panel_search: '🔍 Pretraga',
@@ -106,6 +108,7 @@ const TRANSLATIONS = {
     msg_late_days: 'kasni',
     msg_day: 'dan',
     msg_days: 'dana',
+    msg_day_short: 'd',
     msg_waiting_kontrola_confirm: 'čeka potvrdu Kontrole',
     msg_waiting_your_confirm: 'čeka Vašu potvrdu',
     msg_waiting_both: 'čeka potvrdu obe strane',
@@ -169,10 +172,12 @@ const TRANSLATIONS = {
     nav_tracker: '🏭 Tracker',
 
     // ===== KPI =====
+    kpi_total: 'Ordini totali',
     kpi_active: 'Ordini attivi',
-    kpi_in_progress: 'In corso',
     kpi_late: 'In ritardo',
-    kpi_done_today: 'Completati oggi',
+    kpi_repair: 'Riparazioni',
+    kpi_done: 'Completati',
+    kpi_cancelled: 'Annullati',
 
     // ===== PANELI (klijent) =====
     panel_search: '🔍 Ricerca',
@@ -262,6 +267,7 @@ const TRANSLATIONS = {
     msg_late_days: 'in ritardo di',
     msg_day: 'giorno',
     msg_days: 'giorni',
+    msg_day_short: 'g',
     msg_waiting_kontrola_confirm: 'in attesa di conferma dal Controllo',
     msg_waiting_your_confirm: 'in attesa della tua conferma',
     msg_waiting_both: 'in attesa di conferma da entrambe le parti',
@@ -366,22 +372,6 @@ function translatePage() {
     const key = el.getAttribute('data-i18n-placeholder');
     el.placeholder = t(key);
   });
-}
-
-// ============================================================
-// Prevedi dinamičke delove (KPI, tabela, modal)
-// Poziva se iz lang-switcher.js posle promene jezika
-// ============================================================
-function retranslateDynamic() {
-  if (typeof orders !== 'undefined' && Array.isArray(orders)) {
-    if (typeof renderKPI === 'function') renderKPI(orders);
-    if (typeof renderOrders === 'function') renderOrders();
-    if (typeof selectedOrderId !== 'undefined' && selectedOrderId
-        && typeof renderModal === 'function') {
-      const o = orders.find(x => String(x.id) === String(selectedOrderId));
-      if (o) renderModal(o);
-    }
-  }
 }
 
 // Automatski prevedi stranicu kada se DOM učita

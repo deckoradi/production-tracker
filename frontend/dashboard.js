@@ -1,7 +1,10 @@
-// PRODUCTION TRACKER - dashboard.js (v3: KPI + status-warning + local re-render + theme)
+// PRODUCTION TRACKER - dashboard.js (v4: KPI 6 kartica sa servera + filter + theme)
 let currentUser=null,orders=[],selectedOrderId=null,currentPage=1,totalPages=1,totalOrders=0;
 let currentReminders=[];
+let activeFilter='all';           // 'all' | 'active' | 'late' | 'repair' | 'done' | 'cancelled'
+let serverStats=null;             // {total, active, late, repairs, done, cancelled}
 const LIMIT=100;
+const PRIVILEGED_LIMIT=200;
 const $=id=>document.getElementById(id);
 const token=localStorage.getItem('token'),userStr=localStorage.getItem('user');
 if(!token||!userStr){location.href='index.html'}else{try{currentUser=JSON.parse(userStr)}catch(e){localStorage.clear();location.href='index.html'}}
@@ -172,47 +175,114 @@ function updateFolderStatusNeedsPermission(){
 
 document.addEventListener('DOMContentLoaded',()=>{ setTimeout(loadFolderHandleFromIdb,300); });
 
-// ============ KPI DASHBOARD ============
+// ============ KPI DASHBOARD (server-side) ============
+async function loadStats(){
+  try{
+    const d = await api('/api/stats', {headers: headers()});
+    serverStats = d;
+    renderKPIFromStats(d);
+  }catch(e){
+    console.error('Stats error:', e);
+    serverStats = null;
+    renderKPI(orders);
+  }
+}
+
+function renderKPIFromStats(s){
+  const el = $('kpiGrid');
+  if(!el) return;
+  const sel = (f) => activeFilter === f ? 'kpi-card--selected' : '';
+  el.innerHTML = `
+    <div class="kpi-card kpi-card--info ${sel('all')}" onclick="setFilter('all')" title="Prikaži sve">
+      <span class="kpi-label">${t('kpi_total')}</span>
+      <span class="kpi-value">${s.total ?? 0}</span>
+    </div>
+    <div class="kpi-card kpi-card--phase ${sel('active')}" onclick="setFilter('active')" title="Prikaži aktivne">
+      <span class="kpi-label">${t('kpi_active')}</span>
+      <span class="kpi-value">${s.active ?? 0}</span>
+    </div>
+    <div class="kpi-card kpi-card--warning ${sel('late')}" onclick="setFilter('late')" title="Prikaži kašnjenja">
+      <span class="kpi-label">${t('kpi_late')}</span>
+      <span class="kpi-value">${s.late ?? 0}</span>
+    </div>
+    <div class="kpi-card kpi-card--repair ${sel('repair')}" onclick="setFilter('repair')" title="Prikaži reparacije">
+      <span class="kpi-label">${t('kpi_repair')}</span>
+      <span class="kpi-value">${s.repairs ?? 0}</span>
+    </div>
+    <div class="kpi-card kpi-card--done ${sel('done')}" onclick="setFilter('done')" title="Prikaži završene">
+      <span class="kpi-label">${t('kpi_done')}</span>
+      <span class="kpi-value">${s.done ?? 0}</span>
+    </div>
+    <div class="kpi-card kpi-card--cancelled ${sel('cancelled')}" onclick="setFilter('cancelled')" title="Prikaži anulirane">
+      <span class="kpi-label">${t('kpi_cancelled')}</span>
+      <span class="kpi-value">${s.cancelled ?? 0}</span>
+    </div>`;
+}
+
+// Fallback ako /api/stats ne radi
 function computeKPI(list){
   const today = new Date().toISOString().slice(0,10);
-  let active=0, inProgress=0, late=0, doneToday=0;
+  let active=0, late=0, repairs=0, done=0, cancelled=0;
   list.forEach(o=>{
     const st = computeOrderStatus(o);
     const tone = st[1];
-    if(tone==='status-completed'){
-      const anyDone = (o.progress||[]).some(p=>p.updatedAt && p.updatedAt.slice(0,10)===today && p.status==='completed');
-      if(anyDone) doneToday++;
-    } else {
+    const isCancelled = o.prijem && o.prijem.status==='problem' && (()=>{
+      try { return JSON.parse(o.prijem.comment||'{}').outcome==='anulirano'; } catch(_){ return false; }
+    })();
+    const isDone = o.prijem && o.prijem.status==='completed';
+    const isRepair = o.reparacija && !o.reparacija.kontrolaConfirmedAt;
+
+    if(isCancelled) cancelled++;
+    else if(isDone) done++;
+    else {
       active++;
-      if(tone==='status-pending' || tone==='status-phase') inProgress++;
       if(o.deliveryDate && o.deliveryDate < today) late++;
     }
+    if(isRepair) repairs++;
   });
-  return {active, inProgress, late, doneToday};
+  return {active, late, repairs, done, cancelled, total: totalOrders || list.length};
 }
 
 function renderKPI(list){
   const el = $('kpiGrid');
   if(!el) return;
+  if(serverStats){ renderKPIFromStats(serverStats); return; }
   const k = computeKPI(list);
+  const sel = (f) => activeFilter === f ? 'kpi-card--selected' : '';
   el.innerHTML = `
-    <div class="kpi-card kpi-card--info">
-      <span class="kpi-label">Aktivni nalozi</span>
+    <div class="kpi-card kpi-card--info ${sel('all')}" onclick="setFilter('all')">
+      <span class="kpi-label">${t('kpi_total')}</span>
+      <span class="kpi-value">${k.total}</span>
+    </div>
+    <div class="kpi-card kpi-card--phase ${sel('active')}" onclick="setFilter('active')">
+      <span class="kpi-label">${t('kpi_active')}</span>
       <span class="kpi-value">${k.active}</span>
     </div>
-    <div class="kpi-card kpi-card--phase">
-      <span class="kpi-label">U toku</span>
-      <span class="kpi-value">${k.inProgress}</span>
-    </div>
-    <div class="kpi-card kpi-card--warning">
-      <span class="kpi-label">Kašnjenja</span>
+    <div class="kpi-card kpi-card--warning ${sel('late')}" onclick="setFilter('late')">
+      <span class="kpi-label">${t('kpi_late')}</span>
       <span class="kpi-value">${k.late}</span>
     </div>
-    <div class="kpi-card kpi-card--done">
-      <span class="kpi-label">Završeno danas</span>
-      <span class="kpi-value">${k.doneToday}</span>
+    <div class="kpi-card kpi-card--repair ${sel('repair')}" onclick="setFilter('repair')">
+      <span class="kpi-label">${t('kpi_repair')}</span>
+      <span class="kpi-value">${k.repairs}</span>
+    </div>
+    <div class="kpi-card kpi-card--done ${sel('done')}" onclick="setFilter('done')">
+      <span class="kpi-label">${t('kpi_done')}</span>
+      <span class="kpi-value">${k.done}</span>
+    </div>
+    <div class="kpi-card kpi-card--cancelled ${sel('cancelled')}" onclick="setFilter('cancelled')">
+      <span class="kpi-label">${t('kpi_cancelled')}</span>
+      <span class="kpi-value">${k.cancelled}</span>
     </div>`;
 }
+
+// ============ FILTER ============
+function setFilter(f){
+  activeFilter = (activeFilter === f && f !== 'all') ? 'all' : f;
+  loadOrders(searchInput?.value || '', 1);
+  if(serverStats) renderKPIFromStats(serverStats);
+}
+window.setFilter = setFilter;
 
 // ============ DOM READY ============
 document.addEventListener('DOMContentLoaded',()=>{
@@ -237,7 +307,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 
   loadOrders();
 
-  // odloži reminders da ne blokira prvi render
+  // odloži reminders
   if(currentUser?.role==='user' || currentUser?.role==='kontrola' || currentUser?.role==='admin'){
     if('requestIdleCallback' in window){
       requestIdleCallback(()=>checkReminders(), {timeout: 2000});
@@ -950,7 +1020,7 @@ $('uploadForm')?.addEventListener('submit',async e=>{
     const d=await r.json();
     if(!r.ok)throw Error(d.error);
     s.className='success';
-    s.innerHTML=`✅ Sinhronizovano: 🟢 ${d.updated} postojećih, 🔵 ${d.inserted} novih, 🔴 ${d.removed} uklonjeno. Istorija sačuvana.`;
+    s.innerHTML=`✅ Sinhronizovano: 🟢 ${d.updated} postojećih, 🔵 ${d.inserted} novih, 🔴 ${d.removed || 0} uklonjeno. Istorija sačuvana.`;
     f.value='';
     await loadOrders('',1);
   }catch(e){s.textContent='❌ '+e.message;s.className='error'}
@@ -1050,10 +1120,18 @@ changePasswordBtn?.addEventListener('click',async()=>{
   }catch(e){alert('❌ '+e.message)}
 });
 
-// ============ LOAD ORDERS ============
+// ============ LOAD ORDERS (sa filterom na serveru) ============
 async function loadOrders(search='',page=1){
   try{
-    const u=search?`/api/orders?search=${encodeURIComponent(search)}&page=${page}&limit=${LIMIT}`:`/api/orders?page=${page}&limit=${LIMIT}`;
+    const limit = isPrivileged() ? PRIVILEGED_LIMIT : LIMIT;
+    const params = new URLSearchParams();
+    if(search) params.append('search', search);
+    params.append('page', page);
+    params.append('limit', limit);
+    if(isPrivileged() && activeFilter && activeFilter !== 'all'){
+      params.append('filter', activeFilter);
+    }
+    const u = `/api/orders?${params.toString()}`;
     ordersContainer.innerHTML=`<div class="loading">${t('panel_loading')}</div>`;
     const d=await api(u,{headers:headers()});
     orders=d.data||[];
@@ -1061,7 +1139,7 @@ async function loadOrders(search='',page=1){
     currentPage=d.page||1;
     totalPages=d.totalPages||1;
     if(orderCount)orderCount.textContent=`${totalOrders} ${t('order_count_suffix')}`;
-    renderKPI(orders);
+    await loadStats();
     renderOrders();
     if(selectedOrderId&&!phaseModal?.classList.contains('hidden')){
       const o=orders.find(x=>String(x.id)===String(selectedOrderId));
@@ -1126,10 +1204,11 @@ function computeOrderStatus(o){
     return true;
   });
 
-  // ===== WARNING: kašnjenje =====
+  // WARNING: kašnjenje
   const today = new Date().toISOString().slice(0,10);
   if(o.deliveryDate && o.deliveryDate < today){
-    return [t('status_late') || 'Kasni', 'status-warning'];
+    const days = Math.floor((Date.now() - new Date(o.deliveryDate).getTime()) / 86400000);
+    return [`${t('status_late') || 'Kasni'} ${days}${t('msg_day_short') || 'd'}`, 'status-warning'];
   }
 
   if(currentPhase){
@@ -1160,7 +1239,6 @@ function renderOrders(){
 
   orders.forEach(o=>{
     const st=computeOrderStatus(o);
-    // st[1] je već 'status-problem' | 'status-warning' | 'status-completed' | 'status-phase' | 'status-pending'
     h+=`<tr class="row-${st[1]}" onclick="openOrder(${o.id})">`;
 
     if(privileged){
@@ -1405,9 +1483,6 @@ function renderModal(o){
 
     let bodyHtml='';
 
-    // ============================================================
-    // RADNIK (vez / serigrafija)
-    // ============================================================
     if(worker){
       const isMyPhase = (currentUser.role==='vez' && String(p.phase)==='300')
                      || (currentUser.role==='serigrafija' && String(p.phase)==='200');
@@ -1436,9 +1511,6 @@ function renderModal(o){
         bodyHtml=``;
       }
     }
-    // ============================================================
-    // KLIJENT i ADMIN
-    // ============================================================
     else if(isLockedForMeAsClient){
       const claimerName = claim ? claim.claimedByCompany : (findPhaseRow('100')?.updatedByCompany || '?');
       bodyHtml=`<div class="phase-date" style="color:var(--red);font-weight:600">🔒 ${t('msg_claim_locked')} — ${esc(claimerName)}</div>`;
@@ -1457,7 +1529,6 @@ function renderModal(o){
       const isKlijentFaza200ili300 = (currentUser.role==='user') && (p.phase==='200' || p.phase==='300');
       const isAdminFaza200ili300 = (currentUser.role==='admin') && (p.phase==='200' || p.phase==='300');
 
-      // KLIJENT — specijalno za prvu fazu (100)
       if(user && p.phase==='100'){
         if(isForeign && !isClaimedByMeLocal && isKrojenjeFree(o) && (p.status==='pending' || !p.status)){
           bodyHtml=`<div class="phase-date" style="color:var(--blue-dark);font-weight:600;margin-bottom:6px">📌 ${t('msg_claim_you_can_take')}</div>
@@ -1475,7 +1546,6 @@ function renderModal(o){
           bodyHtml=`<div class="phase-date" style="color:var(--red);font-weight:600">🔒 ${t('msg_claim_locked')}</div>`;
         }
       }
-      // ADMIN override za faze 200/300
       else if(isAdminFaza200ili300){
         if(p.status==='poslato' || p.status==='uradjeno'){
           bodyHtml=`<div class="phase-actions">
@@ -1504,7 +1574,6 @@ function renderModal(o){
           <textarea class="phase-note" oninput="handleCommentChange(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
         }
       }
-      // KLIJENT za faze 200 i 300
       else if(isKlijentFaza200ili300){
         if(p.status==='poslato'){
           bodyHtml=`<div class="phase-actions">
@@ -1533,7 +1602,6 @@ function renderModal(o){
           <textarea class="phase-note" oninput="handleCommentChange(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
         }
       }
-      // Ostale faze (400, 500)
       else {
         bodyHtml=`<div class="phase-actions">
             <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ ${t('btn_done')}</button>
@@ -1717,7 +1785,7 @@ function renderModal(o){
   phasesContainer.innerHTML=phases.length ? h : t('msg_no_phases');
 }
 
-// ============ COMMENT DEBOUNCE (umesto onblur) ============
+// ============ COMMENT DEBOUNCE ============
 let commentTimers = {};
 function handleCommentChange(orderId, phase, value){
   const key = `${orderId}-${phase}`;
@@ -1740,7 +1808,7 @@ async function resetPhase(id, phase){
     if(p){p.status='pending';p.comment='';p.updatedAt=new Date().toISOString();}
     renderModal(o);
     renderOrders();
-    renderKPI(orders);
+    await loadStats();
   }catch(e){alert('❌ '+e.message)}
 }
 
@@ -1805,11 +1873,12 @@ async function confirmReparacijaKontrola(repId){
   }catch(e){alert('❌ '+e.message)}
 }
 
-// Pomoćna: osveži samo trenutni nalog (bez loadOrders)
+// Pomoćna: osveži samo trenutni nalog
 async function reloadCurrentOrder(){
   if(!selectedOrderId) return;
   try{
-    const d = await api(`/api/orders?search=${encodeURIComponent(orders.find(o=>String(o.id)===String(selectedOrderId))?.orderNumber||'')}&page=1&limit=100`,{headers:headers()});
+    const cur = orders.find(o=>String(o.id)===String(selectedOrderId));
+    const d = await api(`/api/orders?search=${encodeURIComponent(cur?.orderNumber||'')}&page=1&limit=100`,{headers:headers()});
     const found = (d.data||[]).find(x=>String(x.id)===String(selectedOrderId));
     if(found){
       const idx = orders.findIndex(x=>String(x.id)===String(selectedOrderId));
@@ -1817,7 +1886,7 @@ async function reloadCurrentOrder(){
       renderModal(found);
     }
     renderOrders();
-    renderKPI(orders);
+    await loadStats();
   }catch(e){console.error(e)}
 }
 
@@ -1842,7 +1911,7 @@ async function submitPrijemOk(id){
     p.updatedAt=d.updatedAt;
     renderModal(o);
     renderOrders();
-    renderKPI(orders);
+    await loadStats();
   }catch(e){Object.assign(p,old);renderModal(o);alert('❌ '+e.message)}
 }
 
@@ -1919,7 +1988,7 @@ async function confirmSizeModal(){
     const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify(body)});
     p.updatedAt=d.updatedAt;
     renderOrders();
-    renderKPI(orders);
+    await loadStats();
   }catch(e){Object.assign(p,old);renderModal(o);alert('❌ '+e.message)}
 }
 
@@ -1956,21 +2025,18 @@ async function updatePhase(id,phase,status,customComment){
   p.comment=newComment;
   p.updatedAt=new Date().toISOString();
   renderOrders();
-  renderKPI(orders);
   renderModal(o);
   try{
     const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,status,comment:newComment})});
     p.updatedAt=d.updatedAt;
     renderOrders();
-    renderKPI(orders);
-    // osveži modal samo ako je još otvoren za taj nalog
+    await loadStats();
     if(selectedOrderId && String(selectedOrderId)===String(id) && !phaseModal?.classList.contains('hidden')){
       renderModal(o);
     }
   }catch(e){
     Object.assign(p,old);
     renderOrders();
-    renderKPI(orders);
     renderModal(o);
     alert('❌ '+e.message);
   }
@@ -1986,7 +2052,6 @@ function date(v) {
 function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
 function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
 
-// tFormat fallback ako nije definisan u i18n
 if(typeof tFormat !== 'function'){
   window.tFormat = function(key, vars){
     let s = (typeof t==='function') ? t(key) : key;
@@ -2026,6 +2091,7 @@ window.obrisiOtpremnicu=obrisiOtpremnicu;
 window.loadOtpremnice=loadOtpremnice;
 window.toggleTheme=toggleTheme;
 window.handleCommentChange=handleCommentChange;
+window.setFilter=setFilter;
 
 // ============ UI: admin collapse, scroll lock, Esc, theme icon ============
 (()=>{

@@ -1,6 +1,6 @@
 /* ============================================================
    PRODUCTION TRACKER — Premium Operations UI
-   + DARK MODE + KPI + WARNING STATUS + MOBILE POLISH
+   + DARK MODE + KPI (6 kartica) + WARNING STATUS + MOBILE
    ============================================================ */
 
 :root {
@@ -486,13 +486,17 @@ body.modal-open { overflow: hidden; }
     letter-spacing: .08em;
 }
 
+:root[data-theme="dark"] .panel-accent {
+    border-color: var(--line-strong);
+}
+
 .panel-body { padding: 20px 23px; }
 
-/* ========================= KPI GRID ========================= */
+/* ========================= KPI GRID (6 kartica) ========================= */
 
 .kpi-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 12px;
     margin-bottom: 18px;
 }
@@ -507,7 +511,8 @@ body.modal-open { overflow: hidden; }
     display: flex;
     flex-direction: column;
     gap: 6px;
-    transition: transform .15s ease, box-shadow .15s ease;
+    cursor: pointer;
+    transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
 }
 
 .kpi-card:hover {
@@ -533,10 +538,17 @@ body.modal-open { overflow: hidden; }
     line-height: 1;
 }
 
-.kpi-card--info    { border-left-color: var(--blue); }
-.kpi-card--phase   { border-left-color: var(--cyan); }
-.kpi-card--warning { border-left-color: var(--gold); }
-.kpi-card--done    { border-left-color: var(--green); }
+.kpi-card--info      { border-left-color: var(--blue); }
+.kpi-card--phase     { border-left-color: var(--cyan); }
+.kpi-card--warning   { border-left-color: var(--gold); }
+.kpi-card--repair    { border-left-color: #b56aff; }
+.kpi-card--done      { border-left-color: var(--green); }
+.kpi-card--cancelled { border-left-color: #94a3b8; }
+
+.kpi-card--selected {
+    box-shadow: 0 0 0 2px var(--blue), var(--shadow-md);
+    transform: translateY(-2px);
+}
 
 /* ========================= ADMIN ========================= */
 
@@ -677,6 +689,10 @@ body.modal-open { overflow: hidden; }
     color: var(--navy-900);
     font-family: var(--font-mono);
     font-weight: 600;
+}
+
+.user-item--5 {
+    grid-template-columns: minmax(100px, 1fr) minmax(100px, 1fr) auto auto auto;
 }
 
 /* ========================= SEARCH ========================= */
@@ -1395,10 +1411,6 @@ tbody tr:last-child td { border-bottom: 0; }
     background: #131c2b;
 }
 
-.user-item--5 {
-    grid-template-columns: minmax(100px, 1fr) minmax(100px, 1fr) auto auto auto;
-}
-
 /* ========================= ORDER TABLE EXTRAS ========================= */
 
 #ordersContainer tbody tr { cursor: pointer; }
@@ -1421,13 +1433,16 @@ tbody tr:last-child td { border-bottom: 0; }
     .dashboard-content { padding-top: 34px; }
 }
 
+@media (max-width: 1100px) {
+    .kpi-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
 @media (max-width: 800px) {
     .dashboard-content { width: min(100% - 20px, 700px); }
     .admin-grid { grid-template-columns: 1fr; }
     .search-bar { grid-template-columns: 1fr auto; }
     .search-action { grid-column: 1; }
     .clear-action { grid-column: 2; }
-    .kpi-grid { grid-template-columns: repeat(2, 1fr); }
     input, select, textarea { font-size: 16px !important; }
 }
 
@@ -1465,7 +1480,7 @@ tbody tr:last-child td { border-bottom: 0; }
     .panel-header { min-height: 66px; padding: 13px 14px 12px 17px; }
     .panel-body { padding: 14px; }
 
-    .kpi-grid { gap: 8px; }
+    .kpi-grid { gap: 8px; grid-template-columns: repeat(2, 1fr); }
     .kpi-card { padding: 12px 14px; }
     .kpi-value { font-size: 22px; }
     .kpi-label { font-size: 9px; }
@@ -1534,7 +1549,7 @@ tbody tr:last-child td { border-bottom: 0; }
         text-transform: uppercase;
     }
 
-    /* Naziv / Firma / Šifra — label iznad vrednosti, levo poravnanje */
+    /* Naziv / Firma / Šifra / Nalog — label iznad vrednosti */
     #ordersContainer > table td[data-label="Naziv"],
     #ordersContainer > table td[data-label="Firma"],
     #ordersContainer > table td[data-label="Šifra"],
