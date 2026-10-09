@@ -1,4 +1,4 @@
-// PRODUCTION TRACKER - dashboard.js
+// PRODUCTION TRACKER - dashboard.js (v3: KPI + status-warning + local re-render + theme)
 let currentUser=null,orders=[],selectedOrderId=null,currentPage=1,totalPages=1,totalOrders=0;
 let currentReminders=[];
 const LIMIT=100;
@@ -10,6 +10,27 @@ if(companyDisplay)companyDisplay.textContent=currentUser?.company||'';
 const adminBody=adminPanel?.querySelector('.panel-body')||adminPanel;
 const headers=json=>{const h={Authorization:`Bearer ${token}`};if(json)h['Content-Type']='application/json';return h};
 async function api(url,opt={}){const r=await fetch(url,opt);let d={};try{d=await r.json()}catch(_){}if(r.status===401){localStorage.clear();location.href='index.html';throw Error(t('msg_session_expired'))}if(!r.ok)throw Error(d.error||`HTTP ${r.status}`);return d}
+
+// ============ THEME ============
+(function initTheme(){
+  const saved = localStorage.getItem('theme');
+  if(saved){
+    document.documentElement.setAttribute('data-theme', saved);
+  } else {
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
+  }
+})();
+
+function toggleTheme(){
+  const cur = document.documentElement.getAttribute('data-theme') || 'light';
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+  const btn = $('themeToggle');
+  if(btn) btn.textContent = next === 'dark' ? '☀️' : '🌙';
+}
+window.toggleTheme = toggleTheme;
 
 // ============ POMOĆNE ZA ROLE ============
 const isVezRole = () => currentUser?.role === 'vez';
@@ -47,17 +68,10 @@ const isKrojenjeFree = (o) => {
 
 // ============ HELPER: BOJA BADGE-a ============
 function getBadgeClass(statusText, statusType){
+  if(statusType === 'status-warning') return 'status-warning';
   const s = (statusText || '').toLowerCase();
-  
-  // Crveno — problem / reparacija / anulirano
-  if (s.includes('problem') || s.includes('reparacija') || s.includes('anulirano')) {
-    return 'status-problem';
-  }
-  // Zeleno — u redu
-  if (s.includes('u redu') || s.includes('in ordine')) {
-    return 'status-completed';
-  }
-  // Plavo — sve ostale faze (Krojenje, Serigrafija, Vez, Šivenje, Poslato, U toku)
+  if (s.includes('problem') || s.includes('reparacija') || s.includes('anulirano')) return 'status-problem';
+  if (s.includes('u redu') || s.includes('in ordine')) return 'status-completed';
   return 'status-phase';
 }
 
@@ -158,6 +172,49 @@ function updateFolderStatusNeedsPermission(){
 
 document.addEventListener('DOMContentLoaded',()=>{ setTimeout(loadFolderHandleFromIdb,300); });
 
+// ============ KPI DASHBOARD ============
+function computeKPI(list){
+  const today = new Date().toISOString().slice(0,10);
+  let active=0, inProgress=0, late=0, doneToday=0;
+  list.forEach(o=>{
+    const st = computeOrderStatus(o);
+    const tone = st[1];
+    if(tone==='status-completed'){
+      const anyDone = (o.progress||[]).some(p=>p.updatedAt && p.updatedAt.slice(0,10)===today && p.status==='completed');
+      if(anyDone) doneToday++;
+    } else {
+      active++;
+      if(tone==='status-pending' || tone==='status-phase') inProgress++;
+      if(o.deliveryDate && o.deliveryDate < today) late++;
+    }
+  });
+  return {active, inProgress, late, doneToday};
+}
+
+function renderKPI(list){
+  const el = $('kpiGrid');
+  if(!el) return;
+  const k = computeKPI(list);
+  el.innerHTML = `
+    <div class="kpi-card kpi-card--info">
+      <span class="kpi-label">Aktivni nalozi</span>
+      <span class="kpi-value">${k.active}</span>
+    </div>
+    <div class="kpi-card kpi-card--phase">
+      <span class="kpi-label">U toku</span>
+      <span class="kpi-value">${k.inProgress}</span>
+    </div>
+    <div class="kpi-card kpi-card--warning">
+      <span class="kpi-label">Kašnjenja</span>
+      <span class="kpi-value">${k.late}</span>
+    </div>
+    <div class="kpi-card kpi-card--done">
+      <span class="kpi-label">Završeno danas</span>
+      <span class="kpi-value">${k.doneToday}</span>
+    </div>`;
+}
+
+// ============ DOM READY ============
 document.addEventListener('DOMContentLoaded',()=>{
   if(currentUser?.role==='admin'){
     adminPanel?.classList.remove('hidden');
@@ -170,9 +227,23 @@ document.addEventListener('DOMContentLoaded',()=>{
   if(currentUser?.role==='user'){addClientExportControls()}
   if(currentUser?.role==='kontrola'){addKontrolaControls()}
   if(currentUser?.role==='vez' || currentUser?.role==='serigrafija'){addWorkerExportControls()}
+
+  // theme toggle sync
+  const themeBtn = $('themeToggle');
+  if(themeBtn){
+    const cur = document.documentElement.getAttribute('data-theme') || 'light';
+    themeBtn.textContent = cur === 'dark' ? '☀️' : '🌙';
+  }
+
   loadOrders();
+
+  // odloži reminders da ne blokira prvi render
   if(currentUser?.role==='user' || currentUser?.role==='kontrola' || currentUser?.role==='admin'){
-    checkReminders();
+    if('requestIdleCallback' in window){
+      requestIdleCallback(()=>checkReminders(), {timeout: 2000});
+    } else {
+      setTimeout(checkReminders, 500);
+    }
   }
 });
 
@@ -207,6 +278,7 @@ function showRemindersModal(list){
   div.classList.remove('hidden');
 }
 function closeRemindersModal(){$('remindersModal')?.classList.add('hidden');currentReminders=[]}
+
 let searchDebounce=null;
 searchInput?.addEventListener('input',()=>{clearTimeout(searchDebounce);searchDebounce=setTimeout(()=>loadOrders(searchInput.value,1),300)});
 searchBtn?.addEventListener('click',()=>loadOrders(searchInput?.value||'',1));
@@ -228,11 +300,11 @@ function addAdminControls(){
   const h=document.createElement('div');h.id='historyExportPanel';h.className='admin-section';
   h.innerHTML=`<h3>📊 Istorija aktivnosti (Excel izveštaj)</h3>
     <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
-      <select id="historyCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;flex:1;min-width:150px;font-family:var(--font-body);background:var(--card)">
+      <select id="historyCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;flex:1;min-width:150px;font-family:var(--font-body);background:var(--card);color:var(--ink)">
         <option value="">Sve firme</option>
       </select>
-      <input type="date" id="historyDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
-      <input type="date" id="historyDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+      <input type="date" id="historyDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)">
+      <input type="date" id="historyDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)">
       <button id="exportHistoryBtn" class="btn-success" style="padding:10px 16px">📥 Preuzmi Excel</button>
     </div>
     <div id="historyExportStatus"></div>`;
@@ -248,19 +320,19 @@ function addCompanyInfoControls(){
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end">
       <div style="flex:1;min-width:160px">
         <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Firma</label>
-        <select id="ciCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card);font-family:var(--font-body)"></select>
+        <select id="ciCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card);color:var(--ink);font-family:var(--font-body)"></select>
       </div>
       <div style="flex:1;min-width:160px">
         <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Email</label>
-        <input type="email" id="ciEmail" placeholder="email@firma.com" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card)">
+        <input type="email" id="ciEmail" placeholder="email@firma.com" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card);color:var(--ink)">
       </div>
       <div style="flex:1;min-width:120px">
         <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Mesto</label>
-        <input type="text" id="ciMesto" placeholder="Mesto" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card)">
+        <input type="text" id="ciMesto" placeholder="Mesto" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card);color:var(--ink)">
       </div>
       <div style="flex:1;min-width:140px">
         <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Ulica</label>
-        <input type="text" id="ciUlica" placeholder="Ulica i broj" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card)">
+        <input type="text" id="ciUlica" placeholder="Ulica i broj" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card);color:var(--ink)">
       </div>
       <button id="ciSaveBtn" class="btn-success" style="padding:10px 16px">💾 Sačuvaj</button>
     </div>
@@ -280,7 +352,7 @@ async function loadCompanyInfo(){
     const list=$('ciList');
     if(!info.length){list.innerHTML='<p style="color:var(--muted);font-size:13px">Još nema unetih podataka.</p>';return}
     list.innerHTML='<table style="width:100%;font-size:13px;border-collapse:collapse">'+
-      '<thead><tr style="background:var(--paper);text-align:left">'+
+      '<thead><tr style="text-align:left">'+
       '<th style="padding:6px">Firma</th><th style="padding:6px">Email</th><th style="padding:6px">Mesto</th><th style="padding:6px">Ulica</th><th style="padding:6px"></th>'+
       '</tr></thead><tbody>'+
       info.map(r=>`<tr style="border-bottom:1px solid var(--line)">
@@ -318,6 +390,7 @@ async function deleteCompanyInfo(company){
     loadCompanyInfo();
   }catch(e){alert('❌ '+e.message)}
 }
+
 // ============ FIXED RECIPIENTS ============
 function addFixedRecipientsControls(){
   if(!adminPanel||$('fixedRecipientsPanel'))return;
@@ -326,7 +399,7 @@ function addFixedRecipientsControls(){
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end">
       <div style="flex:1;min-width:200px">
         <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Email adresa</label>
-        <input type="email" id="frEmail" placeholder="email@primer.com" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card)">
+        <input type="email" id="frEmail" placeholder="email@primer.com" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card);color:var(--ink)">
       </div>
       <button id="frAddBtn" class="btn-success" style="padding:10px 16px">➕ Dodaj</button>
     </div>
@@ -344,7 +417,7 @@ async function loadFixedRecipients(){
     const el=$('frList');
     if(!list.length){el.innerHTML='<p style="color:var(--muted);font-size:13px">Još nema fiksnih primalaca.</p>';return}
     el.innerHTML='<table style="width:100%;font-size:13px;border-collapse:collapse">'+
-      '<thead><tr style="background:var(--paper);text-align:left">'+
+      '<thead><tr style="text-align:left">'+
       '<th style="padding:6px">Email</th><th style="padding:6px"></th>'+
       '</tr></thead><tbody>'+
       list.map(r=>`<tr style="border-bottom:1px solid var(--line)">
@@ -433,8 +506,8 @@ function addClientExportControls(){
   div.innerHTML=`<div class="panel-header"><h2>${t('panel_my_report')}</h2></div>
     <div class="panel-body">
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <input type="date" id="myDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
-        <input type="date" id="myDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+        <input type="date" id="myDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)">
+        <input type="date" id="myDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)">
         <button id="myExportBtn" class="btn-success">${t('panel_my_report_download')}</button>
       </div>
       <div id="myExportStatus" style="margin-top:8px"></div>
@@ -472,8 +545,8 @@ function addWorkerExportControls(){
   div.innerHTML=`<div class="panel-header"><h2>📊 ${t('panel_worker_report')} — ${phaseName}</h2></div>
     <div class="panel-body">
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <input type="date" id="workerDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
-        <input type="date" id="workerDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+        <input type="date" id="workerDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)">
+        <input type="date" id="workerDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)">
         <button id="workerExportBtn" class="btn-success">📥 ${t('panel_worker_report_download')}</button>
       </div>
       <div id="workerExportStatus" style="margin-top:8px"></div>
@@ -506,7 +579,6 @@ async function exportWorkerHistory(){
     status.textContent=t('export_done');status.className='success';
   }catch(e){status.textContent='❌ '+e.message;status.className='error'}
 }
-
 // ============ KONTROLA - PANEL ============
 async function addKontrolaControls(){
   if($('kontrolaPanel'))return;
@@ -516,7 +588,7 @@ async function addKontrolaControls(){
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
         <div>
           <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">OTPREMNICA Br.</label>
-          <input type="number" id="otpremnicaBrojInput" value="2450" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card);width:100px;font-weight:bold">
+          <input type="number" id="otpremnicaBrojInput" value="2450" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink);width:100px;font-weight:bold">
         </div>
         <div>
           <button id="otpremnicaFolderBtn" class="btn-secondary" type="button">📁 Izaberi folder</button>
@@ -524,10 +596,10 @@ async function addKontrolaControls(){
         </div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <select id="prijemTplCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;flex:1;min-width:150px;font-family:var(--font-body);background:var(--card)">
+        <select id="prijemTplCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;flex:1;min-width:150px;font-family:var(--font-body);background:var(--card);color:var(--ink)">
           <option value="">Izaberi firmu...</option>
         </select>
-        <input type="date" id="prijemTplDate" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+        <input type="date" id="prijemTplDate" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)">
         <button id="prijemTplGenBtn" class="btn-success">📋 Generiši</button>
         <button id="prijemTplOtpremnicaBtn" class="btn-success" style="background:#2B4570;color:white">📥 Povuci Excel otpremnicu</button>
         <button id="prijemTplMailBtn" class="btn-success" style="background:#3F7A5C;color:white">📧 Pošalji mail</button>
@@ -595,13 +667,13 @@ async function loadOtpremnice(){
       return;
     }
     el.innerHTML='<table style="width:100%;font-size:13px;border-collapse:collapse">'+
-      '<thead><tr style="background:var(--paper);text-align:left">'+
+      '<thead><tr style="text-align:left">'+
       '<th style="padding:6px">Br.</th><th style="padding:6px">Firma</th><th style="padding:6px">Datum</th><th style="padding:6px">Reparacija</th><th style="padding:6px"></th>'+
       '</tr></thead><tbody>'+
       list.map(r=>{
         const dateStr = r.sent_date ? new Date(r.sent_date).toLocaleDateString('sr-RS') : '-';
         return `<tr style="border-bottom:1px solid var(--line)">
-          <td style="padding:6px;font-weight:700;color:#2B4570">#${r.otpremnica_number||'?'}</td>
+          <td style="padding:6px;font-weight:700;color:var(--blue-dark)">#${r.otpremnica_number||'?'}</td>
           <td style="padding:6px">${esc(r.company||'-')}</td>
           <td style="padding:6px">${dateStr}</td>
           <td style="padding:6px;text-align:center">${r.item_count}</td>
@@ -611,7 +683,7 @@ async function loadOtpremnice(){
         </tr>`;
       }).join('')+'</tbody></table>';
   }catch(e){
-    $('otpremniceList').innerHTML=`<p style="color:#9B2C2C">❌ ${esc(e.message)}</p>`;
+    $('otpremniceList').innerHTML=`<p style="color:var(--red)">❌ ${esc(e.message)}</p>`;
   }
 }
 
@@ -624,7 +696,7 @@ async function obrisiOtpremnicu(broj, firma){
 
   try{
     await api(`/api/otpremnice/${broj}`,{method:'DELETE',headers:headers()});
-    
+
     if(otpremnicaFolderHandle){
       const perm=await otpremnicaFolderHandle.queryPermission({mode:'readwrite'});
       if(perm==='granted'){
@@ -640,7 +712,7 @@ async function obrisiOtpremnicu(broj, firma){
       status.textContent=`✅ Obrisano iz baze. Ali folder nije izabran — resetuj broj.txt ručno na ${broj}.`;
       status.className='error';
     }
-    
+
     loadOtpremnice();
   }catch(e){
     status.textContent='❌ '+e.message;
@@ -648,7 +720,7 @@ async function obrisiOtpremnicu(broj, firma){
   }
 }
 
-// ============ KONTROLA — EXCEL IZVEŠTAJ (isti kao Admin) ============
+// ============ KONTROLA — EXCEL IZVEŠTAJ ============
 function addKontrolaExportPanel(){
   if($('kontrolaExportPanel'))return;
   const div=document.createElement('div');div.id='kontrolaExportPanel';div.className='panel';
@@ -658,12 +730,12 @@ function addKontrolaExportPanel(){
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
         <div style="flex:1;min-width:160px">
           <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Firma</label>
-          <select id="kontrolaExportCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card);font-family:var(--font-body)">
+          <select id="kontrolaExportCompany" style="padding:10px;border:2px solid var(--line);border-radius:6px;width:100%;background:var(--card);color:var(--ink);font-family:var(--font-body)">
             <option value="">Sve firme</option>
           </select>
         </div>
-        <input type="date" id="kontrolaDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
-        <input type="date" id="kontrolaDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card)">
+        <input type="date" id="kontrolaDateFrom" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)">
+        <input type="date" id="kontrolaDateTo" style="padding:10px;border:2px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)">
         <button id="kontrolaExportBtn" class="btn-success">📥 Preuzmi Excel</button>
       </div>
       <div id="kontrolaExportStatus" style="margin-top:8px"></div>
@@ -681,7 +753,6 @@ function addKontrolaExportPanel(){
   $('kontrolaExportBtn').onclick=exportKontrola;
 }
 
-// ============ IZMENJENO: Kontrola koristi isti endpoint kao Admin ============
 async function exportKontrola(){
   const status=$('kontrolaExportStatus');
   const company=$('kontrolaExportCompany')?.value||'';
@@ -693,7 +764,6 @@ async function exportKontrola(){
     if(company)params.append('company',company);
     if(dateFrom)params.append('dateFrom',dateFrom);
     if(dateTo)params.append('dateTo',dateTo);
-    // ← Promenjeno: /api/history/export umesto /api/kontrola/export
     const r=await fetch(`/api/history/export?${params.toString()}`,{headers:headers()});
     if(!r.ok){const d=await r.json().catch(()=>({}));throw Error(d.error||`HTTP ${r.status}`)}
     const blob=await r.blob();
@@ -850,6 +920,7 @@ async function copyPrijemTemplate(){
   }
 }
 
+// ============ CLEAR ORDERS ============
 async function clearActive(){
   if(!confirm('Obrisati sve aktivne naloge? Istorija ostaje sačuvana.'))return;
   try{
@@ -867,7 +938,23 @@ async function clearAll(){
   }catch(e){document.getElementById('orderManagementStatus').textContent='❌ '+e.message}
 }
 
-$('uploadForm')?.addEventListener('submit',async e=>{e.preventDefault();const f=$('fileInput'),s=$('uploadStatus');if(!f?.files?.[0]){s.textContent='Molimo izaberite Excel fajl';s.className='error';return}s.textContent='⏳ Analiziram Excel i sinhronizujem...';s.className='';const fd=new FormData();fd.append('file',f.files[0]);try{const r=await fetch('/api/upload',{method:'POST',headers:headers(),body:fd});const d=await r.json();if(!r.ok)throw Error(d.error);s.className='success';s.innerHTML=`✅ Sinhronizovano: 🟢 ${d.updated} postojećih, 🔵 ${d.inserted} novih, 🔴 ${d.removed} uklonjeno. Istorija sačuvana.`;f.value='';await loadOrders('',1)}catch(e){s.textContent='❌ '+e.message;s.className='error'}});
+// ============ UPLOAD EXCEL ============
+$('uploadForm')?.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const f=$('fileInput'),s=$('uploadStatus');
+  if(!f?.files?.[0]){s.textContent='Molimo izaberite Excel fajl';s.className='error';return}
+  s.textContent='⏳ Analiziram Excel i sinhronizujem...';s.className='';
+  const fd=new FormData();fd.append('file',f.files[0]);
+  try{
+    const r=await fetch('/api/upload',{method:'POST',headers:headers(),body:fd});
+    const d=await r.json();
+    if(!r.ok)throw Error(d.error);
+    s.className='success';
+    s.innerHTML=`✅ Sinhronizovano: 🟢 ${d.updated} postojećih, 🔵 ${d.inserted} novih, 🔴 ${d.removed} uklonjeno. Istorija sačuvana.`;
+    f.value='';
+    await loadOrders('',1);
+  }catch(e){s.textContent='❌ '+e.message;s.className='error'}
+});
 
 // ============ KREIRANJE KORISNIKA ============
 $('createUserForm')?.addEventListener('submit',async e=>{
@@ -943,7 +1030,12 @@ async function deleteUser(id,username){
   }catch(e){$('userStatus').textContent='❌ '+e.message;$('userStatus').className='error'}
 }
 
-sendReportBtn?.addEventListener('click',async()=>{if(!confirm(t('msg_send_report_confirm')))return;try{alert((await api('/api/send-report',{method:'POST',headers:headers(true),body:JSON.stringify({date:new Date().toLocaleDateString('sr-RS')})})).message)}catch(e){alert('❌ '+e.message)}});
+// ============ REPORT & PASSWORD ============
+sendReportBtn?.addEventListener('click',async()=>{
+  if(!confirm(t('msg_send_report_confirm')))return;
+  try{alert((await api('/api/send-report',{method:'POST',headers:headers(true),body:JSON.stringify({date:new Date().toLocaleDateString('sr-RS')})})).message)}
+  catch(e){alert('❌ '+e.message)}
+});
 
 changePasswordBtn?.addEventListener('click',async()=>{
   const currentPassword=prompt(t('msg_enter_current_password'));
@@ -957,6 +1049,7 @@ changePasswordBtn?.addEventListener('click',async()=>{
     alert(d.message);
   }catch(e){alert('❌ '+e.message)}
 });
+
 // ============ LOAD ORDERS ============
 async function loadOrders(search='',page=1){
   try{
@@ -968,6 +1061,7 @@ async function loadOrders(search='',page=1){
     currentPage=d.page||1;
     totalPages=d.totalPages||1;
     if(orderCount)orderCount.textContent=`${totalOrders} ${t('order_count_suffix')}`;
+    renderKPI(orders);
     renderOrders();
     if(selectedOrderId&&!phaseModal?.classList.contains('hidden')){
       const o=orders.find(x=>String(x.id)===String(selectedOrderId));
@@ -1032,11 +1126,17 @@ function computeOrderStatus(o){
     return true;
   });
 
-  if(currentPhase){
-    return [phaseLabel(currentPhase),'status-pending'];
+  // ===== WARNING: kašnjenje =====
+  const today = new Date().toISOString().slice(0,10);
+  if(o.deliveryDate && o.deliveryDate < today){
+    return [t('status_late') || 'Kasni', 'status-warning'];
   }
 
-  return [t('status_in_progress'),'status-pending'];
+  if(currentPhase){
+    return [phaseLabel(currentPhase),'status-phase'];
+  }
+
+  return [t('status_in_progress'),'status-phase'];
 }
 
 // ============ RENDER TABELE ============
@@ -1060,9 +1160,11 @@ function renderOrders(){
 
   orders.forEach(o=>{
     const st=computeOrderStatus(o);
+    // st[1] je već 'status-problem' | 'status-warning' | 'status-completed' | 'status-phase' | 'status-pending'
     h+=`<tr class="row-${st[1]}" onclick="openOrder(${o.id})">`;
-    
+
     if(privileged){
+      const L=['Firma','Šifra','Naziv','Nalog','Količina','Datum','Status'];
       const cells=[
         esc(o.company),
         `<span style="font-weight:600">${esc(o.code)}</span>`,
@@ -1072,8 +1174,9 @@ function renderOrders(){
         esc(o.deliveryDate||'-'),
         `<span class="status-badge ${getBadgeClass(st[0], st[1])}">${st[0]}</span>`
       ];
-      cells.forEach((c,k)=>{h+=`<td${k===3?' class="clickable"':''}>${c}</td>`});
+      cells.forEach((c,k)=>{h+=`<td data-label="${L[k]}"${k===3?' class="clickable"':''}>${c}</td>`});
     } else if(worker){
+      const L=[t('th_company'),t('th_order'),t('th_name'),t('th_quantity'),t('th_delivery'),t('th_status')];
       const cells=[
         esc(o.company),
         esc(o.orderNumber),
@@ -1082,7 +1185,7 @@ function renderOrders(){
         esc(o.deliveryDate||'-'),
         `<span class="status-badge ${getBadgeClass(st[0], st[1])}">${st[0]}</span>`
       ];
-      cells.forEach((c,k)=>{h+=`<td${k===1?' class="clickable"':''}>${c}</td>`});
+      cells.forEach((c,k)=>{h+=`<td data-label="${L[k]}"${k===1?' class="clickable"':''}>${c}</td>`});
     } else {
       const L=[t('th_order'),t('th_name'),t('th_quantity'),t('th_status')];
       const isForeign = (o.company !== currentUser.company);
@@ -1172,7 +1275,7 @@ function renderHistoryTimeline(history){
     const comment = (h.comment || '').trim();
     const label = statusLabelForTimeline(st);
     return `<div style="display:flex;gap:8px;font-size:12px;color:var(--muted);line-height:1.6">
-      <span style="font-family:var(--font-mono);color:#4A5568">${statusIcon(st)} ${label}</span>
+      <span style="font-family:var(--font-mono)">${statusIcon(st)} ${label}</span>
       <span style="flex:1;text-align:right">${dateStr}${by?`  (${esc(by)})`:''}</span>
     </div>${comment?`<div style="font-size:12px;color:#9C6B00;margin-left:22px;margin-bottom:4px">— ${esc(comment)}</div>`:''}`;
   }).join('');
@@ -1207,7 +1310,6 @@ function phaseLockState(p){
   if(p.status==='uradjeno') return {locked:true, onlyCompleteAllowed:true};
   return {locked:true, onlyCompleteAllowed:false};
 }
-
 // ============ RENDER MODAL ============
 function renderModal(o){
   modalOrderNumber.textContent=o.orderNumber||'N/A';
@@ -1228,7 +1330,7 @@ function renderModal(o){
 
   let claimNotice = '';
   if ((privileged || worker) && claim) {
-    claimNotice = `<p style="background:#FFF3CD;border:1px solid #FFE69C;border-radius:6px;padding:8px 10px;margin-top:8px;color:#7A5D00">
+    claimNotice = `<p style="background:var(--gold-soft);border:1px solid #FFE69C;border-radius:6px;padding:8px 10px;margin-top:8px;color:#7A5D00">
       ⚠️ <b>${tFormat('msg_claimed_by', {claimer: claim.claimedByCompany, original: claim.originalCompany})}</b>
     </p>`;
   }
@@ -1246,7 +1348,7 @@ function renderModal(o){
       .sort((a,b)=>new Date(b.updatedAt||0)-new Date(a.updatedAt||0));
     if(foreignEdits.length){
       const last=foreignEdits[0];
-      modalOrderInfo.innerHTML+=`<p style="background:#FFF3CD;border:1px solid #FFE69C;border-radius:6px;padding:8px 10px;margin-top:8px">
+      modalOrderInfo.innerHTML+=`<p style="background:var(--gold-soft);border:1px solid #FFE69C;border-radius:6px;padding:8px 10px;margin-top:8px">
         ⚠️ <b>Nalog je namenjen firmi "${esc(o.company)}"</b>, ali ga je poslednji radio: <b>${esc(last.updatedBy||'?')}</b> (firma "${esc(last.updatedByCompany)}") — faza ${esc(phaseLabel(last.phase))}${last.updatedAt?`, ${date(last.updatedAt)}`:''}.
       </p>`;
     }
@@ -1339,7 +1441,7 @@ function renderModal(o){
     // ============================================================
     else if(isLockedForMeAsClient){
       const claimerName = claim ? claim.claimedByCompany : (findPhaseRow('100')?.updatedByCompany || '?');
-      bodyHtml=`<div class="phase-date" style="color:#9B2C2C;font-weight:600">🔒 ${t('msg_claim_locked')} — ${esc(claimerName)}</div>`;
+      bodyHtml=`<div class="phase-date" style="color:var(--red);font-weight:600">🔒 ${t('msg_claim_locked')} — ${esc(claimerName)}</div>`;
     }
     else if(sequenceBlockedOn){
       bodyHtml=`<div class="phase-date" style="color:var(--muted)">${t('msg_first_resolve_phase')} "${esc(phaseLabel(sequenceBlockedOn))}"</div>`;
@@ -1358,7 +1460,7 @@ function renderModal(o){
       // KLIJENT — specijalno za prvu fazu (100)
       if(user && p.phase==='100'){
         if(isForeign && !isClaimedByMeLocal && isKrojenjeFree(o) && (p.status==='pending' || !p.status)){
-          bodyHtml=`<div class="phase-date" style="color:#2B4570;font-weight:600;margin-bottom:6px">📌 ${t('msg_claim_you_can_take')}</div>
+          bodyHtml=`<div class="phase-date" style="color:var(--blue-dark);font-weight:600;margin-bottom:6px">📌 ${t('msg_claim_you_can_take')}</div>
             <div class="phase-actions">
               <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'100','completed')">✅ ${t('btn_done')} (Preuzmi nalog)</button>
             </div>`;
@@ -1368,9 +1470,9 @@ function renderModal(o){
               <button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'100')">⚠️ ${t('btn_problem')}</button>
               ${admin ? `<button class="btn-tag btn-tag--reset" onclick="resetPhase(${o.id},'100')">⬜ ${t('btn_reset')}</button>` : ''}
             </div>
-            <textarea class="phase-note" onblur="saveComment(${o.id},'100',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
+            <textarea class="phase-note" oninput="handleCommentChange(${o.id},'100',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
         } else {
-          bodyHtml=`<div class="phase-date" style="color:#9B2C2C;font-weight:600">🔒 ${t('msg_claim_locked')}</div>`;
+          bodyHtml=`<div class="phase-date" style="color:var(--red);font-weight:600">🔒 ${t('msg_claim_locked')}</div>`;
         }
       }
       // ADMIN override za faze 200/300
@@ -1399,7 +1501,7 @@ function renderModal(o){
             <button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 ${t('btn_none')}</button>
             <button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'${js(p.phase)}')">⚠️ ${t('btn_problem')}</button>
           </div>
-          <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
+          <textarea class="phase-note" oninput="handleCommentChange(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
         }
       }
       // KLIJENT za faze 200 i 300
@@ -1428,7 +1530,7 @@ function renderModal(o){
             <button class="btn-tag btn-tag--reset" onclick="updatePhase(${o.id},'${js(p.phase)}','nema')">🚫 ${t('btn_none')}</button>
             <button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'${js(p.phase)}')">⚠️ ${t('btn_problem')}</button>
           </div>
-          <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
+          <textarea class="phase-note" oninput="handleCommentChange(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
         }
       }
       // Ostale faze (400, 500)
@@ -1438,7 +1540,7 @@ function renderModal(o){
             <button class="btn-tag btn-tag--problem" onclick="openProblemModal(${o.id},'${js(p.phase)}')">⚠️ ${t('btn_problem')}</button>
             ${admin ? `<button class="btn-tag btn-tag--reset" onclick="resetPhase(${o.id},'${js(p.phase)}')">⬜ ${t('btn_reset')}</button>` : ''}
           </div>
-          <textarea class="phase-note" onblur="saveComment(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
+          <textarea class="phase-note" oninput="handleCommentChange(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
       }
     }
 
@@ -1481,7 +1583,7 @@ function renderModal(o){
         ${(privileged && napomena?.updatedByCompany && napomena.updatedByCompany!==o.company) ? `<div class="phase-date" style="margin-top:-4px;margin-bottom:6px;color:#9C6B00">👤 ${t('msg_worker')}: ${esc(napomena.updatedBy||'?')} (${t('modal_company').toLowerCase()} "${esc(napomena.updatedByCompany)}")</div>` : ''}
         ${nLock.locked
           ? (nComment ? `<div class="phase-date" style="margin-top:2px">${esc(nComment)}</div>` : '')
-          : `<textarea class="phase-note" style="margin-top:8px" onblur="saveComment(${o.id},'NAPOMENA',this.value)" placeholder="${t('placeholder_note')}">${esc(nComment)}</textarea>`}
+          : `<textarea class="phase-note" style="margin-top:8px" oninput="handleCommentChange(${o.id},'NAPOMENA',this.value)" placeholder="${t('placeholder_note')}">${esc(nComment)}</textarea>`}
       </div>
     </div>`;
 
@@ -1558,12 +1660,12 @@ function renderModal(o){
       if(prijem.status==='completed'){
         pBody = `<div class="phase-date" style="color:var(--green);font-weight:600">✅ ${t('status_ok')}${prijem.updatedAt?` — ${date(prijem.updatedAt)}`:''}</div>`;
       } else if (pParsed && pParsed.outcome === 'anulirano') {
-        pBody = `<div class="phase-date" style="color:#9B2C2C;font-weight:600">❌ ${t('status_cancelled')}${prijem.updatedAt?` — ${date(prijem.updatedAt)}`:''}</div>`;
+        pBody = `<div class="phase-date" style="color:var(--red);font-weight:600">❌ ${t('status_cancelled')}${prijem.updatedAt?` — ${date(prijem.updatedAt)}`:''}</div>`;
       } else if (pParsed && pParsed.outcome === 'reparacija') {
         if (rep && rep.kontrolaConfirmedAt) {
           pBody = `<div class="phase-date" style="color:var(--green);font-weight:600">✅ ${t('msg_closed')} ${date(rep.kontrolaConfirmedAt)}</div>`;
         } else {
-          pBody = `<div class="phase-date" style="color:#2B4570;font-weight:600">⏳ ${t('msg_waiting_client')} — ${t('msg_deadline').toLowerCase()}: ${rep?.deadlineDate?date(rep.deadlineDate):'-'}</div>`;
+          pBody = `<div class="phase-date" style="color:var(--blue-dark);font-weight:600">⏳ ${t('msg_waiting_client')} — ${t('msg_deadline').toLowerCase()}: ${rep?.deadlineDate?date(rep.deadlineDate):'-'}</div>`;
         }
       }
     } else if(pLock.locked && !pLock.onlyCompleteAllowed){
@@ -1615,6 +1717,15 @@ function renderModal(o){
   phasesContainer.innerHTML=phases.length ? h : t('msg_no_phases');
 }
 
+// ============ COMMENT DEBOUNCE (umesto onblur) ============
+let commentTimers = {};
+function handleCommentChange(orderId, phase, value){
+  const key = `${orderId}-${phase}`;
+  clearTimeout(commentTimers[key]);
+  commentTimers[key] = setTimeout(()=>saveComment(orderId, phase, value), 500);
+}
+window.handleCommentChange = handleCommentChange;
+
 // ============ RESET PHASE — samo admin ============
 async function resetPhase(id, phase){
   if(!isAdminRole()){alert('❌ Samo admin može resetovati fazu.');return}
@@ -1628,7 +1739,8 @@ async function resetPhase(id, phase){
     const p=o.progress.find(x=>String(x.phase)===String(phase));
     if(p){p.status='pending';p.comment='';p.updatedAt=new Date().toISOString();}
     renderModal(o);
-    await loadOrders(searchInput?.value||'',currentPage);
+    renderOrders();
+    renderKPI(orders);
   }catch(e){alert('❌ '+e.message)}
 }
 
@@ -1683,14 +1795,30 @@ async function confirmProblem(){
 async function confirmReparacijaClient(repId){
   try{
     await api(`/api/reparacija/${repId}/client-confirm`,{method:'POST',headers:headers(true)});
-    await loadOrders(searchInput?.value||'',currentPage);
+    await reloadCurrentOrder();
   }catch(e){alert('❌ '+e.message)}
 }
 async function confirmReparacijaKontrola(repId){
   try{
     await api(`/api/reparacija/${repId}/kontrola-confirm`,{method:'POST',headers:headers(true)});
-    await loadOrders(searchInput?.value||'',currentPage);
+    await reloadCurrentOrder();
   }catch(e){alert('❌ '+e.message)}
+}
+
+// Pomoćna: osveži samo trenutni nalog (bez loadOrders)
+async function reloadCurrentOrder(){
+  if(!selectedOrderId) return;
+  try{
+    const d = await api(`/api/orders?search=${encodeURIComponent(orders.find(o=>String(o.id)===String(selectedOrderId))?.orderNumber||'')}&page=1&limit=100`,{headers:headers()});
+    const found = (d.data||[]).find(x=>String(x.id)===String(selectedOrderId));
+    if(found){
+      const idx = orders.findIndex(x=>String(x.id)===String(selectedOrderId));
+      if(idx>=0) orders[idx] = found;
+      renderModal(found);
+    }
+    renderOrders();
+    renderKPI(orders);
+  }catch(e){console.error(e)}
 }
 
 function parsePrijemData(comment){
@@ -1711,7 +1839,10 @@ async function submitPrijemOk(id){
   renderModal(o);
   try{
     const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase:'PRIJEM',status:'completed',comment:''})});
-    p.updatedAt=d.updatedAt;renderModal(o);
+    p.updatedAt=d.updatedAt;
+    renderModal(o);
+    renderOrders();
+    renderKPI(orders);
   }catch(e){Object.assign(p,old);renderModal(o);alert('❌ '+e.message)}
 }
 
@@ -1731,7 +1862,7 @@ function ensureSizeModal(){
     <textarea id="sizeNote" class="phase-note" placeholder="${t('placeholder_comment')}" style="margin-top:6px"></textarea>
     <div id="sizeDeadlineWrap" class="hidden" style="margin-top:10px">
       <label style="font-size:13px;color:var(--muted)">${t('msg_deadline_days')}:</label>
-      <input type="number" id="sizeDeadlineDays" min="1" value="7" style="width:70px;margin-left:8px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;text-align:center">
+      <input type="number" id="sizeDeadlineDays" min="1" value="7" style="width:70px;margin-left:8px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;text-align:center;background:var(--card);color:var(--ink)">
     </div>
     <div class="phase-actions" style="margin-top:12px">
       <button class="btn-tag btn-tag--done" onclick="confirmSizeModal()">✅ ${t('btn_confirm')}</button>
@@ -1743,7 +1874,7 @@ function ensureSizeModal(){
   grid.innerHTML=SIZE_RANGE.map(s=>`
     <div style="text-align:center">
       <div style="font-family:var(--font-mono);font-size:11px;color:var(--muted)">${s}</div>
-      <input type="number" min="0" data-size="${s}" class="sizeQtyInput" style="width:100%;padding:6px 4px;border:1px solid var(--line);border-radius:6px;text-align:center;font-size:13px">
+      <input type="number" min="0" data-size="${s}" class="sizeQtyInput" style="width:100%;padding:6px 4px;border:1px solid var(--line);border-radius:6px;text-align:center;font-size:13px;background:var(--card);color:var(--ink)">
     </div>`).join('');
 }
 
@@ -1787,7 +1918,8 @@ async function confirmSizeModal(){
     if(deadlineDays)body.deadlineDays=deadlineDays;
     const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify(body)});
     p.updatedAt=d.updatedAt;
-    await loadOrders(searchInput?.value||'',currentPage);
+    renderOrders();
+    renderKPI(orders);
   }catch(e){Object.assign(p,old);renderModal(o);alert('❌ '+e.message)}
 }
 
@@ -1806,7 +1938,7 @@ async function saveComment(id, phase, comment) {
       body: JSON.stringify({ orderId: id, phase, comment })
     });
     if (res.updatedAt) p.updatedAt = res.updatedAt;
-    renderModal(o);
+    // ne renderujemo modal — korisnik još kuca
   } catch (e) {
     p.comment = oldComment;
     p.updatedAt = oldUpdated;
@@ -1823,18 +1955,28 @@ async function updatePhase(id,phase,status,customComment){
   p.status=status;
   p.comment=newComment;
   p.updatedAt=new Date().toISOString();
-  renderOrders();renderModal(o);
+  renderOrders();
+  renderKPI(orders);
+  renderModal(o);
   try{
     const d=await api('/api/update-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id,phase,status,comment:newComment})});
     p.updatedAt=d.updatedAt;
     renderOrders();
-    await loadOrders(searchInput?.value||'',currentPage);
+    renderKPI(orders);
+    // osveži modal samo ako je još otvoren za taj nalog
+    if(selectedOrderId && String(selectedOrderId)===String(id) && !phaseModal?.classList.contains('hidden')){
+      renderModal(o);
+    }
   }catch(e){
-    Object.assign(p,old);renderOrders();renderModal(o);alert('❌ '+e.message);
+    Object.assign(p,old);
+    renderOrders();
+    renderKPI(orders);
+    renderModal(o);
+    alert('❌ '+e.message);
   }
 }
 
-// ============ DATE / ESCAPE ============
+// ============ DATE / ESCAPE / i18n fallback ============
 function date(v) {
   const d = new Date(v);
   if (isNaN(d)) return String(v);
@@ -1843,6 +1985,19 @@ function date(v) {
 
 function esc(v){const d=document.createElement('div');d.textContent=String(v??'');return d.innerHTML}
 function js(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}
+
+// tFormat fallback ako nije definisan u i18n
+if(typeof tFormat !== 'function'){
+  window.tFormat = function(key, vars){
+    let s = (typeof t==='function') ? t(key) : key;
+    if(vars){
+      Object.keys(vars).forEach(k=>{
+        s = s.replace(new RegExp('\\{'+k+'\\}','g'), vars[k]);
+      });
+    }
+    return s;
+  };
+}
 
 // ============ EXPORT NA WINDOW ============
 window.openOrder=openOrder;
@@ -1869,8 +2024,10 @@ window.confirmProblem=confirmProblem;
 window.resetPhase=resetPhase;
 window.obrisiOtpremnicu=obrisiOtpremnicu;
 window.loadOtpremnice=loadOtpremnice;
+window.toggleTheme=toggleTheme;
+window.handleCommentChange=handleCommentChange;
 
-// ============ UI: admin collapse, scroll lock, Esc ============
+// ============ UI: admin collapse, scroll lock, Esc, theme icon ============
 (()=>{
   const btn=$('adminToggle');
   if(btn&&adminPanel){
@@ -1885,6 +2042,11 @@ window.loadOtpremnice=loadOtpremnice;
     const problemModal=$('problemModal');
     if(problemModal && !problemModal.classList.contains('hidden')){
       closeProblemModal();
+      return;
+    }
+    const sizeModal=$('sizeModal');
+    if(sizeModal && !sizeModal.classList.contains('hidden')){
+      closeSizeModal();
       return;
     }
     if(phaseModal && !phaseModal.classList.contains('hidden')){

@@ -11,6 +11,12 @@ const TRANSLATIONS = {
     nav_logout: 'Odjava',
     nav_tracker: '🏭 Tracker',
 
+    // ===== KPI =====
+    kpi_active: 'Aktivni nalozi',
+    kpi_in_progress: 'U toku',
+    kpi_late: 'Kašnjenja',
+    kpi_done_today: 'Završeno danas',
+
     // ===== PANELI (klijent) =====
     panel_search: '🔍 Pretraga',
     panel_search_placeholder: 'Firma, šifra, nalog...',
@@ -39,6 +45,8 @@ const TRANSLATIONS = {
     status_sent: 'Poslato',
     status_received: 'Primljeno',
     status_done_worker: 'Urađeno',
+    status_late: 'Kasni',
+    status_phase: 'U toku',
 
     // ===== FAZE =====
     phase_100: 'Krojenje',
@@ -50,7 +58,7 @@ const TRANSLATIONS = {
     phase_repair: 'Reparacija',
     phase_reception: 'Prijem',
 
-    // ===== DUGMIĆI U MODALU (bez emoji — emoji se dodaje u kodu) =====
+    // ===== DUGMIĆI U MODALU =====
     btn_done: 'Urađeno',
     btn_problem: 'Problem',
     btn_none: 'Nema',
@@ -160,6 +168,12 @@ const TRANSLATIONS = {
     nav_logout: 'Disconnetti',
     nav_tracker: '🏭 Tracker',
 
+    // ===== KPI =====
+    kpi_active: 'Ordini attivi',
+    kpi_in_progress: 'In corso',
+    kpi_late: 'In ritardo',
+    kpi_done_today: 'Completati oggi',
+
     // ===== PANELI (klijent) =====
     panel_search: '🔍 Ricerca',
     panel_search_placeholder: 'Azienda, codice, ordine...',
@@ -188,6 +202,8 @@ const TRANSLATIONS = {
     status_sent: 'Inviato',
     status_received: 'Ricevuto',
     status_done_worker: 'Fatto',
+    status_late: 'In ritardo',
+    status_phase: 'In corso',
 
     // ===== FAZE =====
     phase_100: 'Taglio',
@@ -199,7 +215,7 @@ const TRANSLATIONS = {
     phase_repair: 'Riparazione',
     phase_reception: 'Ricezione',
 
-    // ===== DUGMIĆI U MODALU (bez emoji) =====
+    // ===== DUGMIĆI U MODALU =====
     btn_done: 'Fatto',
     btn_problem: 'Problema',
     btn_none: 'Nessuno',
@@ -233,7 +249,6 @@ const TRANSLATIONS = {
     modal_code: 'Codice',
     modal_quantity: 'Quantità',
     modal_delivery: 'Data di consegna',
-
     // ===== PORUKE =====
     msg_session_expired: 'Sessione scaduta.',
     msg_first_resolve_phase: '⛔ Prima risolvi la fase',
@@ -320,7 +335,6 @@ function t(key) {
 
 // ============================================================
 // Funkcija za zamenu placeholdera u tekstu
-// Koristi se kao: tFormat('msg_claimed_by', {claimer: 'Raus', original: 'Shoe Star'})
 // ============================================================
 function tFormat(key, vars) {
   let text = t(key);
@@ -333,7 +347,7 @@ function tFormat(key, vars) {
 }
 
 // ============================================================
-// Funkcija za promenu jezika (poziva se iz lang-switcher.js)
+// Funkcija za promenu jezika
 // ============================================================
 function setLang(lang) {
   if (lang !== 'sr' && lang !== 'it') return;
@@ -352,6 +366,22 @@ function translatePage() {
     const key = el.getAttribute('data-i18n-placeholder');
     el.placeholder = t(key);
   });
+}
+
+// ============================================================
+// Prevedi dinamičke delove (KPI, tabela, modal)
+// Poziva se iz lang-switcher.js posle promene jezika
+// ============================================================
+function retranslateDynamic() {
+  if (typeof orders !== 'undefined' && Array.isArray(orders)) {
+    if (typeof renderKPI === 'function') renderKPI(orders);
+    if (typeof renderOrders === 'function') renderOrders();
+    if (typeof selectedOrderId !== 'undefined' && selectedOrderId
+        && typeof renderModal === 'function') {
+      const o = orders.find(x => String(x.id) === String(selectedOrderId));
+      if (o) renderModal(o);
+    }
+  }
 }
 
 // Automatski prevedi stranicu kada se DOM učita
