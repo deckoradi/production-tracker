@@ -131,11 +131,15 @@ const TRANSLATIONS = {
     btn_confirm_problem: 'Prijavi problem',
     msg_problem_no_comment: 'Nisi uneo komentar. Prijaviti problem bez komentara?',
 
-    // ===== NOVO: PREUZIMANJE NALOGA =====
+    // ===== PREUZIMANJE NALOGA =====
     msg_claimed_by: 'Klijent {claimer} je preuzeo nalog namenjen klijentu {original}',
     msg_claimed_by_short: 'Preuzeto od strane {claimer}',
     msg_claim_locked: '🔒 Nalog je zauzet',
     msg_claim_you_can_take: 'Možete preuzeti ovaj nalog klikom na Krojenje → Urađeno',
+
+    // ===== OTPREMNICE =====
+    msg_otpremnica_deleted: 'Otpremnica obrisana.',
+    msg_otpremnica_reset_manual: 'Resetuj broj ručno.',
 
     // ===== OSTALO =====
     order_count_suffix: 'naloga',
@@ -276,11 +280,15 @@ const TRANSLATIONS = {
     btn_confirm_problem: 'Segnala problema',
     msg_problem_no_comment: 'Nessun commento inserito. Segnalare il problema senza commento?',
 
-    // ===== NOVO: PRESA ORDINE =====
+    // ===== PRESA ORDINE =====
     msg_claimed_by: 'Il cliente {claimer} ha preso l\'ordine destinato al cliente {original}',
     msg_claimed_by_short: 'Preso da {claimer}',
     msg_claim_locked: '🔒 Ordine occupato',
     msg_claim_you_can_take: 'Puoi prendere questo ordine cliccando su Taglio → Fatto',
+
+    // ===== DDT / OTPREMNICE =====
+    msg_otpremnica_deleted: 'DDT eliminato.',
+    msg_otpremnica_reset_manual: 'Reimposta il numero manualmente.',
 
     // ===== OSTALO =====
     order_count_suffix: 'ordini',

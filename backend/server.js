@@ -83,9 +83,7 @@ const initDb = async () => {
             )
         `);
 
-        // ============================================================
-        // FIX 1: Sekvenca za orders.id — rešava duplicate key problem
-        // ============================================================
+        // Sekvenca za orders.id
         await pool.query(`CREATE SEQUENCE IF NOT EXISTS orders_id_seq`);
         const maxIdInit = await pool.query('SELECT COALESCE(MAX(id), 0) AS max_id FROM orders');
         const startId = parseInt(maxIdInit.rows[0].max_id) + 1;
@@ -174,9 +172,12 @@ const initDb = async () => {
                 company VARCHAR(255) NOT NULL,
                 repair_changed_at TIMESTAMP NOT NULL,
                 sent_at TIMESTAMP DEFAULT NOW(),
+                otpremnica_number INT,
                 UNIQUE(order_number, company, repair_changed_at)
             )
         `);
+        // Dodaj kolonu ako ne postoji (za starije baze)
+        await pool.query(`ALTER TABLE otpremnica_log ADD COLUMN IF NOT EXISTS otpremnica_number INT`);
 
         await pool.query(`
             CREATE TABLE IF NOT EXISTS order_claims (
@@ -196,6 +197,7 @@ const initDb = async () => {
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_reparacije_order_created ON reparacije(order_id, created_at DESC)`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_orders_company ON orders(company)`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_orders_number_company ON orders(order_number, company)`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_otpremnica_log_number ON otpremnica_log(otpremnica_number)`);
 
         const adminCheck = await pool.query('SELECT * FROM users WHERE username = $1', ['admin']);
         if (adminCheck.rows.length === 0) {
@@ -561,6 +563,59 @@ app.delete('/api/fixed-recipients/:id', authenticate, async (req, res) => {
     }
 });
 
+// ============================================================
+// OTPREMNICE — LISTA I BRISANJE (samo Kontrola)
+// ============================================================
+app.get('/api/otpremnice', authenticate, async (req, res) => {
+    if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const result = await pool.query(
+            `SELECT 
+                otpremnica_number,
+                company,
+                DATE(sent_at) as sent_date,
+                COUNT(*) as item_count,
+                MAX(sent_at) as last_sent_at,
+                MIN(id) as min_id
+             FROM otpremnica_log
+             WHERE otpremnica_number IS NOT NULL
+             GROUP BY otpremnica_number, company, DATE(sent_at)
+             ORDER BY otpremnica_number DESC, company`
+        );
+        res.json(result.rows);
+    } catch (e) {
+        console.error('❌ Otpremnice list error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete('/api/otpremnice/:number', authenticate, async (req, res) => {
+    if (req.user.role !== 'kontrola' && req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const { number } = req.params;
+        const broj = parseInt(number);
+        if (isNaN(broj) || broj < 1) {
+            return res.status(400).json({ error: 'Neispravan broj otpremnice.' });
+        }
+        const result = await pool.query(
+            'DELETE FROM otpremnica_log WHERE otpremnica_number = $1 RETURNING id',
+            [broj]
+        );
+        res.json({
+            message: `✅ Otpremnica #${broj} obrisana (${result.rowCount} zapisa).`,
+            deleted: result.rowCount,
+            number: broj
+        });
+    } catch (e) {
+        console.error('❌ Otpremnica delete error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.delete('/api/otpremnica-log', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
@@ -681,6 +736,102 @@ app.get('/api/worker/export', authenticate, async (req, res) => {
         res.end();
     } catch (e) {
         console.error('❌ Worker export error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ KONTROLA EXPORT — sve faze u periodu ============
+app.get('/api/kontrola/export', authenticate, async (req, res) => {
+    if (!isKontrola(req.user) && !isAdmin(req.user)) {
+        return res.status(403).json({ error: 'Access denied' });
+    }
+    try {
+        const { dateFrom, dateTo, company } = req.query;
+
+        let where = [];
+        let params = [];
+        let idx = 1;
+
+        if (company) {
+            where.push(`oh.company = $${idx}`);
+            params.push(company);
+            idx++;
+        }
+        if (dateFrom) {
+            where.push(`oh.changed_at >= $${idx}`);
+            params.push(dateFrom + ' 00:00:00');
+            idx++;
+        }
+        if (dateTo) {
+            where.push(`oh.changed_at <= $${idx}`);
+            params.push(dateTo + ' 23:59:59');
+            idx++;
+        }
+        const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+        const result = await pool.query(
+            `SELECT oh.order_number, oh.company, oh.phase, oh.new_status, oh.comment, 
+                    oh.changed_by, oh.changed_by_company, oh.changed_at,
+                    o.name, o.code
+             FROM order_history oh
+             LEFT JOIN orders o ON o.order_number = oh.order_number AND o.company = oh.company
+             ${whereClause}
+             ORDER BY oh.changed_at DESC`,
+            params
+        );
+
+        const workbook = new ExcelJS.Workbook();
+        workbook.creator = 'Production Tracker';
+        workbook.created = new Date();
+        const sheet = workbook.addWorksheet('Kontrola izveštaj');
+        sheet.columns = [
+            { header: 'Datum i vreme', key: 'date', width: 20 },
+            { header: 'Nalog', key: 'order', width: 15 },
+            { header: 'Firma', key: 'company', width: 24 },
+            { header: 'Naziv artikla', key: 'name', width: 32 },
+            { header: 'Šifra', key: 'code', width: 14 },
+            { header: 'Faza', key: 'phase', width: 16 },
+            { header: 'Status', key: 'status', width: 20 },
+            { header: 'Komentar', key: 'comment', width: 40 },
+            { header: 'Izmenio', key: 'changed_by', width: 18 }
+        ];
+        sheet.getRow(1).eachCell(cell => {
+            cell.font = EXCEL_HEADER_FONT;
+            cell.fill = EXCEL_HEADER_FILL;
+            cell.alignment = EXCEL_HEADER_ALIGN;
+            cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+        });
+        sheet.getRow(1).height = 24;
+        sheet.autoFilter = { from: 'A1', to: 'I1' };
+
+        const PHASE_LABELS = { '100': 'Krojenje', '200': 'Serigrafija', '300': 'Vez', '400': 'Šivenje', '500': 'Poslato', 'PRIJEM': 'Prijem' };
+
+        result.rows.forEach(r => {
+            const row = sheet.addRow({
+                date: new Date(r.changed_at).toLocaleString('sr-RS'),
+                order: r.order_number,
+                company: r.company,
+                name: r.name || '',
+                code: r.code || '',
+                phase: PHASE_LABELS[r.phase] || r.phase,
+                status: STATUS_LABELS_WORKER[r.new_status] || r.new_status,
+                comment: r.comment || '',
+                changed_by: r.changed_by || ''
+            });
+            row.font = { name: 'Arial', size: 10 };
+            row.alignment = { vertical: 'middle', wrapText: true };
+            row.eachCell(cell => {
+                cell.border = { top: { style: 'thin', color: { argb: 'FFE2E8F0' } }, bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } }, left: { style: 'thin', color: { argb: 'FFE2E8F0' } }, right: { style: 'thin', color: { argb: 'FFE2E8F0' } } };
+            });
+        });
+
+        const fileName = `kontrola_izvestaj_${company || 'sve-firme'}_${dateFrom || 'pocetak'}_${dateTo || 'danas'}.xlsx`;
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        await workbook.xlsx.write(res);
+        res.end();
+    } catch (e) {
+        console.error('❌ Kontrola export error:', e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -815,9 +966,6 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
                 }
                 return { kind: 'updated' };
             } else {
-                // ============================================================
-                // FIX 2: Koristi sekvencu za novi ID (bezbedno za paralelne)
-                // ============================================================
                 const seqResult = await pool.query(`SELECT nextval('orders_id_seq') AS new_id`);
                 const newId = parseInt(seqResult.rows[0].new_id);
                 await pool.query(
@@ -1057,6 +1205,57 @@ app.get('/api/orders', authenticate, async (req, res) => {
         });
     } catch (e) {
         console.error('❌ Orders error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ============ RESET PHASE — samo Admin ============
+app.post('/api/reset-phase', authenticate, async (req, res) => {
+    if (!isAdmin(req.user)) {
+        return res.status(403).json({ error: 'Samo admin može da resetuje fazu.' });
+    }
+    try {
+        const { orderId, phase } = req.body;
+        if (!orderId || !phase) {
+            return res.status(400).json({ error: 'Nedostaje orderId ili phase.' });
+        }
+
+        const allowedPhases = ['100', '200', '300', '400', '500', 'NAPOMENA'];
+        if (!allowedPhases.includes(String(phase))) {
+            return res.status(400).json({ error: 'Neispravna faza.' });
+        }
+
+        const orderInfo = await pool.query('SELECT order_number, company FROM orders WHERE id = $1', [orderId]);
+        if (orderInfo.rows.length === 0) {
+            return res.status(404).json({ error: 'Nalog ne postoji.' });
+        }
+
+        // Postavi fazu na pending, obriši komentar
+        await pool.query(
+            `INSERT INTO progress (order_id, phase, status, comment, updated_at, updated_by, updated_by_company)
+             VALUES ($1, $2, 'pending', '', NOW(), $3, $4)
+             ON CONFLICT (order_id, phase) DO UPDATE SET
+                status = 'pending',
+                comment = '',
+                updated_at = NOW(),
+                updated_by = EXCLUDED.updated_by,
+                updated_by_company = EXCLUDED.updated_by_company`,
+            [orderId, phase, req.user.username, req.user.company]
+        );
+
+        // Upiši u istoriju
+        await pool.query(
+            `INSERT INTO order_history 
+                (order_number, company, phase, old_status, new_status, comment, changed_by, changed_by_company)
+             VALUES ($1, $2, $3, 'reset', 'pending', 'Reset od strane admina', $4, $5)`,
+            [orderInfo.rows[0].order_number, orderInfo.rows[0].company, phase, req.user.username, req.user.company]
+        );
+
+        console.log(`🔄 RESET: ${req.user.username} resetovao fazu ${phase} za nalog ${orderInfo.rows[0].order_number}`);
+
+        res.json({ message: `✅ Faza ${phase} resetovana.`, orderId, phase });
+    } catch (e) {
+        console.error('❌ Reset phase error:', e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -1401,21 +1600,15 @@ app.get('/api/reminders', authenticate, async (req, res) => {
     }
 });
 
-// ============================================================
-// FIX 3: clear-orders — redosled je bitan (progress pre orders)
-// ============================================================
 app.post('/api/clear-orders', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Samo admin može' });
     }
     try {
-        // Redosled: prvo zavisne tabele, pa orders
         await pool.query('DELETE FROM reparacije');
         await pool.query('DELETE FROM order_claims');
         const deletedProgress = await pool.query('DELETE FROM progress RETURNING id');
         const deletedOrders = await pool.query('DELETE FROM orders RETURNING id');
-        
-        // NE resetuj sekvencu — istorija ostaje
 
         res.json({ 
             message: '✅ Aktivni nalozi obrisani! Istorija je sačuvana.',
@@ -1428,21 +1621,12 @@ app.post('/api/clear-orders', authenticate, async (req, res) => {
     }
 });
 
-// ============================================================
-// FIX 4: clear-all — TRUNCATE CASCADE, briše SVE bez greške
-// ============================================================
 app.post('/api/clear-all', authenticate, async (req, res) => {
     if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Samo admin može' });
     }
     try {
-        // ============================================================
-        // TRUNCATE CASCADE — briše sve redove iz svih tabela odjednom
-        // RESTART IDENTITY — resetuje sve SERIAL sekvence na 1
-        // ============================================================
         await pool.query('TRUNCATE orders, progress, order_history, reparacije, order_claims RESTART IDENTITY CASCADE');
-        
-        // Resetuj našu custom sekvencu za orders.id
         await pool.query(`SELECT setval('orders_id_seq', 1, false)`);
 
         console.log('🧹 TRUNCATE CASCADE: sve obrisano, sekvence resetovane');
@@ -1585,7 +1769,6 @@ app.get('/api/history/export', authenticate, async (req, res) => {
         const phases = [...phaseSet].sort((a, b) => parseInt(a) - parseInt(b));
         const finalPhases = phases.length ? phases : ['100', '200', '300', '400', '500'];
 
-        // Klijent vidi firmu za svoje + preuzete naloge
         let claimedOrderNumbers = new Set();
         if (req.user.role === 'user') {
             const claimsResult = await pool.query(
@@ -1888,7 +2071,7 @@ app.get('/api/prijem-template', authenticate, async (req, res) => {
     }
 });
 
-// ============ OTPREMNICA - EXCEL EXPORT (A4 print) ============
+// ============ OTPREMNICA - EXCEL EXPORT (čuva broj u bazu) ============
 app.get('/api/otpremnica/export', authenticate, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'kontrola') {
         return res.status(403).json({ error: 'Access denied' });
@@ -1898,6 +2081,7 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
         if (!company) return res.status(400).json({ error: 'Firma je obavezna.' });
         const targetDate = date || new Date().toLocaleDateString('en-CA');
         const otpremnicaNumber = number ? String(number).trim() : '2450';
+        const otpremnicaNumberInt = parseInt(otpremnicaNumber) || 0;
 
         const rawResult = await pool.query(
             `SELECT DISTINCT ON (order_number, company) order_number, company, new_status, comment, changed_at
@@ -2127,15 +2311,17 @@ app.get('/api/otpremnica/export', authenticate, async (req, res) => {
         sheet.getCell(`B${potpisRow2}`).value = '__________________________';
         sheet.getCell(`D${potpisRow2}`).value = '__________________________';
 
+        // Upiši u otpremnica_log sa brojem otpremnice
         for (const r of rows) {
             await pool.query(
-                `INSERT INTO otpremnica_log (order_number, company, repair_changed_at)
-                 VALUES ($1, $2, $3)
-                 ON CONFLICT (order_number, company, repair_changed_at) DO NOTHING`,
-                [r.orderNumber, r.company, r.changedAt]
+                `INSERT INTO otpremnica_log (order_number, company, repair_changed_at, otpremnica_number)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (order_number, company, repair_changed_at) 
+                 DO UPDATE SET otpremnica_number = EXCLUDED.otpremnica_number`,
+                [r.orderNumber, r.company, r.changedAt, otpremnicaNumberInt]
             );
         }
-        console.log(`📦 Otpremnica: ${rows.length} reparacija upisano u log.`);
+        console.log(`📦 Otpremnica #${otpremnicaNumberInt}: ${rows.length} reparacija upisano u log.`);
 
         const fileName = `Otpremnica_${otpremnicaNumber}_${company.replace(/\s+/g, '_')}_${targetDate}.xlsx`;
         res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

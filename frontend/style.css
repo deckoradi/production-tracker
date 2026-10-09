@@ -1328,3 +1328,24 @@ body:has(#phaseModal:not(.hidden)) #remindersModal {
 @supports not selector(:has(*)) {
     /* ništa dodatno, z-index je dovoljan */
 }
+/* ============================================================
+   STATUSNE BOJE REDOVA U TABELI
+   ============================================================ */
+.status-row--red {
+    background-color: #FDECEA !important;
+}
+.status-row--red:hover {
+    background-color: #F8D7D3 !important;
+}
+.status-row--green {
+    background-color: #E8F5E9 !important;
+}
+.status-row--green:hover {
+    background-color: #D4EDDA !important;
+}
+.status-row--orange {
+    background-color: #FFF3E0 !important;
+}
+.status-row--orange:hover {
+    background-color: #FFE0B2 !important;
+}
