@@ -732,7 +732,7 @@ tbody tr:last-child td { border-bottom: 0; }
 
 .clickable:hover { color: var(--blue); }
 
-/* Status badges */
+/* ========================= STATUS BADGES ========================= */
 
 .status-badge {
     display: inline-flex;
@@ -749,22 +749,32 @@ tbody tr:last-child td { border-bottom: 0; }
     white-space: nowrap;
 }
 
+/* Sivo — default za pending (neaktivno) */
 .status-pending {
     background: #f1f5f9;
     color: #64748b;
     border-color: #e2e8f0;
 }
 
+/* Zeleno — U redu */
 .status-completed {
     background: var(--green-bg);
     color: var(--green);
     border-color: #bfe7d2;
 }
 
+/* Crveno — Problem / Reparacija / Anulirano */
 .status-problem {
     background: var(--red-bg);
     color: var(--red);
     border-color: #f2c6cb;
+}
+
+/* Narandžasto — faze (Krojenje, Serigrafija, Vez, Šivenje, Poslato) */
+.status-phase {
+    background: #FFF3E0;
+    color: #B45309;
+    border-color: #FCD34D;
 }
 
 /* ========================= MODAL / PRODUCTION FLOW ========================= */
@@ -1245,8 +1255,6 @@ body.modal-open { overflow: hidden; }
 #ordersContainer tbody tr { cursor: pointer; }
 #ordersContainer tbody tr:nth-child(even) td { background: var(--paper); }
 #ordersContainer tbody tr:hover td { background: #eef4ff; }
-#ordersContainer .row-status-problem td:first-child   { box-shadow: inset 3px 0 0 var(--red); }
-#ordersContainer .row-status-completed td:first-child { box-shadow: inset 3px 0 0 var(--green); }
 
 @media (pointer: coarse) {
     .btn-tag { min-height: 40px; padding: 8px 13px; font-size: 12px; }
@@ -1278,7 +1286,6 @@ body.modal-open { overflow: hidden; }
         display: flex; justify-content: space-between; align-items: center; gap: 14px;
         padding: 9px 14px !important; background: #fff !important;
         border-bottom: 1px solid var(--line); text-align: right !important;
-        box-shadow: none !important;
     }
     #ordersContainer > table td:last-child { border-bottom: 0; }
     #ordersContainer > table td::before {
@@ -1321,37 +1328,4 @@ body:has(#phaseModal:not(.hidden)) #remindersModal {
 
 @supports not selector(:has(*)) {
     /* ništa dodatno, z-index je dovoljan */
-}
-
-/* ============================================================
-   STATUSNE BOJE REDOVA U TABELI — override za td
-   ============================================================ */
-#ordersContainer tr.status-row--red td {
-    background-color: #FDECEA !important;
-}
-#ordersContainer tr.status-row--red:hover td {
-    background-color: #F8D7D3 !important;
-}
-#ordersContainer tr.status-row--green td {
-    background-color: #E8F5E9 !important;
-}
-#ordersContainer tr.status-row--green:hover td {
-    background-color: #D4EDDA !important;
-}
-#ordersContainer tr.status-row--orange td {
-    background-color: #FFF3E0 !important;
-}
-#ordersContainer tr.status-row--orange:hover td {
-    background-color: #FFE0B2 !important;
-}
-
-/* Leva ivica reda — boja po statusu */
-#ordersContainer tr.status-row--red td:first-child {
-    box-shadow: inset 3px 0 0 #c43f48 !important;
-}
-#ordersContainer tr.status-row--green td:first-child {
-    box-shadow: inset 3px 0 0 #16845b !important;
-}
-#ordersContainer tr.status-row--orange td:first-child {
-    box-shadow: inset 3px 0 0 #e9b949 !important;
 }

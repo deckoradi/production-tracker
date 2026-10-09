@@ -45,6 +45,22 @@ const isKrojenjeFree = (o) => {
   return true;
 };
 
+// ============ HELPER: BOJA BADGE-a ============
+function getBadgeClass(statusText, statusType){
+  const s = (statusText || '').toLowerCase();
+  
+  // Crveno — problem / reparacija / anulirano
+  if (s.includes('problem') || s.includes('reparacija') || s.includes('anulirano')) {
+    return 'status-problem';
+  }
+  // Zeleno — u redu
+  if (s.includes('u redu') || s.includes('in ordine')) {
+    return 'status-completed';
+  }
+  // Narandžasto — sve ostale faze (Krojenje, Serigrafija, Vez, Šivenje, Poslato, U toku)
+  return 'status-phase';
+}
+
 // ============ INDEXEDDB ============
 const IDB_NAME='production-tracker-fs';
 const IDB_STORE='handles';
@@ -549,19 +565,11 @@ async function addKontrolaControls(){
     }
   },500);
 
-  // ============================================================
-  // NOVO: Otpremnice — lista + brisanje
-  // ============================================================
   addOtpremnicePanel();
-  // ============================================================
-  // NOVO: Izveštaj za Kontrolu
-  // ============================================================
   addKontrolaExportPanel();
 }
 
-// ============================================================
-// NOVI PANEL: Otpremnice (lista + brisanje)
-// ============================================================
+// ============ OTPREMNICE — LISTA + BRISANJE ============
 function addOtpremnicePanel(){
   if($('otpremnicePanel'))return;
   const div=document.createElement('div');div.id='otpremnicePanel';div.className='panel';
@@ -615,10 +623,8 @@ async function obrisiOtpremnicu(broj, firma){
   status.textContent='⏳ Brišem...';status.className='';
 
   try{
-    // 1) Obriši iz baze
     await api(`/api/otpremnice/${broj}`,{method:'DELETE',headers:headers()});
     
-    // 2) Resetuj broj.txt na broj-1
     if(otpremnicaFolderHandle){
       const perm=await otpremnicaFolderHandle.queryPermission({mode:'readwrite'});
       if(perm==='granted'){
@@ -642,9 +648,7 @@ async function obrisiOtpremnicu(broj, firma){
   }
 }
 
-// ============================================================
-// NOVI PANEL: Izveštaj za Kontrolu
-// ============================================================
+// ============ KONTROLA — EXCEL IZVEŠTAJ ============
 function addKontrolaExportPanel(){
   if($('kontrolaExportPanel'))return;
   const div=document.createElement('div');div.id='kontrolaExportPanel';div.className='panel';
@@ -1033,25 +1037,6 @@ function computeOrderStatus(o){
   return [t('status_in_progress'),'status-pending'];
 }
 
-// ============ HELPER: BOJA STATUSNE TRAKE ============
-// Crveno = Problem / Reparacija / Anulirano
-// Zeleno = U redu
-// Narandžasto = sve ostale faze (Krojenje, Serigrafija, Vez, Šivenje, Poslato, U toku)
-function getStatusColorClass(statusText){
-  const s = (statusText || '').toLowerCase();
-  
-  // Crveno
-  if (s.includes('problem') || s.includes('reparacija') || s.includes('anulirano')) {
-    return 'status-row--red';
-  }
-  // Zeleno
-  if (s.includes('u redu') || s.includes('in ordine')) {
-    return 'status-row--green';
-  }
-  // Narandžasto — sve ostalo
-  return 'status-row--orange';
-}
-
 // ============ RENDER TABELE ============
 function renderOrders(){
   if(!orders.length){
@@ -1073,11 +1058,8 @@ function renderOrders(){
 
   orders.forEach(o=>{
     const st=computeOrderStatus(o);
-    // ============================================================
-    // NOVO: Odredi boju reda na osnovu statusa
-    // ============================================================
-    const colorClass = getStatusColorClass(st[0]);
-    h+=`<tr class="row-${st[1]} ${colorClass}" onclick="openOrder(${o.id})">`;
+    // Samo klasa row-status-* (boja po statusu), bez bojenja celog reda
+    h+=`<tr class="row-${st[1]}" onclick="openOrder(${o.id})">`;
     
     if(privileged){
       const cells=[
@@ -1087,7 +1069,7 @@ function renderOrders(){
         esc(o.orderNumber),
         o.quantity||0,
         esc(o.deliveryDate||'-'),
-        `<span class="status-badge ${st[1]}">${st[0]}</span>`
+        `<span class="status-badge ${getBadgeClass(st[0], st[1])}">${st[0]}</span>`
       ];
       cells.forEach((c,k)=>{h+=`<td${k===3?' class="clickable"':''}>${c}</td>`});
     } else if(worker){
@@ -1097,7 +1079,7 @@ function renderOrders(){
         esc(o.name),
         o.quantity||0,
         esc(o.deliveryDate||'-'),
-        `<span class="status-badge ${st[1]}">${st[0]}</span>`
+        `<span class="status-badge ${getBadgeClass(st[0], st[1])}">${st[0]}</span>`
       ];
       cells.forEach((c,k)=>{h+=`<td${k===1?' class="clickable"':''}>${c}</td>`});
     } else {
@@ -1105,7 +1087,7 @@ function renderOrders(){
       const isForeign = (o.company !== currentUser.company);
       const claimed = getClaim(o);
       const claimIcon = isForeign ? (claimed && claimed.claimedByCompany === currentUser.company ? ' 📌' : (claimed ? ' 🔒' : '')) : '';
-      const cells=[esc(o.orderNumber)+claimIcon,esc(o.name),o.quantity||0,`<span class="status-badge ${st[1]}">${st[0]}</span>`];
+      const cells=[esc(o.orderNumber)+claimIcon,esc(o.name),o.quantity||0,`<span class="status-badge ${getBadgeClass(st[0], st[1])}">${st[0]}</span>`];
       cells.forEach((c,k)=>{h+=`<td data-label="${L[k]}"${k===0?' class="clickable"':''}>${c}</td>`});
     }
     h+='</tr>';
@@ -1569,7 +1551,6 @@ function renderModal(o){
       }
     }
 
-    // Admin — može i Reset na Prijemu
     const showAdminReset = admin && prijem.status !== 'pending';
 
     if (kontrolaLocked && !admin) {
@@ -1643,7 +1624,6 @@ async function resetPhase(id, phase){
   try{
     const d=await api('/api/reset-phase',{method:'POST',headers:headers(true),body:JSON.stringify({orderId:id, phase})});
     console.log('✅', d.message);
-    // Osveži lokalni progress
     const p=o.progress.find(x=>String(x.phase)===String(phase));
     if(p){p.status='pending';p.comment='';p.updatedAt=new Date().toISOString();}
     renderModal(o);
