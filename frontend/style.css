@@ -1449,7 +1449,7 @@ tbody tr:last-child td { border-bottom: 0; }
 /* KPI: 3 → 2 kolone, kvadrati */
 @media (max-width: 620px) {
     .navbar {
-        position: static;
+        position: relative;
         padding: 10px 13px 12px;
     }
     .nav-left { width: 100%; }
