@@ -148,6 +148,9 @@ const TRANSLATIONS = {
     msg_claim_locked: '🔒 Nalog je zauzet',
     msg_claim_you_can_take: 'Možete preuzeti ovaj nalog klikom na Krojenje → Urađeno',
 
+    // ===== PRIJEM BLOKADA (kontrola) =====
+    msg_prijem_blocked: '⛔ Prvo završite sve faze (100–500) pre Prijema.',
+
     // ===== OTPREMNICE =====
     msg_otpremnica_deleted: 'Otpremnica obrisana.',
     msg_otpremnica_reset_manual: 'Resetuj broj ručno.',
@@ -306,6 +309,9 @@ const TRANSLATIONS = {
     msg_claimed_by_short: 'Preso da {claimer}',
     msg_claim_locked: '🔒 Ordine occupato',
     msg_claim_you_can_take: 'Puoi prendere questo ordine cliccando su Taglio → Fatto',
+
+    // ===== RICEZIONE BLOCCATA (controllo) =====
+    msg_prijem_blocked: '⛔ Prima completa tutte le fasi (100–500) prima della Ricezione.',
 
     // ===== DDT / OTPREMNICE =====
     msg_otpremnica_deleted: 'DDT eliminato.',

@@ -1,8 +1,8 @@
-// PRODUCTION TRACKER - dashboard.js (v4: KPI 6 kartica sa servera + filter + theme)
+// PRODUCTION TRACKER - dashboard.js (v5: Prijem guard + claim fix + reset reparacija)
 let currentUser=null,orders=[],selectedOrderId=null,currentPage=1,totalPages=1,totalOrders=0;
 let currentReminders=[];
-let activeFilter='all';           // 'all' | 'active' | 'late' | 'repair' | 'done' | 'cancelled'
-let serverStats=null;             // {total, active, late, repairs, done, cancelled}
+let activeFilter='all';
+let serverStats=null;
 const LIMIT=100;
 const PRIVILEGED_LIMIT=200;
 const $=id=>document.getElementById(id);
@@ -35,7 +35,7 @@ function toggleTheme(){
 }
 window.toggleTheme = toggleTheme;
 
-// ============ POMOĆNE ZA ROLE ============
+// ============ ROLE ============
 const isVezRole = () => currentUser?.role === 'vez';
 const isSerigrafijaRole = () => currentUser?.role === 'serigrafija';
 const isExternalWorker = () => isVezRole() || isSerigrafijaRole();
@@ -44,7 +44,7 @@ const isUserRole = () => currentUser?.role === 'user';
 const isKontrolaRole = () => currentUser?.role === 'kontrola';
 const isAdminRole = () => currentUser?.role === 'admin';
 
-// ============ POMOĆNE ZA PREUZIMANJE ============
+// ============ CLAIM ============
 const getClaim = (o) => o?.claim || null;
 const isForeignOrderForMe = (o) => {
   if (!isUserRole()) return false;
@@ -69,7 +69,7 @@ const isKrojenjeFree = (o) => {
   return true;
 };
 
-// ============ HELPER: BOJA BADGE-a ============
+// ============ BADGE ============
 function getBadgeClass(statusText, statusType){
   if(statusType === 'status-warning') return 'status-warning';
   const s = (statusText || '').toLowerCase();
@@ -85,7 +85,7 @@ function idbOpen(){return new Promise((resolve,reject)=>{const req=indexedDB.ope
 async function idbSet(key,val){const db=await idbOpen();return new Promise((resolve,reject)=>{const tx=db.transaction(IDB_STORE,'readwrite');tx.objectStore(IDB_STORE).put(val,key);tx.oncomplete=()=>resolve();tx.onerror=()=>reject(tx.error)})}
 async function idbGet(key){const db=await idbOpen();return new Promise((resolve,reject)=>{const tx=db.transaction(IDB_STORE,'readonly');const req=tx.objectStore(IDB_STORE).get(key);req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)})}
 
-// ============ FILE SYSTEM ACCESS API ============
+// ============ FILE SYSTEM ============
 const BROJ_FILE_NAME='broj.txt';
 let otpremnicaFolderHandle=null;
 let lastGeneratedExcelBlob=null;
@@ -175,7 +175,7 @@ function updateFolderStatusNeedsPermission(){
 
 document.addEventListener('DOMContentLoaded',()=>{ setTimeout(loadFolderHandleFromIdb,300); });
 
-// ============ KPI DASHBOARD (server-side) ============
+// ============ KPI ============
 async function loadStats(){
   try{
     const d = await api('/api/stats', {headers: headers()});
@@ -219,7 +219,6 @@ function renderKPIFromStats(s){
     </div>`;
 }
 
-// Fallback ako /api/stats ne radi
 function computeKPI(list){
   const today = new Date().toISOString().slice(0,10);
   let active=0, late=0, repairs=0, done=0, cancelled=0;
@@ -298,7 +297,6 @@ document.addEventListener('DOMContentLoaded',()=>{
   if(currentUser?.role==='kontrola'){addKontrolaControls()}
   if(currentUser?.role==='vez' || currentUser?.role==='serigrafija'){addWorkerExportControls()}
 
-  // theme toggle sync
   const themeBtn = $('themeToggle');
   if(themeBtn){
     const cur = document.documentElement.getAttribute('data-theme') || 'light';
@@ -307,7 +305,6 @@ document.addEventListener('DOMContentLoaded',()=>{
 
   loadOrders();
 
-  // odloži reminders
   if(currentUser?.role==='user' || currentUser?.role==='kontrola' || currentUser?.role==='admin'){
     if('requestIdleCallback' in window){
       requestIdleCallback(()=>checkReminders(), {timeout: 2000});
@@ -1120,7 +1117,7 @@ changePasswordBtn?.addEventListener('click',async()=>{
   }catch(e){alert('❌ '+e.message)}
 });
 
-// ============ LOAD ORDERS (sa filterom na serveru) ============
+// ============ LOAD ORDERS ============
 async function loadOrders(search='',page=1){
   try{
     const limit = isPrivileged() ? PRIVILEGED_LIMIT : LIMIT;
@@ -1204,7 +1201,6 @@ function computeOrderStatus(o){
     return true;
   });
 
-  // WARNING: kašnjenje
   const today = new Date().toISOString().slice(0,10);
   if(o.deliveryDate && o.deliveryDate < today){
     const days = Math.floor((Date.now() - new Date(o.deliveryDate).getTime()) / 86400000);
@@ -1741,17 +1737,29 @@ function renderModal(o){
     } else if(pLock.locked && pLock.onlyCompleteAllowed){
       pBody = `<div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="submitPrijemOk(${o.id})">✅ ${t('btn_all_ok')}</button></div>`;
     } else {
-      pBody = `<div class="phase-actions" id="prijemActions-${o.id}">
-          <button class="btn-tag btn-tag--done" onclick="submitPrijemOk(${o.id})">✅ ${t('btn_all_ok')}</button>
-          <button class="btn-tag btn-tag--problem" onclick="togglePrijemChoice(${o.id})">⚠️ ${t('btn_problem')}</button>
-          ${showAdminReset ? `<button class="btn-tag btn-tag--reset" onclick="resetPhase(${o.id},'PRIJEM')">⬜ ${t('btn_reset')}</button>` : ''}
-        </div>
-        <div id="prijemChoice-${o.id}" class="hidden" style="margin:6px 0">
-          <div class="phase-actions">
-            <button class="btn-tag btn-tag--problem" onclick="openSizeModal(${o.id},'reparacija')">🔧 ${t('btn_repair')}</button>
-            <button class="btn-tag btn-tag--problem" onclick="openSizeModal(${o.id},'anulirano')">❌ ${t('btn_cancelled')}</button>
+      // ← NOVO: Blokada Prijema ako faze 100-500 nisu sve završene (samo za kontrolu)
+      const allPhasesDone = ['100','200','300','400','500'].every(ph => {
+        const r = phases.find(x => String(x.phase) === ph);
+        return r && (r.status === 'completed' || r.status === 'nema');
+      });
+
+      const isKontrolaAndBlocked = isKontrolaRole() && !allPhasesDone;
+
+      if (isKontrolaAndBlocked) {
+        pBody = `<div class="phase-date" style="color:var(--muted);font-weight:600;padding:8px 12px;background:var(--paper);border-radius:8px;border:1px dashed var(--line-strong)">${t('msg_prijem_blocked')}</div>`;
+      } else {
+        pBody = `<div class="phase-actions" id="prijemActions-${o.id}">
+            <button class="btn-tag btn-tag--done" onclick="submitPrijemOk(${o.id})">✅ ${t('btn_all_ok')}</button>
+            <button class="btn-tag btn-tag--problem" onclick="togglePrijemChoice(${o.id})">⚠️ ${t('btn_problem')}</button>
+            ${showAdminReset ? `<button class="btn-tag btn-tag--reset" onclick="resetPhase(${o.id},'PRIJEM')">⬜ ${t('btn_reset')}</button>` : ''}
           </div>
-        </div>`;
+          <div id="prijemChoice-${o.id}" class="hidden" style="margin:6px 0">
+            <div class="phase-actions">
+              <button class="btn-tag btn-tag--problem" onclick="openSizeModal(${o.id},'reparacija')">🔧 ${t('btn_repair')}</button>
+              <button class="btn-tag btn-tag--problem" onclick="openSizeModal(${o.id},'anulirano')">❌ ${t('btn_cancelled')}</button>
+            </div>
+          </div>`;
+      }
     }
 
     let repSection='';
@@ -1806,6 +1814,13 @@ async function resetPhase(id, phase){
     console.log('✅', d.message);
     const p=o.progress.find(x=>String(x.phase)===String(phase));
     if(p){p.status='pending';p.comment='';p.updatedAt=new Date().toISOString();}
+    // Ako je reset PRIJEM, očisti i reparaciju iz lokalnog naloga
+    if(String(phase)==='PRIJEM' && o.reparacija){
+      o.reparacija = null;
+    }
+    if(String(phase)==='PRIJEM' && o.prijem){
+      o.prijem = { status:'pending', comment:'' };
+    }
     renderModal(o);
     renderOrders();
     await loadStats();
@@ -2007,7 +2022,6 @@ async function saveComment(id, phase, comment) {
       body: JSON.stringify({ orderId: id, phase, comment })
     });
     if (res.updatedAt) p.updatedAt = res.updatedAt;
-    // ne renderujemo modal — korisnik još kuca
   } catch (e) {
     p.comment = oldComment;
     p.updatedAt = oldUpdated;
@@ -2031,6 +2045,29 @@ async function updatePhase(id,phase,status,customComment){
     p.updatedAt=d.updatedAt;
     renderOrders();
     await loadStats();
+
+    // ← NOVO: Ako je klijent PREUZEO tuđi nalog (faza 100, completed, tuđa firma) — osveži nalog sa servera i zatvori modal
+    const wasClaim = isUserRole() && String(phase) === '100' && status === 'completed'
+                     && o.company !== currentUser.company
+                     && !(o.claim && o.claim.claimedByCompany === currentUser.company);
+
+    if (wasClaim) {
+      // reload nalog sa servera
+      try {
+        const fresh = await api(`/api/orders?search=${encodeURIComponent(o.orderNumber)}&page=1&limit=100`, {headers:headers()});
+        const found = (fresh.data||[]).find(x=>String(x.id)===String(id));
+        if (found) {
+          const idx = orders.findIndex(x=>String(x.id)===String(id));
+          if (idx>=0) orders[idx] = found;
+        }
+      } catch(e) { console.error(e); }
+      // zatvori modal
+      phaseModal?.classList.add('hidden');
+      selectedOrderId = null;
+      renderOrders();
+      return;
+    }
+
     if(selectedOrderId && String(selectedOrderId)===String(id) && !phaseModal?.classList.contains('hidden')){
       renderModal(o);
     }
@@ -2099,7 +2136,7 @@ window.setFilter=setFilter;
   if(btn&&adminPanel){
     const set=c=>{adminPanel.classList.toggle('is-collapsed',c);btn.setAttribute('aria-expanded',String(!c))};
     set(window.innerWidth<=800);
-    btn.addEventListener('click',()=>set(!adminPanel.classList.contains('is-collapsed')));
+    btn.addEventListener('click',()=>set(!adminPanel.classList.is-collapsed ? true : false));
   }
   const sync=()=>document.body.classList.toggle('modal-open',!!document.querySelector('.modal:not(.hidden)'));
   new MutationObserver(sync).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});

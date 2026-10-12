@@ -886,6 +886,7 @@ app.post('/api/poslji-otpremnicu-mail', authenticate, async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
+
 // ============ UPLOAD ============
 app.post('/api/upload', authenticate, upload.single('file'), async (req, res) => {
     if (req.user.role !== 'admin') {
@@ -1030,7 +1031,7 @@ app.post('/api/upload', authenticate, upload.single('file'), async (req, res) =>
 });
 
 // ============================================================
-// KPI STATS — nova ruta, tačni brojevi za sve naloge
+// KPI STATS
 // ============================================================
 app.get('/api/stats', authenticate, async (req, res) => {
     try {
@@ -1039,7 +1040,6 @@ app.get('/api/stats', authenticate, async (req, res) => {
         const userCompany = req.user.company;
         const workerPhase = externalWorker ? WORKER_PHASE[req.user.role] : null;
 
-        // Bazni WHERE po roli
         let baseWhere = '';
         let baseParams = [];
         if (isUser(req.user)) {
@@ -1056,7 +1056,6 @@ app.get('/api/stats', authenticate, async (req, res) => {
             baseParams = [workerPhase];
         }
 
-        // Definicija anuliranog naloga (JSON u PRIJEM komentaru)
         const ANULIRANO_SQL = `EXISTS (
             SELECT 1 FROM progress pa WHERE pa.order_id = o.id
               AND pa.phase = 'PRIJEM' AND pa.status = 'problem'
@@ -1067,13 +1066,11 @@ app.get('/api/stats', authenticate, async (req, res) => {
               AND pc.phase = 'PRIJEM' AND pc.status = 'completed'
         )`;
 
-        // 1. UKUPNO
         const total = (await pool.query(
             `SELECT COUNT(*)::int AS c FROM orders o ${baseWhere}`,
             baseParams
         )).rows[0].c;
 
-        // 2. AKTIVNI = nije završeno (PRIJEM nije completed) I nije anulirano
         const connector = baseWhere ? 'AND' : 'WHERE';
         const active = (await pool.query(
             `SELECT COUNT(*)::int AS c FROM orders o ${baseWhere} ${connector}
@@ -1081,7 +1078,6 @@ app.get('/api/stats', authenticate, async (req, res) => {
             baseParams
         )).rows[0].c;
 
-        // 3. KAŠNJENJA = delivery_date < danas I nije završeno I nije anulirano
         const late = (await pool.query(
             `SELECT COUNT(*)::int AS c FROM orders o ${baseWhere} ${connector}
              o.delivery_date IS NOT NULL AND o.delivery_date != ''
@@ -1090,7 +1086,6 @@ app.get('/api/stats', authenticate, async (req, res) => {
             baseParams
         )).rows[0].c;
 
-        // 4. REPARACIJE = aktivne (kontrola nije potvrdila)
         let repWhere = '';
         let repParams = [];
         if (isUser(req.user)) {
@@ -1112,14 +1107,12 @@ app.get('/api/stats', authenticate, async (req, res) => {
             repParams
         )).rows[0].c;
 
-        // 5. ZAVRŠENO (sve vreme) = PRIJEM completed
         const done = (await pool.query(
             `SELECT COUNT(*)::int AS c FROM orders o ${baseWhere} ${connector}
              ${PRIJEM_COMPLETED_SQL}`,
             baseParams
         )).rows[0].c;
 
-        // 6. ANULIRANO
         const cancelled = (await pool.query(
             `SELECT COUNT(*)::int AS c FROM orders o ${baseWhere} ${connector}
              ${ANULIRANO_SQL}`,
@@ -1195,7 +1188,6 @@ app.get('/api/orders', authenticate, async (req, res) => {
             paramIndex++;
         }
 
-        // KPI filter (late / active / done / cancelled / repair / all)
         if (filter && filter !== 'all') {
             const fc = whereClause ? 'AND' : 'WHERE';
             const PRIJEM_COMPLETED = `EXISTS (SELECT 1 FROM progress pc WHERE pc.order_id = o.id AND pc.phase='PRIJEM' AND pc.status='completed')`;
@@ -1329,7 +1321,6 @@ app.get('/api/orders', authenticate, async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
-
 // ============ RESET PHASE — samo Admin ============
 app.post('/api/reset-phase', authenticate, async (req, res) => {
     if (!isAdmin(req.user)) {
@@ -1341,7 +1332,8 @@ app.post('/api/reset-phase', authenticate, async (req, res) => {
             return res.status(400).json({ error: 'Nedostaje orderId ili phase.' });
         }
 
-        const allowedPhases = ['100', '200', '300', '400', '500', 'NAPOMENA'];
+        // ← DODATO 'PRIJEM' u dozvoljene faze
+        const allowedPhases = ['100', '200', '300', '400', '500', 'NAPOMENA', 'PRIJEM'];
         if (!allowedPhases.includes(String(phase))) {
             return res.status(400).json({ error: 'Neispravna faza.' });
         }
@@ -1369,6 +1361,15 @@ app.post('/api/reset-phase', authenticate, async (req, res) => {
              VALUES ($1, $2, $3, 'reset', 'pending', 'Reset od strane admina', $4, $5)`,
             [orderInfo.rows[0].order_number, orderInfo.rows[0].company, phase, req.user.username, req.user.company]
         );
+
+        // ← NOVO: Ako se resetuje PRIJEM, obriši i sve reparacije tog naloga
+        if (String(phase) === 'PRIJEM') {
+            const delRep = await pool.query(
+                `DELETE FROM reparacije WHERE order_id = $1 RETURNING id`,
+                [orderId]
+            );
+            console.log(`🧹 Reset PRIJEM: obrisano ${delRep.rowCount} reparacija za nalog ${orderInfo.rows[0].order_number}`);
+        }
 
         console.log(`🔄 RESET: ${req.user.username} resetovao fazu ${phase} za nalog ${orderInfo.rows[0].order_number}`);
 
@@ -1410,6 +1411,25 @@ app.post('/api/update-phase', authenticate, async (req, res) => {
 
         if (!isAdmin(req.user) && !isKontrola(req.user) && phase === 'PRIJEM') {
             return res.status(403).json({ error: 'Nemate dozvolu za ovu fazu.' });
+        }
+
+        // ← NOVO: Guard za kontrolu — PRIJEM samo kad su sve faze 100-500 završene
+        if (isKontrola(req.user) && phase === 'PRIJEM' && status !== 'pending') {
+            const priorPhases = ['100','200','300','400','500'];
+            const priorResult = await pool.query(
+                `SELECT phase, status FROM progress WHERE order_id = $1 AND phase = ANY($2::text[])`,
+                [orderId, priorPhases]
+            );
+            const statusMap = new Map(priorResult.rows.map(r => [r.phase, r.status]));
+            const unresolved = priorPhases.find(p => {
+                const st = statusMap.get(p);
+                return !st || (st !== 'completed' && st !== 'nema');
+            });
+            if (unresolved) {
+                return res.status(403).json({
+                    error: `⛔ Morate prvo završiti fazu "${phaseLabel(unresolved)}" pre Prijema.`
+                });
+            }
         }
 
         if (isKontrola(req.user) && phase === 'PRIJEM') {
