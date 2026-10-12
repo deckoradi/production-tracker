@@ -2051,19 +2051,18 @@ async function updatePhase(id,phase,status,customComment){
                      && o.company !== currentUser.company
                      && !(o.claim && o.claim.claimedByCompany === currentUser.company);
 
-    if (wasClaim) {
-      // reload nalog sa servera
+        if (wasClaim) {
+      // reload nalog sa servera, ali NE zatvaraj modal
       try {
         const fresh = await api(`/api/orders?search=${encodeURIComponent(o.orderNumber)}&page=1&limit=100`, {headers:headers()});
         const found = (fresh.data||[]).find(x=>String(x.id)===String(id));
         if (found) {
           const idx = orders.findIndex(x=>String(x.id)===String(id));
           if (idx>=0) orders[idx] = found;
+          // osveži modal sa novim podacima (sad ima claim)
+          renderModal(found);
         }
       } catch(e) { console.error(e); }
-      // zatvori modal
-      phaseModal?.classList.add('hidden');
-      selectedOrderId = null;
       renderOrders();
       return;
     }
