@@ -1,4 +1,4 @@
-// PRODUCTION TRACKER - dashboard.js (v5: Prijem guard + claim fix + reset reparacija)
+// PRODUCTION TRACKER - dashboard.js (v6: full)
 let currentUser=null,orders=[],selectedOrderId=null,currentPage=1,totalPages=1,totalOrders=0;
 let currentReminders=[];
 let activeFilter='all';
@@ -354,7 +354,6 @@ clearSearchBtn?.addEventListener('click',()=>{if(searchInput)searchInput.value='
 logoutBtn?.addEventListener('click',()=>{localStorage.clear();location.href='index.html'});
 closeModal?.addEventListener('click',()=>{phaseModal?.classList.add('hidden');reopenRemindersIfAny()});
 window.addEventListener('click',e=>{if(e.target===phaseModal){phaseModal.classList.add('hidden');reopenRemindersIfAny()}});
-
 // ============ ADMIN KONTROLE ============
 function addAdminControls(){
   if(!adminPanel||$('orderManagementPanel'))return;
@@ -1479,6 +1478,7 @@ function renderModal(o){
 
     let bodyHtml='';
 
+    // ===== RADNIK (vez / serigrafija) =====
     if(worker){
       const isMyPhase = (currentUser.role==='vez' && String(p.phase)==='300')
                      || (currentUser.role==='serigrafija' && String(p.phase)==='200');
@@ -1507,6 +1507,7 @@ function renderModal(o){
         bodyHtml=``;
       }
     }
+    // ===== KLIJENT / ADMIN =====
     else if(isLockedForMeAsClient){
       const claimerName = claim ? claim.claimedByCompany : (findPhaseRow('100')?.updatedByCompany || '?');
       bodyHtml=`<div class="phase-date" style="color:var(--red);font-weight:600">🔒 ${t('msg_claim_locked')} — ${esc(claimerName)}</div>`;
@@ -1542,6 +1543,7 @@ function renderModal(o){
           bodyHtml=`<div class="phase-date" style="color:var(--red);font-weight:600">🔒 ${t('msg_claim_locked')}</div>`;
         }
       }
+      // ===== ADMIN FAZE 200 / 300 =====
       else if(isAdminFaza200ili300){
         if(p.status==='poslato' || p.status==='uradjeno'){
           bodyHtml=`<div class="phase-actions">
@@ -1560,6 +1562,12 @@ function renderModal(o){
             <div class="phase-actions">
               <button class="btn-tag btn-tag--reset" onclick="resetPhase(${o.id},'${js(p.phase)}')">⬜ ${t('btn_reset')}</button>
             </div>`;
+        } else if(p.status==='nema'){
+          // ← NOVO: admin može resetovati i kada je faza "Nema"
+          bodyHtml=`<div class="phase-date" style="color:var(--muted);font-weight:600">🚫 ${t('btn_none_short')}${dateStr?` — ${dateStr}`:''}</div>
+            <div class="phase-actions">
+              <button class="btn-tag btn-tag--reset" onclick="resetPhase(${o.id},'${js(p.phase)}')">⬜ ${t('btn_reset')}</button>
+            </div>`;
         } else {
           bodyHtml=`<div class="phase-actions">
             <button class="btn-tag" onclick="updatePhase(${o.id},'${js(p.phase)}','poslato')">📤 ${t('btn_poslato')}</button>
@@ -1570,6 +1578,7 @@ function renderModal(o){
           <textarea class="phase-note" oninput="handleCommentChange(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
         }
       }
+      // ===== KLIJENT FAZE 200 / 300 =====
       else if(isKlijentFaza200ili300){
         if(p.status==='poslato'){
           bodyHtml=`<div class="phase-actions">
@@ -1598,6 +1607,7 @@ function renderModal(o){
           <textarea class="phase-note" oninput="handleCommentChange(${o.id},'${js(p.phase)}',this.value)" placeholder="${t('placeholder_comment')}">${esc(p.comment||'')}</textarea>`;
         }
       }
+      // ===== OSTALE FAZE =====
       else {
         bodyHtml=`<div class="phase-actions">
             <button class="btn-tag btn-tag--done" onclick="updatePhase(${o.id},'${js(p.phase)}','completed')">✅ ${t('btn_done')}</button>
@@ -1737,7 +1747,7 @@ function renderModal(o){
     } else if(pLock.locked && pLock.onlyCompleteAllowed){
       pBody = `<div class="phase-actions"><button class="btn-tag btn-tag--done" onclick="submitPrijemOk(${o.id})">✅ ${t('btn_all_ok')}</button></div>`;
     } else {
-      // ← NOVO: Blokada Prijema ako faze 100-500 nisu sve završene (samo za kontrolu)
+      // Blokada Prijema ako faze 100-500 nisu sve završene (samo za kontrolu)
       const allPhasesDone = ['100','200','300','400','500'].every(ph => {
         const r = phases.find(x => String(x.phase) === ph);
         return r && (r.status === 'completed' || r.status === 'nema');
@@ -1814,7 +1824,6 @@ async function resetPhase(id, phase){
     console.log('✅', d.message);
     const p=o.progress.find(x=>String(x.phase)===String(phase));
     if(p){p.status='pending';p.comment='';p.updatedAt=new Date().toISOString();}
-    // Ako je reset PRIJEM, očisti i reparaciju iz lokalnog naloga
     if(String(phase)==='PRIJEM' && o.reparacija){
       o.reparacija = null;
     }
@@ -2046,20 +2055,19 @@ async function updatePhase(id,phase,status,customComment){
     renderOrders();
     await loadStats();
 
-    // ← NOVO: Ako je klijent PREUZEO tuđi nalog (faza 100, completed, tuđa firma) — osveži nalog sa servera i zatvori modal
+    // Ako je klijent PREUZEO tuđi nalog (faza 100, completed, tuđa firma) —
+    // osveži nalog sa servera, ali NE zatvaraj modal
     const wasClaim = isUserRole() && String(phase) === '100' && status === 'completed'
                      && o.company !== currentUser.company
                      && !(o.claim && o.claim.claimedByCompany === currentUser.company);
 
-        if (wasClaim) {
-      // reload nalog sa servera, ali NE zatvaraj modal
+    if (wasClaim) {
       try {
         const fresh = await api(`/api/orders?search=${encodeURIComponent(o.orderNumber)}&page=1&limit=100`, {headers:headers()});
         const found = (fresh.data||[]).find(x=>String(x.id)===String(id));
         if (found) {
           const idx = orders.findIndex(x=>String(x.id)===String(id));
           if (idx>=0) orders[idx] = found;
-          // osveži modal sa novim podacima (sad ima claim)
           renderModal(found);
         }
       } catch(e) { console.error(e); }
@@ -2129,13 +2137,13 @@ window.toggleTheme=toggleTheme;
 window.handleCommentChange=handleCommentChange;
 window.setFilter=setFilter;
 
-// ============ UI: admin collapse, scroll lock, Esc, theme icon ============
+// ============ UI: admin collapse, scroll lock, Esc ============
 (()=>{
   const btn=$('adminToggle');
   if(btn&&adminPanel){
     const set=c=>{adminPanel.classList.toggle('is-collapsed',c);btn.setAttribute('aria-expanded',String(!c))};
     set(window.innerWidth<=800);
-    btn.addEventListener('click',()=>set(!adminPanel.classList.is-collapsed ? true : false));
+    btn.addEventListener('click',()=>set(!adminPanel.classList.contains('is-collapsed')));
   }
   const sync=()=>document.body.classList.toggle('modal-open',!!document.querySelector('.modal:not(.hidden)'));
   new MutationObserver(sync).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class']});
